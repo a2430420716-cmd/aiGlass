@@ -1,0 +1,47 @@
+# macOS and editor state
+.DS_Store
+.idea/
+*.swp
+*.swo
+
+# Xcode and CocoaPods generated files
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcarchive
+*.ipa
+Pods/
+
+# Android projects are maintained separately
+/app/
+/CytG5T7/
+
+# Gradle and Android build outputs
+.gradle/
+.kotlin/
+.cxx/
+.externalNativeBuild/
+local.properties
+*.apk
+*.aab
+/app/release/
+/CytG5T7/app/release/
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+signing.properties
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.mobileprovision
+/CytG5T7/ks
+
+# Local device logs and Python caches
+*.log
+/CytG5T7/log065
+__pycache__/
+*.pyc

@@ -1,0 +1,15 @@
+{
+  "images" : [
+    {
+      "filename" : "Battery_charg4.pdf",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  },
+  "properties" : {
+    "preserves-vector-representation" : true
+  }
+}

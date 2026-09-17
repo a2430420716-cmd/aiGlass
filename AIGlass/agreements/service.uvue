@@ -1,0 +1,541 @@
+<template>
+	<view class="app" v-if="lang">
+		<app-title txt="用户协议"></app-title>
+		<scroll-view  scroll-y="true" class="content">
+			<text class="fs14 mt12">更新时间：2026年05月01日</text>
+			<text class="fs14 mt12">生效时间：2026年05月01日</text>
+			<text class="fs14 mt12">欢迎您使用 MOCO AI产品及服务！</text>
+			<text class="fs18 mt20 fw7 ta">MOCO AI用户服务协议</text>
+			<text class="fs14 mt12">
+				《MOCO AI用户服务协议》（以下称“本协议”）系您（以下或称“用户”）与上海昶音智能科技有限公司及关联公司（以下称“我们”或“MOCO” 或“眸刻”）就注册和使用“ MOCO AI”应用程序（以下称“ MOCO AI”或“本应用软件”）而订立的协议。请您务必仔细阅读、充分理解本协议以及《MOCO AI隐私政策》中的各条款内容，
+				<text class="fw7 fs14">特别是其中涉及免除或者限制我们责任的条款、对您的权利进行限制的条款、法律适用和争议解决条款等。限制、免责条款或者其他涉及您重大权益的条款以加粗的形式提示您重点注意。</text>
+			</text>
+			<text class="fw7 fs14 mt12">您使用MOCO AI产品及服务即表示您确认您为十八周岁以上的成年人且具备履行本协议的完整的民事权利能力和民事行为能力；否则，您不应使用MOCO AI产品及服务。</text>
+			<text class="fw7 fs14 mt12">如您不同意本协议或其中任何条款，您应立即停止使用 MOCO AI产品及服务。您点击注册或登录 MOCO AI并勾选同意本协议，或者以其他任何明示或者默示方式接受本协议的，均视为您已阅读并同意接受本协议条款的约束。本协议即在您和我们之间产生法律效力，成为对双方具有约束力的法律文件。</text>
+			<text class="fw7 fs16 mt12">一 定义及协议范围</text>
+			<text class="fs14 mt12">1.1 定义</text>
+			<text class="fs14 mt12">1.1.1 MOCO AI或本应用软件：为我们研发的智能眼镜实现辅助性功能服务的应用程序。</text>
+			<text class="fs14 mt12">1.1.2 用户：MOCO AI的使用者，在本协议中亦称为“您”。</text>
+			<text class="fs14 mt12">1.1.3 MOCO AI产品及服务：我们通过MOCO AI向用户提供的各类产品和服务，包括但不限于AI助手（基于文本、语音、图片和视频的AI对话服务等），媒体录制（眼镜拍照/录像/录音等），蓝牙服务（电话接听、音乐播放、消息提醒等），以及后续可能推出的并纳入MOCO AI服务范畴内的功能，具体产品及服务以MOCO AI相关产品说明和应用服务页面显示的为准。MOCO AI通过手机端、眼镜端向用户提供服务和实现功能。</text>
+			<text class="fs14 mt12">1.2 协议范围</text>
+			<text class="fs14 mt12">
+				本协议是您与我们达成的关于下载、安装、登录及使用MOCO AI的协议，
+				<text class="fw7 fs14">包括本协议正文、《MOCO AI隐私政策》及我们针对MOCO AI产品及服务已经发布的或将来可能发布/更新的并采取合理途径通知的各类规则、规范、通知等。</text>
+				上述所有规则均为本协议不可分割的组成部分，且具有同等法律效力。
+				<text class="fw7 fs14">请您务必仔细阅读并充分理解各规则文件的内容，</text>
+				若有任何疑问，可发送邮件至
+				<text class="fw7 fs14">support@mocoviso.com，</text>
+				我们将根据相关法律法规及本公约管理规则予以解释或处理。
+			</text>
+			<text class="fs16 fw7 mt12">二 账号管理</text>
+			<text class="fs14 mt12">2.1 账号注册</text>
+			<text class="fs14 mt12">
+				2.1.1 您确认，
+				<text class="fs14 fw7">在您完成注册程序或以其他我们允许的方式实际使用MOCO AI的产品和服务时，您应当是具备完全民事权利能力和完全民事行为能力的自然人。若您不具备前述主体资格，则您及您的监护人应承担因此而导致的一切后果，且我们有权注销或永久冻结您的账号，并保留向您或您的监护人索取赔偿的权利。</text>
+			</text>
+			<text class="fs14 mt12">2.1.2 MOCO AI为您提供注册及登录通道，您可按照页面提示填写信息（手机号、密码等）， 阅读并同意相关协议，在完成全部账号注册程序后，成为MOCO AI的用户。您还需要根据 法律法规的规定（如有）填写您的真实身份信息，否则您可能无法使用MOCO AI的部分产 品或服务。
+				<text class="fs14 fw7">您了解并同意，您有义务确保您向我们所提供信息的真实性、合法性、有效性、 准确性和完整性。</text>
+			</text>
+			<text class="fs14 mt12">2.1.3 您不得恶意注册MOCO AI账号，包括但不限于通过频繁注册、批量注册、使用他人身 份注册或其他以不正常使用MOCO AI产品及服务为目的的账号注册行为，违者将会承担相 应的法律责任或遭受我们施加的处置措施。</text>
+			<text class="fs14 mt12">2.2 账号使用</text>
+			<text class="fs14 mt12">
+				2.2.1 您注册的MOCO AI账号所有权及有关权益均归MOCO所有，您完成注册程序后，仅享 有该账号的使用权。
+				<text class="fs14 fw7">您的账号仅限于您本人使用，未经MOCO书面同意，禁止以任何形式 赠与、借用、出租、转让、售卖或以其他方式许可他人使用该账号。如果我们发现或者有 合理理由认为使用者并非账号初始注册人，我们有权暂停或终止向该账号提供服务，并有 权关闭该账号，且无需向注册该账号的用户承担任何责任。</text>
+			</text>
+			<text class="fs14 mt12">
+				2.2.2 我们在此特别提醒您务必保护好您的账号及密码，切勿将账号及密码透露给他人。
+				<text class="fs14 fw7">您 必须自行负责对您的账号和密码进行保密，且须对在您的账号和密码下发生的所有活动（包 括但不限于信息披露、信息发布、网上点击同意或提交各类规则协议等）承担责任。</text>
+				我们不会对因您未能遵守本条款规定而发生的任何损失负责。若您发现任何人未经授权使用您的 账号及密码，您须立即通知我们。
+				<text class="fs14 fw7">您理解并同意我们根据您的请求采取行动需要合理时间， 对在采取行动前已产生的任何不利后果，我们不承担任何责任。因其他人恶意攻击或您自 身原因或其他不可抗因素而导致账号盗窃、丢失、均由您本人承担责任，我们不承担任何 责任。</text>
+			</text>
+			<text class="fs14 mt12">2.2.3 您理解并承诺，您所设置的MOCO AI账号信息不得违反国家法律法规、政策及MOCO AI相关服务规则。您设置的昵称、头像及个人资料等账号信息中不得出现违法或不良信息， 不得未经他人许可使用他人名义（包括但不限于冒用他人姓名、名称、商标、字号、肖像、 头像等具有独特的识别性元素或足以让人混淆的方式）设置账号信息。</text>
+			<text class="fs14 mt12">
+				2.2.4
+				<text class="fs14 fw7">如您设置的MOCO AI账号信息涉嫌违反国家法律法规、政策及平台相关服务规则， 我们有权终止向您提供MOCO AI的部分或全部服务。我们对此不承担任何责任，您将承担 因此产生的任何直接或间接损失及不利后果。</text>
+			</text>
+			<text class="fs14 mt12">2.3 账号的注销</text>
+			<text class="fs14 mt12">
+				您可以依照MOCO AI的相关页面提示申请注销您的MOCO AI账号，但您仍应对您在注销账 号前或使用MOCO AI产品及服务期间的行为承担相应责任。
+				<text class="fs14 fw7">注销成功后，除非法律法规另 有规定，我们不会为您提供账号记录、内容、虚拟财产等恢复或提供服务，请您谨慎操作。</text>
+			</text>
+			<text class="fs16 fw7 mt12">三 软件许可与使用</text>
+			<text class="fs14 mt12">3.1 软件许可的范围</text>
+			<text class="fs14 mt12">
+				3.1.1 
+				<text class="fs14 fw7">您在使用MOCO AI产品及服务过程中需要下载本应用软件，对此，我们授予您一项 个人的、可撤销的、不可转让及非排他性的许可。您仅可为访问或使用我们的产品和服务目的而使用相关软件，没有再授权许可的权利。</text>
+			</text>
+			<text class="fs14 mt12">
+				3.1.2
+				<text class="fs14 fw7">本协议未明示授权的其他一切权利仍由我们保留，您在行使这些保留权利时须另外取 得我们的书面许可。我们如果未行使任何保留权利，并不构成对保留权利的放弃。</text>
+			</text>
+			<text class="fs14 mt12">3.2 软件的获取</text>
+			<text class="fs14 mt12">您应从我们指定的渠道下载并安装本应用软件。请注意不要在非指定网站下载软件，以防止 误装恶意软件而给您带来损失和其他不利后果，我们不能保证相关软件能正常使用，且我们 对您因此造成的任何损失和不利后果不承担任何责任。</text>
+			<text class="fs14 mt12">3.3 软件的安装</text>
+			<text class="fs14 mt12">
+				您必须选择与安装的终端装置相符的MOCO AI软件版本，否则可能面临服务受限或者不可 用的情形。
+				<text class="fs14 fw7">软件版本与装置型号不符而产生的任何软件问题、装置问题或损坏均由您自行 承担。</text>
+			</text>
+			<text class="fs14 mt12">3.4 软件许可的更新</text>
+			<text class="fs14 mt12">为给用户提供更好的使用体验与服务，我们有权不定期更新、调整、优化本应用软件及相关 服务。我们将在每次更新后，以您可收悉的方式告知您更新的内容，您有权选择是否接收本 应用软件更新后的版本，如您不接受本应用软件更新后的版本，旧版本中的部分产品或服务 可能无法使用，为确保您的使用体验，建议您及时更新至最新版。</text>
+			<text class="fs14 mt12">3.5 软件的使用</text>
+			<text class="fs14 mt12">3.5.1 如要使用MOCO AI软件或相关产品及服务，您必须从我们授权的官方渠道购买相应的 智能设备，包括但不限于智能眼镜以及我们在未来业务中可能推出的其他智能设备产品。这 些智能设备可能需要在注册或绑定并将其连接到MOCO AI后，才能正常地发挥其特定功能。 请在购买前仔细阅读在产品包装或产品页面上列出的智能设备功能。</text>
+			<text class="fs14 mt12">3.5.2 您在使用MOCO AI产品及服务时，照片、视频、录音默认存储在眼镜端，我们提供将 前述数据同步到手机端媒体库的能力，但用户需将其自行备份到本地媒体。提词器文本永久 保留至用户主动删除。账号注销后，数据将被永久删除且不可恢复。</text>
+			<text class="fs16 fw7 mt12">四 用户权利与义务</text>
+			<text class="fs14 mt12">4.1 在遵守法律法规、本协议以及相关服务规则的前提下，用户享有以下权利：1）功能使 用权：下载、安装并使用MOCO AI的相关功能；2）信息管理权：可修改或删除个人资料 及本地媒体文件。</text>
+			<text class="fs14 mt12">4.2 软件使用规范</text>
+			<text class="fs14 mt12">您在使用MOCO AI产品及服务时，须遵守法律法规、本协议及相关服务规则的规定。您承 诺不对本应用软件及MOCO AI产品及服务从事以下行为：</text>
+			<text class="fs14 mt12">(1) 删除MOCO AI软件、产品及服务的任何版权信息，或修改、删除或规避为保护知 识产权而采用的技术措施；</text>
+			<text class="fs14 mt12">(2) 对本应用软件执行逆向工程，包括但不限于破解、反编译或进行其他尝试以获取 软件的源代码；</text>
+			<text class="fs14 mt12">(3) 使用本应用软件从事对网络安全有害的任何行为，包括但不限于：使用未经授权 的数据或存取未经授权的服务器/账户；未经授权存取公共网络或其他操作系统，并删 除、修改或添加任何存储的数据；未经授权而企图侦测、扫描或测试软件系统或网络的 弱点或进行其他破坏网络安全的行为；试图干扰或破坏软件系统或网站的正常运行，蓄 意传播恶意软件或病毒，或执行破坏或干扰正常网络信息服务的其他行为；伪造 TCP/IP数据包的名称或部分名称；</text>
+			<text class="fs14 mt12">(4) 通过并非由我们开发、授权或批准的第三方兼容软件或系统登入或使用本应用软 件及服务，或制作、发布或传播上述工具；</text>
+			<text class="fs14 mt12">(5) 未经我们书面许可，对本应用软件或其中包含的数据进行任何操作，包括但不限 于使用、租赁、借出、复制、修改、建立连结、重制、编辑、发布、出版，建立镜像点 或未经授权使用软件开发相关的衍生产品、作品、服务、插件、兼容或互连；</text>
+			<text class="fs14 mt12">(6) 以任何非法的方式、针对任何非法目的或与本协议下的许可使用方式不一致的任何方式，使用我们提供的本应用软件及其他服务。</text>
+			<text class="fs14 mt12">4.3 用户行为规范</text>
+			<text class="fs14 mt12">除非法律允许或取得我们的书面许可，您使用MOCO AI产品及服务过程中不得从事下列行 为：</text>
+			<text class="fs14 mt12">(1) 提交、发布虚假信息，或冒充、利用他人名义；</text>
+			<text class="fs14 mt12">(2) 诱导其他用户点击链接页面或分享信息；</text>
+			<text class="fs14 mt12">(3) 虚构事实、隐瞒真相以误导、欺骗他人；</text>
+			<text class="fs14 mt12">(4) 侵害他人名誉权、肖像权、知识产权、商业秘密等合法权益；</text>
+			<text class="fs14 mt12">(5) 未取得我们的书面许可，利用MOCO AI账号和任何功能，进行任何商业行为，例 如广告、销售商品；</text>
+			<text class="fs14 mt12">(6) 批量发布、传输或传播广告数据或垃圾邮件；</text>
+			<text class="fs14 mt12">(7) 利用MOCO AI账号或本软件及服务从事任何违法犯罪活动；</text>
+			<text class="fs14 mt12">(8) 制作、发布与以上行为相关的方法、工具，或对此类方法、工具进行运营或传播， 无论这些行为是否为商业目；</text>
+			<text class="fs14 mt12">(9) 从事违反法律法规规定，侵犯其他用户合法权益、干扰产品正常运营或我们未明 示授权的行为；</text>
+			<text class="fs14 mt12">(10) 将MOCO AI服务用于转售、竞品开发等商业目的；</text>
+			<text class="fs14 mt12">(11) 其他违反遵守法律法规、社会主义制度、国家利益、公民合法利益、公共秩序、 社会道德风尚和信息真实性等“七条底线”要求的行为。</text>
+			<text class="fs14 mt12">4.4 内容发布规范</text>
+			<text class="fs14 mt12">4.4.1 您不得通过MOCO AI制作、复制、出版、传播或存储违反国家法律和法规的以下任何 内容：</text>
+			<text class="fs14 mt12">(1) 破坏宪法所确定的基本原则的任何内容；</text>
+			<text class="fs14 mt12">(2) 危害国家安全、泄露国家秘密、颠覆国家政权、推翻社会主义制度、破坏国家统 一的任何内容；</text>
+			<text class="fs14 mt12">(3) 损害国家荣誉和利益的任何内容；</text>
+			<text class="fs14 mt12">(4) 宣扬恐怖主义、极端主义的任何内容；</text>
+			<text class="fs14 mt12">(5) 煽动民族仇恨、民族歧视，破坏民族团结的任何内容；</text>
+			<text class="fs14 mt12">(6) 破坏国家宗教政策，宣扬邪教或封建迷信的任何内容；</text>
+			<text class="fs14 mt12">(7) 散布谣言、虚假信息，扰乱社会秩序，或破坏社会稳定的任何内容；</text>
+			<text class="fs14 mt12">(8) 散布淫秽、色情、赌博、暴力、凶杀、恐怖或教唆犯罪的任何内容；</text>
+			<text class="fs14 mt12">(9) 危害网络安全、利用网络从事危害国家安全、荣誉和利益的任何内容；</text>
+			<text class="fs14 mt12">(10) 侵害未成年人合法权益或者损害未成年人身心健康的任何内容；</text>
+			<text class="fs14 mt12">(11) 侮辱或诽谤他人，对他人进行暴力恐吓、威胁，实施人肉搜索的，侵害他人合法 权利及权益的任何内容；</text>
+			<text class="fs14 mt12">(12) 煽动非法集会、结社、游行、示威或聚会破坏社会秩序的任何内容；</text>
+			<text class="fs14 mt12">(13) 关于以非法非政府组织名义进行活动的任何内容；</text>
+			<text class="fs14 mt12">(14) 侵犯他人的名誉权、肖像权、知识产权及商业秘密等合法权利的内容；</text>
+			<text class="fs14 mt12">(15) 含有法律、行政法规禁止的任何其他内容。</text>
+			<text class="fs14 mt12">
+				4.4.2 您不得利用深度学习、虚拟现实、生成式人工智能、增强现实、数字孪生等新技术新应用（以下统称 “新技术”），制作、上传、复制、传送、传播任何违反国家法律法规及监管要求的信息内容，包括但不限于虚假新闻信息、虚假事实陈述、谣言、欺诈信息、暴力恐怖内容、色情低俗内容、煽动破坏社会秩序的内容、侵犯国家利益或社会公共利益的内容等。
+				<text class="fs14 fw7">若您发布或传播的内容系利用前述新技术制作的信息（包括但不限于合成图像、合成音频、合成视频等，以下统称 “合成内容”），您应当在显著位置以清晰可辨的文字明确标识，确保其他用户在浏览时可第一时间知晓该内容的非真实性；您不得将任何合成内容谎称为真实信息或自然生成的真实内容，亦不得删除、篡改或掩盖系统自动生成的‘由AI生成’等显性标识。</text>
+			</text>
+			<text class="fs14 mt12">若您违反本条前述约定，我们有权根据违规情节的严重程度，采取以下一项或多项措施：</text>
+			<text class="fs14 mt12">(1) 通知您限期补充合成标识；</text>
+			<text class="fs14 mt12">(2) 对相关内容采取限流、隐藏、删除等措施；</text>
+			<text class="fs14 mt12">(3) 对您的账号采取警告、限制功能（包括但不限于发布、评论等）、暂停使用、永久封禁等措施；</text>
+			<text class="fs14 mt12">(4) 如您的行为已违反法律法规规定的，我们有权依法向相关主管部门报告，并配合调查处理；</text>
+			<text class="fs14 mt12">(5) 因您的违规行为给我们或第三方造成损失的，您应承担全部赔偿责任。</text>
+			<text class="fs14 mt12">4.5 活动参与规范</text>
+			<text class="fs14 mt12">4.5.1 我们可能会通过MOCO AI不定期开展各类活动，参与活动前，您应当进入相应活动页 面仔细阅读、充分理解活动规则。您参与活动的，视为您已充分阅读、理解该活动规则，并 自愿受活动规则的约束。阅读活动规则的过程中，如果您不理解或不同意其中的任何内容， 请停止参与相关活动。</text>
+			<text class="fs14 mt12">4.5.2 请您知悉，对于利用不正当手段参与活动的用户（指违反本协议或者活动规则中禁止 性规定的活动参与者），风控系统将会自动甄别并剔除。您同意，我们有权根据自身平台的 大数据分析能力、技术识别能力独立判断相关行为是否违规，并对利用不正当手段参与活动 的用户取消其活动参与资格、评奖资格及获奖资格，对利用不正当手段获利的结果不予认可， 同时有权追回已经发放的奖励。</text>
+			<text class="fs14 mt12">4.6 对自己行为负责</text>
+			<text class="fs14 mt12">
+				4.6.1 <text class="fs14 fw7">您理解并同意，您应为自己注册账号下的行为负责，包括您所发表任何内容、评论、 搜索等行为，以及由此产生的任何后果。您应对MOCO AI中的内容自行加以判断，并承担 因使用内容而引起的所有风险，包括因对内容的合法性，正确性、完整性或实用性的依赖 而产生的风险。我们无法且不会对因前述风险而导致的损失或损害承担责任。</text>
+			</text>
+			<text class="fs14 mt12">4.6.2 我们尊重并保护您及他人的知识产权、名誉权、姓名权、隐私权等合法权益。您承诺，在使用MOCO AI产品及相关服务时，您上传的文字、图片等不存在侵犯任何第三方的知识产权、名誉权、姓名权、隐私权等权利及合法权益的情形。否则，我们有权在收到权利方或相关方通知的情况下移除涉嫌侵权内容。针对第三方提出的全部权利主张，您应自行处理并承担可能因此产生的全部法律责任；如因您的侵权行为导致我们和/或我们的关联方遭受损失的（包括但不限于经济、商誉等损失），您还应赔偿我们和/或我们关联方遭受的全部损失。</text>
+			<text class="fs14 mt12">4.7 可能采取的违规处置措施</text>
+			<text class="fs14 mt12 fw7">您明白并同意，如您涉嫌违反第4.2-4.6条规范，我们将可能采取下述处置措施：</text>
+			<text class="fs14 mt12 fw7">(1) 我们将暂停或终止向您提供MOCO AI的部分或全部产品及服务，或根据本协议采取 其他限制措施；</text>
+			<text class="fs14 mt12 fw7">(2) 我们将直接删除您发布的任何涉嫌非法或侵犯他人合法权利或违反本协议的信息；</text>
+			<text class="fs14 mt12 fw7">(3) 您须因您违反相关规范产生的法律后果自行承担责任，且应当就违反有关法律法规或 违反本协议而导致我们产生或蒙受的任何及所有损失、第三方索赔、行政处罚、损害及/或 费用（包括合理的律师费、调查及证据收集费用）提供弥偿，并使我们免受损失。</text>
+			<text class="fs16 fw7 mt12">五 AI相关功能</text>
+			<text class="fs14 mt12">5.1 MOCO AI中的AI助手功能是我们依托于大模型技术，向用户提供的人工智能服务。AI相关功能旨在为用户群体提供全面且高效的AI问答等服务，满足用户快速获取所需信息和服务以及娱乐需求，完成包括智能聊天、文本生成和总结等任务，构建自然的人机交互，打造空间计算时代的个人智能中枢，提升信息处理效率。该功能将会基于用户的输入内容和信息（以下简称“输入内容”），输出相应的内容（以下简称“输出内容”）作为响应。</text>
+			<text class="fs14 mt12">
+				5.2 生成式AI相关服务主要面向以下目标用户群体提供：城市通勤族（用于获取实时通勤信息）、老年用户（通过语音交互简化操作）、旅游爱好者（提供跨语言沟通与导览服务）以及健身人群（提供个性化健康管理）等群体。
+				<text class="fs14 fw7">您理解并承诺，AI相关功能授权用户均是已满十八周岁，并具备完全民事行为能力的自然人。如果您未满十八周岁或存在其他不具备与用户行为相适应的民事行为能力的情形，请勿使用AI相关功能。</text>
+			</text>
+			<text class="fs14 mt12">5.3 AI相关功能是为您个人学习及日常生活等目的提供。在未经我们允许的情况下，您不得将AI相关功能及输出内容用于商业用途。</text>
+			<text class="fs14 mt12">5.4 AI助手功能将会收集和分析用户的输入内容和输出内容，以提高识别和响应能力，改进 AI助手回答的准确性。用户可对输出内容进行点评，以向我们反馈您对AI助手输出内容的 满意度和意见。</text>
+			<text class="fs14 mt12">
+				5.5 <text class="fs14 fw7">您知悉并理解，依据本协议，我们授予您一项个人的、可撤销的、不可转让的、非独占 地合法使用AI助手功能的权利。本协议未明示授权的其他一切权利仍由我们保留，您在行 使该些权利前须另行获得我们的书面许可。同时，如我们未行使前述任何权利，并不构成对该权利的放弃。</text>
+			</text>
+			<text class="fs14 mt12">5.6 为履行法律法规的相关合规要求，我们有权采取技术手段或人工手段对用户使用AI助 手功能的行为及信息进行审查，包括但不限于对输入内容和输出内容进行审查、建立风险过 滤机制、建立违法内容特征库等。对于违规用户，我们有权进行采取处置措施，包括限制用 户使用AI助手功能、注销该用户账号等。</text>
+			<text class="fs14 mt12">5.7 您在使用AI助手功能时应积极承担信息安全义务。您承诺不对AI助手功能采取违法违 规行为，包括但不限于：通过输入，诱导生成违反相关法律法规的输出；通过输入，诱导生 成不友善对话的输出；通过输入，恶意对抗AI助手功能的过滤机制；其他违反法律法规规 定、侵犯他人以及MOCO合法权益的行为，例如实施垄断或不正当竞争行为等。</text>
+			<text class="fs14 mt12">
+				5.8 <text class="fs14 fw7">您使用AI相关功能时不应超出服务约定范围输入您或他人的任何个人信息、隐私信息或您负有保密义务的信息，对于您执意输入上述信息引发的任何法律后果或风险，我们不承担任何责任。</text>
+			</text>
+			<text class="fs14 mt12">
+				5.9 <text class="fs14 fw7">受限于现有技术水平，我们仅依现状提供本服务，输出内容亦可能会出现事实、观点、价值等方面的瑕疵，我们对此不承担任何法律责任。我们将持续改善AI水平以提升输出内容的准确性、完整性、时效性、可用性。</text>
+			</text>
+			<text class="fs14 mt12">
+				5.10 <text class="fs14 fw7">AI相关功能输出内容仅供参考，仅为您在进行决策时提供辅助。您应对输出内容自行加以客观、审慎地判断和验证。您根据输出内容所作出的任何判断或者据此作出的后续相关操作行为所带来的后果和责任（包括但不限于因您对输出内容的真实性、准确性、可靠性的判断等产生的风险）均由您自行承担。</text>
+			</text>
+			<text class="fs14 mt12">
+				5.11 我们会根据法律法规的要求，对本应用软件通过人工智能技术生成、合成的文本等内容（以下简称“AI生成内容”）添加人工智能生成标识（以下简称“AI标识”），具体包括：在交互式对话场景界面展示有 
+				<text class="fs14 fw7">“内容由AI生成”</text>
+				字样的显示文字提示。您应知悉并遵守AI标识相关法律法规的管理要求，
+				<text class="fs14 fw7">不得利用</text>
+				生成式人工智能等新技术新应用，制作、发布、传播虚假、不实、侵权或其他违反法律法规的信息；您发布或传播利用该等新技术新应用生成的信息时，应采用显著方式予以标识或提示。
+				<text class="fs14 fw7">您不得通过删除、篡改、伪造或其他令人误导的方式，修改我们为AI生成内容添加的AI标识。</text>
+			</text>
+			<text class="fs14 mt12">5.12 若MOCO认为您利用生成式AI相关服务从事违法活动或可能违反上述约定的，我们有权独立进行判断并有权在不事先通知您的情形下，自行采取处置措施，处置措施包括但不限于警示、限制功能、暂停或者终止向你提供服务，并追究相关法律责任。</text>
+			<text class="fs14 mt12">5.13 如您发现MOCO AI生成式AI相关服务存在任何侵犯您或第三方权利的内容或您对MOCO AI生成式AI相关服务的使用存在任何问题，您可通过本用户服务协议第13.4条载明的联系方式联系我们，并提供相关的证明材料，我们将在验证您的身份及事由后依法及时处理您的联系。</text>
+			<text class="fs16 fw7 mt12">六 用户个人信息与隐私保护</text>
+			<text class="fs14 mt12">6.1 我们非常重视对用户个人信息的保护。我们将按照《MOCO AI隐私政策》规定的内容处 理和保护您的个人信息。《MOCO AI隐私政策》亦为本协议不可分割的一部分。</text>
+			<text class="fs14 mt12">6.2 我们非常重视对未成年人信息的保护。若您是18周岁以下的未成年人，在使用MOCO AI平台前，请在监护人的陪同、指导下共同仔细阅读并充分理解本协议与 《MOCO AI隐私政策》， 并在征得您监护人同意的前提下使用MOCO AI或向我们提供信息。如您违反法律法规、协议内容，则您及您的监护人应依照法律规定承担因此而导致的一切后果。</text>
+			<text class="fs16 fw7 mt12">七 免责声明</text>
+			<text class="fs14 mt12">7.1 您必须自行购买MOCO AI接入互联网所需装置（如手机、个人电脑及其他与接入互联 网或移动网有关的装置），以及通过移动终端装置使用电讯增值服务，并承担个人移动终端 装置连接互联网产生或第三方（包括但不限于电讯与移动通信运营商）收取的通讯费用、 数据费用和相关开支。如需任何电讯增值服务，建议您与电讯增值服务运营商确认费用。</text>
+			<text class="fs14 mt12">
+				7.2 <text class="fs14 fw7">您理解并同意，在使用MOCO AI产品及服务的过程中，可能会遇到不可抗力等风险因 素，使服务发生中断、延迟。不可抗力是指不能预见、不能克服并不能避免且对一方或双 方造成重大影响的客观事件，包括但不限于自然灾害（如洪水、台风、地震等）、社会事件 （如战争、暴动、政府行为）、黑客攻击等。出现上述情况时，我们会努力对产品和服务进 行修复，但由此给您造成的损失，我们在法律允许的范围内免责。</text>
+			</text>
+			<text class="fs14 mt12">
+				7.3 <text class="fs14 fw7">我们无需对您因第三方原因（例如通信网络故障、技术问题、网络或移动终端装置故障、 系统失灵及其他各种不可抗力因素）遭受的任何损失承担责任。</text>
+			</text>
+			<text class="fs14 mt12">7.4 本产品与多数其他互联网软件一样，或会受到部分因素影响，包括但不限于用户原因、 网络服务素质、社会环境差异等，亦可能遭到与各种安全问题相关的困扰，例如他人使用用 户数据，导致对现实生活造成滋扰；用户下载或者安装的其他软件，或者用户浏览的其他网 站带有木马程序及其他病毒，危及用户终端装置数据和数据安全，从而影响该产品的正常使 用。用户应加强信息安全与用户数据保护意识，注意加强密码保护，以避免损失及滋扰</text>
+			<text class="fs14 mt12">
+				7.5 我们将尽力确保MOCO AI产品及服务和相关技术与信息安全、有效、准确及可靠。您知悉，
+				<text class="fs14 fw7">我们仅依现有技术水平提供产品和服务，我们对MOCO AI产品及服务不做任何明示 或暗示的担保，包括但不限于对所有权、非侵犯性、特定用途的适用性、可用性、准确性、 可靠性或所提供内容的担保。</text>
+			</text>
+			<text class="fs14 mt12">，
+				7.6 <text class="fs14 fw7">对于因下述原因导致或与其相关的利润损失、数据遗失、经营中断或其他商业损害。相关情形包括但不限于：</text>
+			</text>
+			<text class="fs14 fw7 mt12">(1) 使用未经我们授权许可的软件；</text>
+			<text class="fs14 fw7 mt12">(2) 第三方未经授权使用MOCO AI产品及服务，或修改用户数据；</text>
+			<text class="fs14 fw7 mt12">(3) 您在使用MOCO AI产品及服务期间产生的费用和损失；</text>
+			<text class="fs14 fw7 mt12">(4) 您误解MOCO AI产品及服务；</text>
+			<text class="fs14 fw7 mt12">(5) 非我们原因导致的与MOCO AI产品及服务相关的其他损失。</text>
+			<text class="fs14 mt12">7.7 倘若因您自身行为或其他第三方行为，导致任何人身伤亡或财产损失，我们不承担任何责任，由此产生的一切责任，由过错方（包括用户自身或有过错的第三方）承担。</text>
+			<text class="fs14 mt12">
+				7.8 MOCO AI产品和服务中提供了支持第三方系统或软件供用户使用的功能模块。当您使用 相关产品和服务时，或要求我们提供特定服务时，我们可能会使用第三方系统或软件以支持 您的需求。您在使用该第三方系统或软件时，应遵守本协议及第三方系统或软件的协议、条 款或规则。
+				<text class="fs14 fw7">您与第三方开发者之间的权利义务，参照相关协议、条款或规则执行。您在使用 第三方系统或软件时，须了解并同意</text>
+			</text>
+			<text class="fs14 mt12 fw7">(1) 您使用第三方系统或软件时，第三方开发者将根据您的授权获得您的个人信息。这些信息由您自行决定是否授权给第三方开发者。您必须明确：</text>
+			<text class="fs14 mt12 fw7">a) 您向第三方开发者授权获得您个人信息的行为，可能发生信息泄露的风险；</text>
+			<text class="fs14 mt12 fw7">b) 您在使用第三方系统或软件时，除遵守本协议及MOCO AI其他相关规则，还应遵守第三方开发者的协议与规则；</text>
+			<text class="fs14 mt12 fw7">c) 我们不保证通过支持第三方系统或软件所取得结果的安全性、准确性及有效性，亦不保证任何其他不确定性风险。如因第三方系统或软件产生的争议、纠纷、损失或损害，由您自行与第三方开发者解决，相关责任和赔偿由第三方开发者单独承担，我们对此不承担责任。</text>
+			<text class="fs14 mt12 fw7">(2) 我们引入第三方系统或软件的目的在于丰富MOCO AI功能与服务，从而给您创造更 好的用户体验。但因第三方系统或软件出现的瑕疵或错误而产生的责任，由第三方开发者 自行承担，我们不承担任何责任。</text>
+			<text class="fs14 mt12 fw7">(3) 我们有权在不通知您的情况下，停止使用第三方的系统或软件，由此给您带来的影响、 损失，我们将不承担责任，由您自行承担或与第三方开发者协商，但我们将尽力保障您的权 益不受侵犯。</text>
+			<text class="fs16 fw7 mt12">八 知识产权</text>
+			<text class="fs14 mt12">8.1 我们在本应用软件中提供的内容（包括但不限于软件、技术、程序、网页、文字、图片、 图表、版面设计、电子文档等）的知识产权属于我们所有。我们提供MOCO AI产品及服务 时所依托的软件的著作权、商标权、专利权、商业秘密及其他知识产权均归我们所有。</text>
+			<text class="fs14 mt12">8.2 版权、商标、专利、商业秘密等与MOCO AI产品及服务相关的所有知识产权与著作权， 以及与MOCO AI产品及服务或我们相关的所有信息（包括但不限于文字、图像、音频、视 频、图形、接口设计、配置、数据或电子文件等）均受知识产权相关法律的保护。</text>
+			<text class="fs14 mt12">8.3 我们并未因为本协议或者因为向您提供MOCO AI产品及服务而授予您任何与我们相关的 知识产权。本协议未明确授予您的权利均由我们保留。未经我们事先书面同意，您不得出于 任何商业或非商业目的，擅自向任何第三方授权使用或转让任何上述知识产权。我们保留就 该等行为追究法律责任的权利。</text>
+			<text class="fs14 mt12">8.4 您使用本应用软件的AI功能时，可向该AI功能提交文本、音频或其他形式的内容及信息（以下统称 “输入内容”），并接收针对该输入内容生成的响应内容（以下简称 “输出内容”）。在您与我们之间，于适用法律允许的范围内，您提供的输入内容，其知识产权归属于您或依法享有该等知识产权的合法权利人；我们不对输出内容主张所有权。若输入内容和/或输出内容本身包含MOCO依法享有知识产权或其他合法权益的内容，则该部分内容对应的权利仍归我们所有，不因被包含于输入内容或输出内容中而改变其权属。</text>
+			<text class="fs14 mt12">
+				8.5 <text class="fs14 fw7">您理解并同意授予我们一项免费的、全球范围内的、可转让的、可分许可及再许可的使用权，授权我们在法律允许的范围内，在经安全加密技术处理、严格去标识化且无法重新识别特定个人的前提下可能使用您的输入内容和输出内容用于模型训练及优化、品牌推广与宣传等目的。</text>
+			</text>
+			<text class="fs14 mt12">8.6 我们为MOCO AI应用服务开发、运营提供技术支持，并对MOCO AI应用的开发和运营等过程中产生的所有数据和信息等享有全部权利。</text>
+			<text class="fs14 mt12">8.7 您不得在未经我们单独书面授权的情形下使用我们的任何商标、服务标记商号、域名、网站名称或其他显著品牌特征等（以下统称为“标识”）。未经我们事先书面同意，您不得将本条款前述标识以单独或结合等任何方式展示、使用，或实施其他处理该些标识的行为。由于您违反本协议使用相关商标、标识等给我们或他人造成损失的，由您承担全部法律责任。</text>
+			<text class="fs14 mt12">8.8 您应尊重并保护知识产权，否则您将承担由此引发的一切法律后果，同时我们也将追究相关方的法律责任。本条款所称“知识产权相关法律”包括但不限于国际版权公约、《中华人民共和国著作权法》《中华人民共和国专利法》《中华人民共和国商标法》以及其他适用的知识产权相关法律法规。</text>
+			<text class="fs14 mt12">8.9 我们高度重视和尊重您和他人的知识产权。如您在使用MOCO AI产品及服务过程中发现侵犯您及他人知识产权的情形，您可发邮件至邮箱support@mocoviso.com并向我们提供相应的证据材料，我们会在核实后采取处置措施。</text>
+			<text class="fs16 fw7 mt12">九 协议修订</text>
+			<text class="fs14 mt12">9.1 我们保留修改本协议的权利。本协议的条款如有更新，将于我们官网或本应用相关页面 上公布，自发布之日起生效。您可重新下载安装软件，或检视本协议的最新版本。本协议修 改后，如果您不接受修改后的条款，请立即停止使用由我们提供的MOCO AI产品及服务； 您继续使用我们提供的MOCO AI产品及服务将被视为接受本协议的修订条款。</text>
+			<text class="fs14 mt12">9.2 我们及合作方有权根据商业判断，不时修改或调整所提供的付费服务、收费标准、收费模式、服务费用或服务条款。在提供服务过程中，我们可能开始向用户收取目前或未来的某些费用。任何费用变更情况将提前15天通过应用内公告向用户进行告知。若您拒绝支付该等费用，将无法在开始计费之后继续使用相关服务。</text>
+			<text class="fs16 fw7 mt12">十 协议终止</text>
+			<text class="fs14 mt12">10.1 终止的情形</text>
+			<text class="fs14 mt12">10.1.1 您有权通过以下任一方式终止本协议：</text>
+			<text class="fs14 mt12">(1) 在满足MOCO AI平台公示的账户注销条件时您注销您的账户；</text>
+			<text class="fs14 mt12">(2) 变更事项生效前您停止使用并明示不愿接受变更事项的；</text>
+			<text class="fs14 mt12">(3) 您明示不愿继续使用MOCO AI产品及服务，且符合MOCO AI平台终止条件的。</text>
+			<text class="fs14 mt12">10.1.2 出现以下情况时，我们可依本协议约定通知您终止本协议：</text>
+			<text class="fs14 mt12">(1) 您违反本协议约定，我们依据本协议条款终止本协议的；</text>
+			<text class="fs14 mt12">(2) 您盗用他人账户、发布违禁信息、骗取他人财物、扰乱市场秩序、采取不正当手段牟 利等行为，我们对您的账户予以关闭的；</text>
+			<text class="fs14 mt12">(3) 除上述情形外，因您多次违反本协议相关规定且情节严重的；</text>
+			<text class="fs14 mt12">(4) 其他应当终止服务的情况。</text>
+			<text class="fs14 mt12">10.2 协议终止后的处理</text>
+			<text class="fs14 mt12">本协议终止后，我们仍享有下列权利：</text>
+			<text class="fs14 mt12">(1) 依照法律规定保留平台应当留存的相关信息；</text>
+			<text class="fs14 mt12">(2) 对于您过往的违约行为，我们仍可依据本协议向您追究违约责任；</text>
+			<text class="fs14 mt12">(3) 本协议终止后，对于您在本协议存续期间产生的交易订单，我们可自行决定是否关闭 该等交易订单；如要求继续履行的，则您应当就该等交易订单继续履行本协议及交易订单的 约定，并承担因此产生的任何损失或增加的任何费用。</text>
+			<text class="fs16 fw7 mt12">十一 法律适用与争议解决</text>
+			<text class="fs14 mt12">11.1 本条款适用中华人民共和国的法律（不包括港澳台），并且排除一切冲突法规定的适用。</text>
+			<text class="fs14 mt12">11.2 本条款项下的知识产权条款、法律适用及争议解决条款等内容不因本协议的终止而失 效。</text>
+			<text class="fs14 mt12">
+				11.3 <text class="fs14 fw7">如双方就本协议内容或其执行发生任何争议，双方应尽量友好协商解决；协商不成时， 任何一方均可向上海市闵行区人民法院提起诉讼。</text>
+			</text>
+			<text class="fs16 fw7 mt12">十二 通知送达</text>
+			<text class="fs14 mt12">12.1 有效地址。您在MOCO AI账号资料中填写的联系电话、电子邮箱地址、联系地址视为 您的有效通知地址。若上述信息发生变更您应当及时进行更新，如果因您提供的联系方式不 准确，或不及时告知变更后的联系方式，使相关通知（包括但不限于协议变更、法律文书等） 无法送达或未及时送达，由您自行承担可能产生的法律后果。</text>
+			<text class="fs14 mt12">12.2 通知送达。我们通过上述联系方式向您发出通知，其中以电子的方式发出的书面通知， 包括但不限于向您提供的联系电话发送手机短信，向您提供的电子邮箱发送电子邮件，向您 的用户账户发送系统消息以及站内信信息，在发送成功后即视为送达；以纸质载体发出的书 面通知，按照提供联系地址交邮后的第五个自然日即视为送达。</text>
+			<text class="fs14 mt12">12.3 法律文书的送达。对于与我们有关的任何纠纷，您同意行政、公安、司法等有权机关 可以通过手机短信、电子邮件、系统消息或站内信等方式向您送达法律文书，有权机关向上 述联系方式发出法律文书即视为送达；若同时采取以上多种方式向您送达法律文书，送达时 间以最先送达的为准。您同意上述送达方式适用于行政、仲裁、司法等法定程序的全过程。</text>
+			<text class="fs16 fw7 mt12">十三 其他事项</text>
+			<text class="fs14 mt12">13.1 在您使用MOCO AI产品及服务过程中，如部分功能存在独立协议或特定商业条款等（以 下合称“独立协议”），您在使用这些功能前，需仔细阅读并同意相关独立协议。</text>
+			<text class="fs14 mt12">13.2 本协议所有条款标题仅为方便参考而设，在解释本协议时应予以忽略。</text>
+			<text class="fs14 mt12">13.3 若本协议的任何条款无效或因任何原因变得无效或不可强制执行，则本协议其他条款 依然具有完全效力，并对本协议双方具有约束力。</text>
+			<text class="fs14 mt12">13.4 如您对本协议有任何问题、意见或建议，您可通过发送邮件至邮箱support@mocoviso.com联系我们。</text>
+			<text class="fs14 mt12"></text>
+		</scroll-view>
+	</view>
+	<view class="app" v-else>
+		<app-title txt="User Service Agreement"></app-title>
+		<scroll-view  scroll-y="true" class="content">
+			<text class="fs14 mt12">Last Updated: May 01, 2026</text>
+			<text class="fs14 mt12">Effective Date: May 01, 2026</text>
+			<text class="fs14 mt12">Welcome to MOCO AI Products and Services!</text>
+			<text class="fs18 mt20 fw7 ta">MOCO AI User Service Agreement</text>
+			<text class="fs14 mt12">
+				The MOCO AI User Service Agreement (hereinafter referred to as "this Agreement") is an agreement entered into by and between you (hereinafter referred to as "User" or "you") and Shanghai Chamsion Intelligent Technology Co., Ltd. and its affiliates (hereinafter referred to as "we", "us", "our", "MOCO") regarding your registration and use of the "MOCO AI" application (hereinafter referred to as "MOCO AI" or "this Software"). Please be sure to carefully read and fully understand all the terms in this Agreement and the MOCO AI Privacy Policy, 
+				<text class="fw7 fs14">especially the clauses involving the exemption or limitation of our liability, clauses restricting your rights, and the governing law and dispute resolution clauses. Restrictions, disclaimers, or other clauses involving your significant rights and interests are highlighted in bold to draw your special attention.</text>
+			</text>
+			<text class="fw7 fs14 mt12">By using MOCO AI Products and Services, you confirm that you are an adult aged 18 or older and possess full legal capacity for civil rights and conduct to fulfill this Agreement; otherwise, you shall not use MOCO AI Products and Services.</text>
+			<text class="fw7 fs14 mt12">If you do not agree to this Agreement or any of its terms, you should immediately stop using MOCO AI Products and Services. By clicking "Register" or "Log In" on MOCO AI, checking the box to agree to this Agreement, or accepting this Agreement by any other express or implied means, you are deemed to have read and agreed to be bound by the terms of this Agreement. This Agreement shall immediately take legal effect between you and us, becoming a legally binding document for both parties.</text>
+			<text class="fw7 fs16 mt12">I. Definitions and Scope of Agreement</text>
+			<text class="fs14 mt12">1.1 Definitions</text>
+			<text class="fs14 mt12">1.1.1 MOCO AI or this Software: The application developed by us to provide auxiliary functional services for smart glasses.</text>
+			<text class="fs14 mt12">1.1.2 User: The user of MOCO AI, also referred to as "you" in this Agreement.。</text>
+			<text class="fs14 mt12">1.1.3 MOCO AI Products and Services: Various products and services provided by us to users through MOCO AI, including but not limited to the AI Assistant (AI chat services based on text, voice, images, and videos), Media Recording (glasses photo/video/audio recording), Bluetooth Services (answering calls, music playback, message notifications, etc.), as well as future features that may be introduced and incorporated into MOCO AI services. The specific products and services are subject to the relevant MOCO AI product descriptions and the app's service pages. MOCO AI provides services and features to users via mobile phones and smart glasses.</text>
+			<text class="fs14 mt12">1.2 Scope of Agreement</text>
+			<text class="fs14 mt12">
+				This Agreement is the agreement reached between you and us regarding the downloading, installation, logging in, and use of MOCO AI. It includes the main text of this Agreement, the
+				<text class="fw7 fs14"> MOCO AI Privacy Policy, and various rules, guidelines, and notices that we have already published or may publish/update in the future regarding MOCO AI Products and Services, which are notified to you through reasonable means.</text>
+				All the aforementioned rules are an inseparable part of this Agreement and possess equal legal effect. Please be sure to carefully read and fully understand the contents of all rule documents. If you have any questions, you can send an email to support@mocoviso.com, and we will explain or handle them in accordance with relevant laws, regulations, and platform management rules.
+			</text>
+			<text class="fs16 fw7 mt12">II. Account Management</text>
+			<text class="fs14 mt12">2.1 Account Registration</text>
+			<text class="fs14 mt12">
+				2.1.1
+				<text class="fs14 fw7">You confirm that when you complete the registration process or actually use the products and services of MOCO AI in other ways permitted by us, you must be a natural person with full capacity for civil rights and conduct. If you do not possess the aforementioned qualifications, you and your guardian shall bear all consequences resulting therefrom, and we have the right to cancel or permanently freeze your account and reserve the right to seek compensation from you or your guardian.</text>
+			</text>
+			<text class="fs14 mt12">
+				2.1.2 MOCO AI provides you with registration and login channels. You may follow the page prompts to fill in information (phone number, password, etc.), read and agree to the relevant agreements, and upon completing the full registration process, become a MOCO AI user. You may also need to provide your real identity information in accordance with applicable laws and regulations (if any); otherwise, you may not be able to use certain products or services of MOCO AI. 
+				<text class="fs14 fw7">You understand and agree that you are obligated to ensure that the information you provide to us is truthful, lawful, valid, accurate, and complete.</text>
+			</text>
+			<text class="fs14 mt12">2.1.3 You shall not register MOCO AI accounts with malicious intent, including but not limited to frequent registration, bulk registration, registering with another person's identity, or registering accounts for purposes other than the normal use of MOCO AI Products and Services. Violators will bear the corresponding legal liabilities or face disciplinary measures imposed by us.</text>
+			<text class="fs14 mt12">2.2 Account Use</text>
+			<text class="fs14 mt12">
+				2.2.1 The ownership and related rights and interests of the MOCO AI account you register belong to MOCO. After completing the registration process, you only hold the right to use the account. 
+				<text class="fs14 fw7"> Your account is strictly for your personal use. Without the written consent of MOCO, you are prohibited from giving, borrowing, renting, transferring, selling, or otherwise permitting others to use the account. If we discover or have reasonable grounds to believe that the user is not the initial registrant of the account, we have the right to suspend or terminate services to that account, and we reserve the right to close the account without assuming any liability to the user who registered it.</text>
+			</text>
+			<text class="fs14 mt12">
+				2.2.2 We specifically remind you to properly protect your account and password and never disclose them to others. 
+				<text class="fs14 fw7">You must be solely responsible for maintaining the confidentiality of your account and password and take full responsibility for all activities occurring under your account and password (including but not limited to information disclosure, posting content, clicking "agree" online, or submitting various rules and agreements). </text>
+				We will not be responsible for any loss caused by your failure to comply with this clause. If you discover any unauthorized use of your account and password, you must notify us immediately. 
+				<text class="fs14 fw7">You understand and agree that we require a reasonable amount of time to take action based on your request, and we bear no responsibility for any adverse consequences that arise prior to such action being taken. You shall bear full responsibility for account theft or loss caused by malicious attacks by others, your own reasons, or other force majeure factors, and we shall not bear any responsibility.</text>
+			</text>
+			<text class="fs14 mt12">2.2.3 You understand and promise that the MOCO AI account information you set up shall not violate national laws, regulations, policies, and relevant MOCO AI service rules. Your account information, such as nickname, avatar, and personal profile, shall not contain illegal or inappropriate information, nor shall you use the name of another person without permission (including but not limited to impersonating names, company names, trademarks, trade names, portraits, avatars, or other uniquely identifiable elements or confusing methods) to set up your account.</text>
+			<text class="fs14 mt12">
+				2.2.4
+				<text class="fs14 fw7"> If the MOCO AI account information you set is suspected of violating national laws, regulations, policies, or relevant platform service rules, we have the right to terminate providing partial or all MOCO AI services to you. We shall not bear any responsibility for this, and you shall bear any direct or indirect losses and adverse consequences resulting therefrom.</text>
+			</text>
+			<text class="fs14 mt12">2.3 Account Deletion</text>
+			<text class="fs14 mt12">
+				You may apply to delete your MOCO AI account by following the prompts on the relevant MOCO AI pages, but you shall still bear the corresponding responsibilities for your actions prior to account deletion or during your use of MOCO AI Products and Services. 
+				<text class="fs14 fw7"> Once deletion is successful, unless otherwise stipulated by laws and regulations, we will no longer provide you with the recovery of account records, content, virtual assets, or services. Please proceed with caution.</text>
+			</text>
+			<text class="fs16 fw7 mt12">III. Software License and Use</text>
+			<text class="fs14 mt12">3.1 Scope of Software License</text>
+			<text class="fs14 mt12">
+				3.1.1 
+				<text class="fs14 fw7">While using MOCO AI Products and Services, you will need to download this Software. For this purpose, we grant you a personal, revocable, non-transferable, and non-exclusive license. You may only use the related software for the purpose of accessing or using our products and services, and you have no right to sublicense it.</text>
+			</text>
+			<text class="fs14 mt12">
+				3.1.2
+				<text class="fs14 fw7">All other rights not expressly granted in this Agreement remain reserved by us, and you must obtain our separate written consent before exercising these reserved rights. Our failure to exercise any reserved right shall not constitute a waiver of that right.</text>
+			</text>
+			<text class="fs14 mt12">3.2 Acquiring the Software</text>
+			<text class="fs14 mt12">You should download and install this Software from channels designated by us. Please beware not to download software from unspecified websites to prevent installing malware that may cause you losses or other adverse consequences. We cannot guarantee that such software will function properly, and we bear no responsibility for any losses or adverse consequences caused to you as a result.</text>
+			<text class="fs14 mt12">3.3 Software Installation</text>
+			<text class="fs14 mt12">
+				You must select the MOCO AI software version that matches your terminal device; otherwise, you may face restricted or unavailable services. 
+				<text class="fs14 fw7">Any software issues, device issues, or damages resulting from a mismatch between the software version and the device model shall be borne by you.</text>
+			</text>
+			<text class="fs14 mt12">3.4 Software License Updates</text>
+			<text class="fs14 mt12">To provide users with a better experience and service, we reserve the right to irregularly update, adjust, or optimize this Software and related services. We will notify you of the update content in a manner receivable by you after each update. You have the right to choose whether to accept the updated version of the software. If you do not accept the update, some products or services in the older version may become unavailable. To ensure your usage experience, we recommend you promptly update to the latest version.</text>
+			<text class="fs14 mt12">3.5 Use of the Software</text>
+			<text class="fs14 mt12">3.5.1 To use the MOCO AI software or related products and services, you must purchase the corresponding smart devices from our authorized official channels, including but not limited to smart glasses and other smart device products we may launch in future business. These smart devices may need to be registered or bound and connected to MOCO AI before their specific functions can function properly. Please carefully read the smart device functions listed on the product packaging or product pages before purchasing.</text>
+			<text class="fs14 mt12">3.5.2 When using MOCO AI Products and Services, photos, videos, and audio recordings are stored by default on the glasses. We provide the ability to sync the aforementioned data to the mobile app's media library, but users must back them up to local storage themselves. Teleprompter text is retained permanently until actively deleted by the user. After an account is deleted, all data will be permanently deleted and cannot be recovered.</text>
+			<text class="fs16 fw7 mt12">IV. User Rights and Obligations</text>
+			<text class="fs14 mt12">4.1 Subject to compliance with laws, regulations, this Agreement, and relevant service rules, the User enjoys the following rights: 1) Right of Use: Download, install, and use the relevant functions of MOCO AI; 2) Information Management Right: Modify or delete personal profile information and local media files.</text>
+			<text class="fs14 mt12">4.2 Software Code of Conduct</text>
+			<text class="fs14 mt12">When using MOCO AI Products and Services, you must abide by laws, regulations, this Agreement, and related service rules. You promise not to engage in the following behaviors regarding this Software and MOCO AI Products and Services:</text>
+			<text class="fs14 mt12">(1) Deleting any copyright information on the MOCO AI software, products, and services, or modifying, deleting, or circumventing technical measures adopted to protect intellectual property rights;</text>
+			<text class="fs14 mt12">(2) Reverse engineering this Software, including but not limited to cracking, decompiling, or attempting to derive the software's source code;</text>
+			<text class="fs14 mt12">(3) Using this Software to engage in any activity harmful to network security, including but not limited to: using unauthorized data or accessing unauthorized servers/accounts; accessing public networks or other operating systems without authorization and deleting, modifying, or adding stored data; attempting to probe, scan, or test the vulnerabilities of the software system or network without authorization or committing other acts that undermine network security; attempting to interfere with or disrupt the normal operation of the software system or website, deliberately spreading malware or viruses, or carrying out other acts that disrupt or interfere with normal network information services; forging the name or parts of TCP/IP packets;</text>
+			<text class="fs14 mt12">(4) Logging into or using this Software and services, or creating, publishing, or distributing such tools through third-party compatible software or systems not developed, authorized, or approved by us;</text>
+			<text class="fs14 mt12">(5) Without our written consent, performing any operations on this Software or the data contained therein, including but not limited to using, renting, lending, copying, modifying, linking, reproducing, compiling, publishing, issuing, creating mirror sites, or unauthorized use for developing software derivative products, works, services, plugins, compatibility, or interconnection;</text>
+			<text class="fs14 mt12">(6) Using the Software and other services provided by us in any illegal manner, for any illegal purpose, or in any manner inconsistent with the permitted use under this Agreement.</text>
+			<text class="fs14 mt12">4.3 User Conduct Rules</text>
+			<text class="fs14 mt12">Unless permitted by law or with our written consent, you shall not engage in the following behaviors while using MOCO AI Products and Services:</text>
+			<text class="fs14 mt12">(1) Submitting or publishing false information, or impersonating or using another person's name;</text>
+			<text class="fs14 mt12">(2) Inducing other users to click on linked pages or share information;</text>
+			<text class="fs14 mt12">(3) Fabricating facts or concealing the truth to mislead or deceive others;</text>
+			<text class="fs14 mt12">(4) Infringing upon the lawful rights and interests of others, such as reputation rights, portrait rights, intellectual property rights, trade secrets, etc.;</text>
+			<text class="fs14 mt12">(5) Utilizing the MOCO AI account and any of its functions to engage in any commercial activity, such as advertising or selling goods, without our written consent;</text>
+			<text class="fs14 mt12">(6) Bulk posting, transmitting, or disseminating advertising data or spam emails;</text>
+			<text class="fs14 mt12">(7) Using the MOCO AI account or this Software and services to engage in any illegal or criminal activities;</text>
+			<text class="fs14 mt12">(8) Creating or publishing methods or tools related to the above behaviors, or operating or disseminating such methods or tools, regardless of whether these actions are for commercial purposes;</text>
+			<text class="fs14 mt12">(9) Engaging in behaviors that violate laws and regulations, infringe on the legitimate rights and interests of other users, interfere with the normal operation of the product, or have not been explicitly authorized by us;</text>
+			<text class="fs14 mt12">(10) Using MOCO AI services for commercial purposes such as resale or competitor product development;</text>
+			<text class="fs14 mt12">(11) Other behaviors violating the "Seven Baselines" requirements (laws and regulations, the socialist system, national interests, citizens' lawful rights and interests, public order, social morality, and authenticity of information).</text>
+			<text class="fs14 mt12">4.4 Content Publishing Rules</text>
+			<text class="fs14 mt12">4.4.1 You shall not use MOCO AI to create, reproduce, publish, broadcast, or store any of the following content that violates national laws and regulations:</text>
+			<text class="fs14 mt12">(1) Content that violates the basic principles defined by the Constitution;</text>
+			<text class="fs14 mt12">(2) Content that endangers national security, leaks state secrets, subverts state power, overthrows the socialist system, or undermines national unity;</text>
+			<text class="fs14 mt12">(3) Content that harms national honor and interests;</text>
+			<text class="fs14 mt12">(4) Content that promotes terrorism or extremism;</text>
+			<text class="fs14 mt12">(5) Content that incites ethnic hatred or ethnic discrimination, or undermines ethnic unity;</text>
+			<text class="fs14 mt12">(6) Content that undermines national religious policies, or promotes cults or feudal superstitions;</text>
+			<text class="fs14 mt12">(7) Content that spreads rumors, false information, disrupts social order, or undermines social stability;</text>
+			<text class="fs14 mt12">(8) Content that spreads obscenity, pornography, gambling, violence, murder, terror, or instigates crimes;</text>
+			<text class="fs14 mt12">(9) Content that endangers network security, or uses the network to engage in acts endangering national security, honor, and interests;</text>
+			<text class="fs14 mt12">(10) Content that infringes upon the legal rights and interests of minors or harms the physical and mental health of minors;</text>
+			<text class="fs14 mt12">(11) Content that insults or defames others, uses violent intimidation or threats against others, conducts cyberbullying (doxxing), or infringes upon the legal rights and interests of others;</text>
+			<text class="fs14 mt12">(12) Content that incites illegal assemblies, associations, marches, demonstrations, or gatherings that disrupt social order;</text>
+			<text class="fs14 mt12">(13) Content regarding activities conducted in the name of illegal non-governmental organizations;</text>
+			<text class="fs14 mt12">(14) Content that infringes upon others' rights to reputation, portrait, intellectual property, trade secrets, or other lawful rights;</text>
+			<text class="fs14 mt12">(15) Any other content prohibited by laws and administrative regulations.</text>
+			<text class="fs14 mt12">
+				4.4.2 You shall not use new technologies and applications such as deep learning, virtual reality, generative artificial intelligence, augmented reality, and digital twins (hereinafter collectively referred to as "New Technologies") to create, upload, reproduce, transmit, or disseminate any information content that violates national laws, regulations, and regulatory requirements. This includes, but is not limited to, fake news, false statements of fact, rumors, fraudulent information, violent and terrorist content, obscene and vulgar content, content inciting the disruption of social order, and content infringing on national or public interests.
+				<text class="fs14 fw7"> If the content you publish or disseminate is information created using the aforementioned New Technologies (including but not limited to synthetic images, synthetic audio, synthetic video, etc., hereinafter collectively referred to as "Synthetic Content"), you must explicitly label it with clear, readable text in a prominent position, ensuring that other users are aware of its non-authentic nature immediately upon viewing; you shall not falsely present any Synthetic Content as genuine information or naturally generated genuine content, nor shall you delete, tamper with, or conceal overt markers automatically generated by the system, such as "Generated by AI".</text>
+			</text>
+			<text class="fs14 mt12">If you violate the preceding provisions of this clause, we have the right to take one or more of the following measures based on the severity of the violation:</text>
+			<text class="fs14 mt12">(1) Notify you to add the synthetic content label within a specified time frame;</text>
+			<text class="fs14 mt12">(2) Limit the reach, hide, or delete the related content;</text>
+			<text class="fs14 mt12">(3) Issue warnings, restrict functions (including but not limited to posting and commenting), suspend use, or permanently ban your account;</text>
+			<text class="fs14 mt12">(4) If your actions violate laws and regulations, we have the right to report to the relevant authorities in accordance with the law and cooperate with investigations and handling;</text>
+			<text class="fs14 mt12">(5) You shall bear full liability for any losses caused to us or any third party due to your violations.</text>
+			<text class="fs14 mt12">4.5 Campaign Participation Rules</text>
+			<text class="fs14 mt12">4.5.1 We may irregularly launch various promotional activities/campaigns through MOCO AI. Before participating in an activity, you should enter the respective activity page, read carefully, and fully understand the activity rules. By participating in the activity, you are deemed to have fully read and understood the activity rules and voluntarily accepted their binding force. During the process of reading the rules, if you do not understand or disagree with any content, please do not participate in the relevant activity.</text>
+			<text class="fs14 mt12">4.5.2 Please note that for users who participate in activities using improper means (referring to activity participants who violate the prohibitive provisions of this Agreement or activity rules), our risk control system will automatically identify and exclude them. You agree that we have the right, based on our platform's big data analysis capabilities and technical identification capabilities, to independently judge whether related behaviors violate rules. We may revoke the participation eligibility, judging eligibility, and award eligibility of users participating via improper means, reject the outcomes gained through improper means, and reserve the right to recover rewards already distributed.</text>
+			<text class="fs14 mt12">4.6 Responsibility for Your Own Actions</text>
+			<text class="fs14 mt12">
+				4.6.1 <text class="fs14 fw7"> You understand and agree that you must take responsibility for the actions under your registered account, including any content you publish, comments, searches, and any consequences arising therefrom. You should exercise your own judgment regarding the content within MOCO AI and assume all risks arising from the use of the content, including risks resulting from reliance on the legality, correctness, completeness, or usefulness of the content. We cannot and will not be liable for any loss or damage resulting from these risks.</text>
+			</text>
+			<text class="fs14 mt12">4.6.2 We respect and protect the lawful rights and interests of you and others, including intellectual property rights, reputation rights, naming rights, and privacy rights. You promise that when using MOCO AI Products and Services, the text, images, etc., you upload will not infringe upon the intellectual property rights, reputation rights, naming rights, privacy rights, or other lawful rights and interests of any third party. Otherwise, we reserve the right to remove the allegedly infringing content upon receiving notice from the rights holder or relevant parties. You shall independently handle and bear all legal responsibilities arising from all rights claims put forward by third parties; if your infringement causes losses to us and/or our affiliates (including but not limited to economic losses, loss of goodwill, etc.), you shall fully compensate us and/or our affiliates for such losses.</text>
+			<text class="fs14 mt12">4.7 Potential Penalties for Violations</text>
+			<text class="fs14 mt12 fw7">You understand and agree that if you are suspected of violating the rules set forth in Sections 4.2 to 4.6, we may take the following disciplinary measures:</text>
+			<text class="fs14 mt12 fw7">(1) We will suspend or terminate the provision of partial or all MOCO AI Products and Services to you, or take other restrictive measures in accordance with this Agreement;</text>
+			<text class="fs14 mt12 fw7">(2) We will directly delete any information you have posted that is suspected of being illegal, infringing on the lawful rights of others, or violating this Agreement;</text>
+			<text class="fs14 mt12 fw7">(3) You must bear independent responsibility for the legal consequences arising from your violation of relevant regulations, and you shall indemnify us against any and all losses, third-party claims, administrative penalties, damages, and/or expenses (including reasonable attorney's fees, investigation, and evidence collection costs) incurred or suffered by us due to your violation of relevant laws and regulations or this Agreement, and hold us harmless.</text>
+			<text class="fs16 fw7 mt12">V. AI Features</text>
+			<text class="fs14 mt12">5.1 The AI Assistant function within MOCO AI is an artificial intelligence service provided to users relying on large language model technology. The AI-related features are intended to provide the user community with comprehensive and efficient AI Q&A services, meet users' needs for quickly acquiring information and entertainment, and accomplish tasks including intelligent chatting, text generation, and summarization. This builds natural human-computer interaction, creates a personal intelligent hub for the era of spatial computing, and enhances information processing efficiency. This function will base its responses on the user's input content and information (hereinafter referred to as "Input Content") and output corresponding content (hereinafter referred to as "Output Content").</text>
+			<text class="fs14 mt12">
+				5.2 Generative AI-related services are mainly provided for the following target user groups: city commuters (used to obtain real-time commute information), elderly users (simplified operations via voice interaction), travel enthusiasts (providing cross-language communication and tour guide services), and fitness individuals (providing personalized health management), among others.
+				<text class="fs14 fw7">You understand and promise that authorized users of AI-related functions must be natural persons who are at least 18 years old and possess full legal capacity for civil conduct. If you are under 18 years old or lack the corresponding civil capacity for your actions, please do not use the AI-related functions.</text>
+			</text>
+			<text class="fs14 mt12">5.3 The AI-related functions are provided for your personal learning, daily life, and other personal purposes. Without our permission, you shall not use the AI-related functions and output content for commercial purposes.</text>
+			<text class="fs14 mt12">5.4 The AI Assistant function will collect and analyze users' Input Content and Output Content to improve recognition and response capabilities and enhance the accuracy of the AI Assistant's answers. Users may review and rate the Output Content to provide us with feedback on your satisfaction and opinions regarding the AI Assistant's output.</text>
+			<text class="fs14 mt12">
+				5.5 <text class="fs14 fw7">You acknowledge and understand that, in accordance with this Agreement, we grant you a personal, revocable, non-transferable, and non-exclusive right to lawfully use the AI Assistant function. All other rights not expressly granted in this Agreement remain reserved by us, and you must obtain our separate written consent before exercising these rights. Meanwhile, our failure to exercise any of the aforementioned rights shall not constitute a waiver of that right.</text>
+			</text>
+			<text class="fs14 mt12">5.6 To fulfill relevant compliance requirements of laws and regulations, we have the right to use technical or manual means to review users' behavior and information when using the AI Assistant function, including but not limited to reviewing Input and Output Content, establishing a risk filtration mechanism, and building an illegal content feature database. For violating users, we have the right to take disciplinary measures, including restricting the user's access to the AI Assistant function or deleting the user's account.</text>
+			<text class="fs14 mt12">5.7 You shall actively assume information security obligations when using the AI Assistant function. You promise not to engage in illegal or irregular behaviors towards the AI Assistant function, including but not limited to: inducing the generation of outputs that violate laws and regulations via input; inducing the generation of hostile dialogue outputs via input; maliciously circumventing or attacking the AI Assistant's filtering mechanism via input; and other behaviors that violate laws and regulations, infringe upon the rights of others, and violate MOCO's lawful rights and interests, such as monopolistic or unfair competition practices.</text>
+			<text class="fs14 mt12">
+				5.8 <text class="fs14 fw7"> When using AI-related functions, you shall not input any personal information, private information of yourself or others, or information for which you bear a confidentiality obligation outside the agreed scope of service. We shall bear no responsibility for any legal consequences or risks triggered by your insistence on inputting such information.</text>
+			</text>
+			<text class="fs14 mt12">
+				5.9 <text class="fs14 fw7">Subject to the current level of technology, we provide this service strictly on an "as is" basis. The Output Content may contain flaws in facts, viewpoints, values, etc., for which we bear no legal liability. We will continuously improve our AI level to enhance the accuracy, completeness, timeliness, and usability of the Output Content.</text>
+			</text>
+			<text class="fs14 mt12">
+				5.10 <text class="fs14 fw7">The Output Content of AI-related functions is for reference only and is solely intended to assist you in decision-making. You must objectively and prudently evaluate and verify the Output Content yourself. Any consequences and responsibilities arising from any judgments you make based on the Output Content, or any subsequent related actions you take (including but not limited to risks arising from your reliance on the authenticity, accuracy, and reliability of the Output Content), shall be entirely borne by you.</text>
+			</text>
+			<text class="fs14 mt12">
+				5.11 In accordance with the requirements of laws and regulations, we will add an artificial intelligence generation label (hereinafter referred to as the "AI Label") to text and other content generated or synthesized by this application through artificial intelligence technology (hereinafter referred to as "AI-Generated Content"). This specifically includes: displaying text prompts such as "Content generated by AI" on the interface of interactive dialogue scenarios. You should be aware of and comply with the management requirements of laws and regulations regarding the AI Label. 
+				<text class="fs14 fw7">You shall not use new technologies and applications such as generative AI to produce, publish, or disseminate false, inaccurate, infringing, or otherwise illegal information; when publishing or disseminating information generated using such new technologies and applications, you should use prominent methods to label or prompt the content. You shall not modify the AI Labels added by us to AI-Generated Content by deleting, tampering, forging, or any other misleading means.</text>
+			</text>
+			<text class="fs14 mt12">5.12 If MOCO believes that you are using Generative AI-related services to engage in illegal activities or may be violating the aforementioned agreements, we have the right to make an independent judgment and, without prior notice to you, take disciplinary measures at our own discretion. These measures include, but are not limited to, issuing warnings, restricting functions, suspending, or terminating services to you, and pursuing relevant legal responsibilities.</text>
+			<text class="fs14 mt12">5.13 If you find that the Generative AI-related services provided by MOCO AI contain any content that infringes upon the rights of you or a third party, or if you encounter any problems using the MOCO AI Generative AI services, you can contact us via the contact methods specified in Section 13.4 of this User Service Agreement and provide relevant supporting materials. We will handle your correspondence in a timely manner in accordance with the law after verifying your identity and the facts.</text>
+			<text class="fs16 fw7 mt12">VI. User Personal Information and Privacy Protection</text>
+			<text class="fs14 mt12">6.1 We attach great importance to the protection of user personal information. We will process and protect your personal information in accordance with the provisions of the MOCO AI Privacy Policy. The MOCO AI Privacy Policy is an inseparable part of this Agreement.</text>
+			<text class="fs14 mt12">6.2 We highly value the protection of minors' information. If you are a minor under the age of 18, before using the MOCO AI platform, please carefully read and fully understand this Agreement and the MOCO AI Privacy Policy jointly with and under the accompaniment and guidance of your guardian, and use MOCO AI or provide us with information only with your guardian's consent. If you violate laws, regulations, or the contents of this Agreement, you and your guardian shall bear all resulting consequences as stipulated by law.</text>
+			<text class="fs16 fw7 mt12">VII. Disclaimers</text>
+			<text class="fs14 mt12">7.1 You must purchase the necessary equipment to connect MOCO AI to the Internet (such as mobile phones, personal computers, and other devices related to internet or mobile network access) yourself, and use telecommunication value-added services through your mobile terminal device. You shall bear the communication fees, data fees, and related expenses incurred by your personal mobile terminal device connecting to the Internet or charged by a third party (including but not limited to telecommunications and mobile communication operators). If you require any telecommunications value-added services, we recommend confirming the fees with your telecommunications value-added service operator.</text>
+			<text class="fs14 mt12">
+				7.2 <text class="fs14 fw7"> You understand and agree that during the use of MOCO AI Products and Services, you may encounter risk factors such as force majeure, which may cause the service to be interrupted or delayed. Force majeure refers to objective events that are unforeseeable, insurmountable, and unavoidable, and that have a significant impact on one or both parties, including but not limited to natural disasters (such as floods, typhoons, earthquakes, etc.), social events (such as wars, riots, government actions), hacker attacks, etc. When the above situations occur, we will strive to repair the products and services, but we are exempt from liability within the scope permitted by law for any losses caused to you.</text>
+			</text>
+			<text class="fs14 mt12">
+				7.3 <text class="fs14 fw7">We shall not be liable for any loss you suffer due to third-party reasons (such as communication network failures, technical problems, network or mobile terminal equipment failures, system crashes, and other force majeure factors).</text>
+			</text>
+			<text class="fs14 mt12">7.4 Like most other Internet software, this product may be affected by various factors, including but not limited to user reasons, network service quality, differences in social environments, etc., and may also be troubled by various security issues. For example, others using user data to cause real-life harassment; other software downloaded or installed by users, or other websites visited by users containing Trojan horses or other viruses, threatening the safety of user terminal equipment data, thereby affecting the normal use of this product. Users should strengthen their awareness of information security and user data protection, and pay attention to strengthening password protection to avoid losses and harassment.</text>
+			<text class="fs14 mt12">
+				7.5 We will do our best to ensure that the MOCO AI Products and Services, along with related technologies and information, are secure, effective, accurate, and reliable. 
+				<text class="fs14 fw7">You acknowledge that we only provide products and services based on the current level of technology, and we make no express or implied warranties regarding MOCO AI Products and Services, including but not limited to warranties of ownership, non-infringement, fitness for a particular purpose, availability, accuracy, reliability, or the content provided.</text>
+			</text>
+			<text class="fs14 mt12">，
+				7.6 <text class="fs14 fw7"> We shall not be liable for any loss of profits, loss of data, business interruption, or other commercial damages resulting from or related to the following causes, including but not limited to:</text>
+			</text>
+			<text class="fs14 fw7 mt12">(1) Use of unauthorized software;</text>
+			<text class="fs14 fw7 mt12">(2) Unauthorized third-party use of MOCO AI Products and Services, or modification of user data;</text>
+			<text class="fs14 fw7 mt12">(3) Costs and losses incurred by you while using MOCO AI Products and Services;</text>
+			<text class="fs14 fw7 mt12">(4) Your misunderstanding of MOCO AI Products and Services;</text>
+			<text class="fs14 fw7 mt12">(5) Other losses related to MOCO AI Products and Services not caused by us.</text>
+			<text class="fs14 mt12">7.7 If personal injury or property damage is caused to anyone due to your own actions or the actions of other third parties, we bear no responsibility. All liabilities arising from this shall be borne by the party at fault (including the user themselves or the at-fault third party).</text>
+			<text class="fs14 mt12">
+				7.8 MOCO AI products and services include functional modules that support third-party systems or software for users to use. When you use related products and services, or ask us to provide specific services, we may use third-party systems or software to support your needs. When using such third-party systems or software, you should comply with this Agreement and the agreements, terms, or rules of the third-party system or software. 
+				<text class="fs14 fw7">Your rights and obligations with third-party developers shall be executed in reference to the relevant agreements, terms, or rules. When using third-party systems or software, you must understand and agree that:</text>
+			</text>
+			<text class="fs14 mt12 fw7">(1) When you use a third-party system or software, the third-party developer will obtain your personal information based on your authorization. You decide entirely on your own whether to authorize this information to the third-party developer. You must understand that:</text>
+			<text class="fs14 mt12 fw7">a) Your act of authorizing third-party developers to access your personal information may carry the risk of information leakage;</text>
+			<text class="fs14 mt12 fw7">b) When using third-party systems or software, in addition to complying with this Agreement and other relevant MOCO AI rules, you must also comply with the agreements and rules of the third-party developer;</text>
+			<text class="fs14 mt12 fw7">c) We do not guarantee the security, accuracy, and effectiveness of the results obtained through third-party systems or software, nor do we guarantee against any other uncertain risks. If any dispute, controversy, loss, or damage arises from third-party systems or software, you shall resolve it yourself with the third-party developer. The related liability and compensation shall be solely borne by the third-party developer, and we shall not assume any responsibility.</text>
+			<text class="fs14 mt12 fw7">(2) The purpose of introducing third-party systems or software is to enrich MOCO AI's functions and services, thereby creating a better user experience for you. However, any liability arising from defects or errors in third-party systems or software shall be borne by the third-party developers themselves, and we assume no responsibility.</text>
+			<text class="fs14 mt12 fw7">(3) We reserve the right, without notifying you, to stop the use of third-party systems or software. We will not be liable for any impact or loss this brings to you. You should bear the consequences yourself or negotiate with the third-party developer, but we will do our utmost to protect your rights and interests from infringement.</text>
+			<text class="fs16 fw7 mt12">VIII. Intellectual Property</text>
+			<text class="fs14 mt12">8.1 All intellectual property rights pertaining to the content we provide in this Software (including but not limited to software, technology, programs, webpages, text, images, charts, layout design, electronic documents, etc.) belong to us. The copyrights, trademarks, patents, trade secrets, and other intellectual property rights of the software relied upon when we provide MOCO AI Products and Services are entirely owned by us.</text>
+			<text class="fs14 mt12">8.2 All intellectual property rights and copyrights related to MOCO AI Products and Services, such as copyrights, trademarks, patents, and trade secrets, as well as all information related to MOCO AI Products and Services or us (including but not limited to text, images, audio, video, graphics, interface design, configuration, data, or electronic files, etc.), are protected by relevant intellectual property laws.</text>
+			<text class="fs14 mt12">8.3 We have not granted you any of our related intellectual property rights simply because of this Agreement or because we provide you with MOCO AI Products and Services. All rights not expressly granted to you by this Agreement are reserved by us. Without our prior written consent, you may not authorize the use or transfer of any of the aforementioned intellectual property rights to any third party for any commercial or non-commercial purpose. We reserve the right to pursue legal liabilities for such acts.</text>
+			<text class="fs14 mt12">
+				8.4 When using the AI features of this Software, you may submit text, audio, or other forms of content and information (hereinafter referred to as "Input Content") to the AI features and receive responsive content generated based on your Input Content (hereinafter referred to as "Output Content"). Between you and us, to the extent permitted by applicable law, the intellectual property rights of the Input Content you provide belong to you or the lawful rights holder of such intellectual property; we make no claim of ownership over the Output Content. 
+				<view class="fw7 fs14">If the Input Content and/or Output Content itself contains content for which MOCO holds intellectual property rights or other lawful rights and interests according to law, the rights corresponding to that portion of the content still belong to us and their ownership is not altered by being included in the Input Content or Output Content.</view>
+			</text>
+			<text class="fs14 mt12">
+				8.5 <text class="fs14 fw7">You understand and agree to grant us a royalty-free, worldwide, transferable, sublicensable, and redistributable right to use. We are authorized, to the extent permitted by law, to potentially use your Input Content and Output Content for purposes such as model training and optimization, brand promotion, and publicity, provided that the data is processed with security encryption, strictly de-identified, and cannot be re-identified to a specific individual.</text>
+			</text>
+			<text class="fs14 mt12">8.6 We provide technical support for the development and operation of MOCO AI application services, and we enjoy full rights to all data and information generated during the development and operation of MOCO AI applications.</text>
+			<text class="fs14 mt12">8.7 You shall not use any of our trademarks, service marks, trade names, domain names, website names, or other distinct brand features (hereinafter collectively referred to as "Marks") without our separate written authorization. Without our prior written consent, you may not display, use, or otherwise process these Marks individually or in combination in any way. You shall bear full legal liability for any damages caused to us or others due to your violation of this Agreement regarding the use of relevant trademarks or Marks.</text>
+			<text class="fs14 mt12">8.8 You should respect and protect intellectual property rights; otherwise, you will be liable for all resulting legal consequences, and we will also hold the relevant parties legally accountable. "Relevant intellectual property laws" in this section include, but are not limited to, international copyright conventions, the Copyright Law of the People's Republic of China, the Patent Law of the People's Republic of China, the Trademark Law of the People's Republic of China, and other applicable intellectual property laws and regulations.</text>
+			<text class="fs14 mt12">8.9 We highly value and respect the intellectual property rights of you and others. If you discover any infringement upon your or others' intellectual property rights during your use of MOCO AI Products and Services, you may send an email to support@mocoviso.com and provide us with relevant supporting evidence. We will take disciplinary action after verification.</text>
+			<text class="fs16 fw7 mt12">IX. Amendments to the Agreement</text>
+			<text class="fs14 mt12">
+				9.1 We reserve the right to modify this Agreement. If there are any updates to the terms of this Agreement, they will be published on our official website or related pages of this application and will take effect from the date of publication. You may download and install the software again or view the latest version of this Agreement.
+				<view class="fs14 fw7"> After this Agreement is modified, if you do not accept the modified terms, please immediately stop using the MOCO AI Products and Services provided by us; your continued use of MOCO AI Products and Services will be deemed as an acceptance of the revised terms of this Agreement.</view>
+			</text>
+			<text class="fs14 mt12">9.2 We and our partners have the right, based on commercial judgment, to modify or adjust the provided paid services, charging standards, charging models, service fees, or service terms from time to time. During the provision of services, we may begin charging certain fees to users now or in the future. Any changes in fees will be notified to users via in-app announcements 15 days in advance. If you refuse to pay such fees, you will be unable to continue using the relevant services after the billing begins.</text>
+			<text class="fs16 fw7 mt12">X. Termination of Agreement</text>
+			<text class="fs14 mt12">10.1 Conditions for Termination</text>
+			<text class="fs14 mt12">10.1.1 You have the right to terminate this Agreement in any of the following ways:</text>
+			<text class="fs14 mt12">(1) Deleting your account when meeting the account deletion conditions published by the MOCO AI platform;</text>
+			<text class="fs14 mt12">(2) Stopping the use of the service and expressly refusing to accept updated terms before an update takes effect;</text>
+			<text class="fs14 mt12">(3) Expressly refusing to continue using MOCO AI Products and Services and meeting the termination conditions of the MOCO AI platform.</text>
+			<text class="fs14 mt12">10.1.2 We may terminate this Agreement by notifying you in accordance with this Agreement under the following circumstances:</text>
+			<text class="fs14 mt12">(1) You violate the provisions of this Agreement, and we terminate this Agreement in accordance with its terms;</text>
+			<text class="fs14 mt12">(2) We close your account due to your actions such as stealing others' accounts, publishing prohibited information, defrauding others of property, disrupting market order, or seeking profits through improper means;</text>
+			<text class="fs14 mt12">(3) In addition to the above situations, you repeatedly violate the relevant regulations of this Agreement, and the circumstances are severe;</text>
+			<text class="fs14 mt12">(4) Other situations where services must be terminated.</text>
+			<text class="fs14 mt12">10.2 Handling Post-Termination</text>
+			<text class="fs14 mt12">After the termination of this Agreement, we still enjoy the following rights:</text>
+			<text class="fs14 mt12">(1) Retaining relevant information that the platform is required to keep in accordance with the law;</text>
+			<text class="fs14 mt12">(2) Pursuing liability for your past breaches of this Agreement;</text>
+			<text class="fs14 mt12">(3) Regarding transaction orders generated by you during the term of this Agreement, we may independently decide whether to close such orders. If continued fulfillment is required, you shall continue to fulfill the terms of this Agreement and the transaction order, and bear any resulting losses or additional expenses.</text>
+			<text class="fs16 fw7 mt12">XI. Governing Law and Dispute Resolution</text>
+			<text class="fs14 mt12">11.1 
+				<view class="fs14 fw7">This Agreement shall be governed by the laws of the People's Republic of China (excluding Hong Kong, Macau, and Taiwan), and all conflict of law rules are entirely excluded.</view>
+			</text>
+			<text class="fs14 mt12">11.2 The intellectual property clauses, governing law, and dispute resolution clauses under this Agreement shall not become invalid due to the termination of this Agreement.</text>
+			<text class="fs14 mt12">
+				11.3 <text class="fs14 fw7">In the event of any dispute arising from the content or execution of this Agreement, both parties shall attempt to resolve it through friendly negotiation. If negotiation fails, either party may file a lawsuit with the People's Court of Minhang District, Shanghai.</text>
+			</text>
+			<text class="fs16 fw7 mt12">XII. Notice and Delivery</text>
+			<text class="fs14 mt12">12.1 Valid Address. The contact phone number, email address, and mailing address you fill out in your MOCO AI account profile shall be deemed your valid contact addresses. If there are any changes to the above information, you must update it promptly. If notices (including but not limited to agreement updates, legal documents, etc.) cannot be delivered or are delayed due to inaccurate contact information provided by you or your failure to promptly update your contact information, you shall bear any resulting legal consequences.</text>
+			<text class="fs14 mt12">12.2 Delivery of Notice. Notices sent by us to you through the above contact methods, including written notices sent electronically (such as SMS to your provided phone number, emails to your provided email address, system messages, and internal site messages to your user account), shall be deemed delivered upon successful transmission. Written notices sent via paper media shall be deemed delivered on the fifth calendar day after being mailed to your provided address.</text>
+			<text class="fs14 mt12">12.3 Service of Legal Documents. For any disputes related to us, you agree that administrative, public security, judicial, and other competent authorities may serve legal documents to you via SMS, email, system messages, or internal site messages. Legal documents sent by competent authorities to the aforementioned contact methods shall be deemed served. If multiple methods are used simultaneously to serve legal documents, the delivery time shall be the time of the first successful delivery. You agree that the above service methods apply to the entire process of legal procedures, including administrative, arbitration, and judicial proceedings.</text>
+			<text class="fs16 fw7 mt12">XIII. Miscellaneous</text>
+			<text class="fs14 mt12">13.1 During your use of MOCO AI Products and Services, if certain functions are subject to independent agreements or specific commercial terms (hereinafter collectively referred to as "Independent Agreements"), you must carefully read and agree to the relevant Independent Agreements before using these functions.</text>
+			<text class="fs14 mt12">13.2 The headings of all clauses in this Agreement are for convenience of reference only and shall be ignored in the interpretation of this Agreement.</text>
+			<text class="fs14 mt12">13.3 If any provision of this Agreement is found to be invalid or unenforceable for any reason, the remaining provisions shall continue in full force and effect and remain binding upon both parties.</text>
+			<text class="fs14 mt12">13.4 If you have any questions, comments, or suggestions regarding this Agreement, you may contact us by sending an email to support@mocoviso.com.</text>
+			<text class="fs14 mt12"></text>
+		</scroll-view>
+	</view>
+</template>
+
+<script>
+	export default {
+		data () {
+			return{
+				lang:true,
+			}
+		},
+		onLoad() {
+			if(this.$locale.value == 'en-US'){
+				this.lang = false;
+			}
+		}
+	}
+</script>
+
+<style>
+</style>

@@ -1,0 +1,6521 @@
+import Combine
+import CoreBluetooth
+import Foundation
+
+/// 配对扫描阶段展示在列表中的 BLE 设备。
+struct DiscoveredBLEDevice: Identifiable, Equatable {
+    let id: UUID
+    let displayName: String
+    let rssi: Int
+}
+
+/// Astra A1 BLE 连接状态（文档 3.1.3）。
+enum AstraA1ConnectionState: Equatable {
+    case idle
+    case bluetoothUnavailable(String)
+    case scanning
+    case connecting
+    case discoveringServices
+    case enablingNotifications
+    case ready
+    case failed(String)
+    case disconnected
+}
+
+struct AIVoiceListeningDurationResponse: Equatable {
+    let status: UInt8
+    let seconds: Int
+    let sequence: Int
+}
+
+struct VoiceWakeupResponse: Equatable {
+    let status: UInt8
+    let enabled: Bool
+    let sequence: Int
+}
+
+/// Astra A1 专用 BLE 管理器。
+/// 按协议服务 UUID 识别设备（不依赖广播名，名称会变）。
+/// 流程：扫描 → 连接 → 服务发现 → 订阅通知 → 就绪后查询设备信息。
+@MainActor
+final class AstraA1BleManager: NSObject, ObservableObject {
+    @Published private(set) var connectionState: AstraA1ConnectionState = .idle
+    @Published private(set) var statusMessage = L10n.t("查找设备中...", "Looking for devices...")
+    @Published private(set) var discoveredPairingDevices: [DiscoveredBLEDevice] = []
+    @Published private(set) var deviceName: String?
+    @Published private(set) var deviceModel: String?
+    @Published private(set) var deviceSN: String?
+    @Published private(set) var deviceBattery: String?
+    @Published private(set) var isBatteryLevelKnown = false
+    @Published private(set) var deviceIsCharging = false
+    /// 最近一次手动重连的失败原因，供首页卡片区分「未找到设备」与「设备连接失败」。
+    @Published private(set) var lastManualReconnectFailure: ManualReconnectFailure?
+    /// 系统已连接目标眼镜，但 App GATT 连续软恢复失败；仅此状态允许点卡片执行硬重建。
+    @Published private(set) var manualHardReconnectPeripheralID: UUID?
+    @Published private(set) var deviceStorage: String?
+    @Published private(set) var deviceVersion2800: String?
+    @Published private(set) var deviceVersion6350: String?
+    @Published private(set) var isQueryingAboutDeviceInfo = false
+    @Published private(set) var isQueryingDeviceVersionsAndStorage = false
+    /// 眼镜端待导入手机的媒体文件数量（hasnewfile, file_type≠1）。
+    @Published private(set) var pendingImportFileCount = 0
+    /// 眼镜端待导入 AI 录音数量（hasnewfile, file_type=1）。
+    @Published private(set) var pendingRecordingImportFileCount = 0
+    /// App 侧是否认为 AI 录音进行中（发了开始命令后到收到录音文件 / 主动停止）。
+    @Published private(set) var isAIRecording = false
+    /// 全局设备运行状态（蓝牙 getdevstat / devstatus0 / actionrsp0 一上报就改）。
+    @Published private(set) var deviceRuntimeStatus: AstraA1BleProtocol.DeviceRuntimeStatus = .unknown
+    /// 上一次设备运行状态；每次上报前写入，用于判断 PHOTO_TAKING/VIDEO_RECORDING → STANDBY。
+    @Published private(set) var previousDeviceRuntimeStatus: AstraA1BleProtocol.DeviceRuntimeStatus = .unknown
+    /// 首页拍照/录像按钮状态（由全局状态跳变驱动）。
+    @Published private(set) var isTakingPhoto = false
+    @Published private(set) var photoCompleted = false
+    @Published private(set) var isVideoRecording = false
+    @Published private(set) var isVideoStopping = false
+    @Published private(set) var videoCompleted = false
+    /// 设备 EQ 音效：0=标准，1=澎湃，2=静谧。
+    @Published private(set) var soundEffectMode: UInt8 = 0
+    /// 设置页协议回包；进入设置页后主动查询并同步本地缓存。
+    @Published private(set) var settingsVideoResolutionProfile: UInt8?
+    @Published private(set) var settingsWearDetectionEnabled: Bool?
+    @Published private(set) var aiVoiceListeningDurationResponse: AIVoiceListeningDurationResponse?
+    @Published private(set) var voiceWakeupResponse: VoiceWakeupResponse?
+    /// factreset0 的 testresult：0=失败，1=成功，2=进行中。
+    @Published private(set) var factoryResetResult: UInt8?
+    /// 拍照/录像等动作被拒绝或失败时的提示文案（供 UI 弹窗）。
+    @Published var mediaActionAlertMessage: String?
+    @Published var mediaActionToastMessage: String?
+    /// 拍照进行中（点按后到 PHOTO_TAKING→STANDBY）。
+    var photoActionBlocked: Bool { isTakingPhoto }
+    /// 已拿到绑定所需的设备信息（或超时降级）。
+    @Published private(set) var isDeviceInfoReady = false
+
+    private var centralManager: CBCentralManager!
+    private var voiceSettingsResponseSequence = 0
+    private var connectedPeripheral: CBPeripheral?
+    private var writeCharacteristic: CBCharacteristic?
+    private var notifyCharacteristic: CBCharacteristic?
+    /// 标准电池服务电量特征（0x2A19），用于可靠读取电量。
+    private var batteryLevelCharacteristic: CBCharacteristic?
+    /// 标准电池状态特征（0x2BED），含充电状态；设备可能不实现。
+    private var batteryLevelStatusCharacteristic: CBCharacteristic?
+
+    private var isServiceDiscovered = false
+    private var isNotificationEnabled = false
+    /// 协议 notify 特征已订阅成功（电池服务 notify 不算）。
+    private var isProtocolNotificationEnabled = false
+    private var hasStartedConnect = false
+    private var pendingStart = false
+    private var pendingCharacteristicDiscoveries = 0
+    private var isProbingService = false
+    /// 首页刷新电量：仅连接并读电量，不走绑定流程。
+    private var isBatteryRefreshMode = false
+    /// 蓝牙尚未 poweredOn 时，待就绪后再刷新电量。
+    private var pendingBatteryRefresh = false
+    /// 蓝牙尚未 poweredOn 时收到的账号绑定 serial_number，待就绪后再认领。
+    private var pendingBoundSerialNumbers: [String] = []
+    private var deviceStatusSyncRetryWorkItem: DispatchWorkItem?
+    private var deviceStatusSyncAttempt = 0
+    /// 硬件对连上后的指令风暴敏感：getdevstat 最多再补 1 次。
+    private let maxDeviceStatusSyncAttempts = 1
+    /// 本次连接是否已发过 getdevstat（含重试）。
+    private var hasRequestedDeviceStatusThisConnection = false
+    /// 初连 getdevinfo 代次；取消旧的 fire-and-forget 定时发送。
+    private var initialDeviceInfoQueryGeneration = 0
+    private var isInitialDeviceInfoQueryInProgress = false
+    private var routineRefreshWorkItem: DispatchWorkItem?
+    /// 最近一次有效（非 0）电量读数：重连补刷期间先顶上，避免首页闪 0% / 「已连接」。
+    private var lastKnownBatteryPercent: Int?
+    private var lastKnownBatteryPeripheralID: UUID?
+    private var batteryPollingWorkItem: DispatchWorkItem?
+    /// 对齐安卓 startBatteryPolling：连上后周期性 getdevinfo batt0。
+    private let batteryPollingInterval: TimeInterval = 60
+    /// 尚未拿到有效电量时加密轮询，尽快补上首屏读数。
+    private let batteryPollingRetryInterval: TimeInterval = 10
+
+    /// 用户主动断开（取消配对 / 退出登录）时不再监听系统蓝牙。
+    private var userInitiatedDisconnect = false
+    /// 曾经成功连接过：允许断线后交给 iOS 原生自动连接（常驻 connect）。
+    private var autoReconnectEnabled = false
+    private var reconnectPeripheral: CBPeripheral?
+
+    /// 导入流程等待特定 BLE 响应。
+    private var wifiConfigContinuation: CheckedContinuation<AstraA1BleProtocol.WifiConfig, Error>?
+    /// 上次 closewifi 时间，用于 toopenwifi 前的冷却等待。
+    private var lastWifiCloseAt: Date?
+    private static let wifiReopenCooldown: TimeInterval = 1.0
+    private var workPathContinuation: CheckedContinuation<String, Error>?
+    private var statusContinuation: CheckedContinuation<Bool, Error>?
+    private var statusContinuationCommand: String?
+    /// 状态回包命令名别名（如 closewifi / closewifi0）。
+    private var statusContinuationAliases: Set<String> = []
+    /// 拍照/停止录像后等待 hasnewfile 通知。
+    private var mediaCaptureContinuation: CheckedContinuation<Void, Error>?
+    /// OTA 升级进度等待（otaprogres 达到 100% 后完成）。
+    private var otaUpgradeContinuation: CheckedContinuation<Void, Error>?
+    private var otaUpgradeProgressHandler: ((Int) -> Void)?
+    /// 蓝牙 OTA 前置 DLL 查询/安装等待。
+    private var algorithmInfoContinuation: CheckedContinuation<[AstraA1BleProtocol.DeviceAlgorithmInfo], Error>?
+    private var dllUpdateContinuation: CheckedContinuation<AstraA1BleProtocol.DLLUpdateResult, Error>?
+    private var dllProgressHandler: ((Int) -> Void)?
+    /// withoutResponse 写队列：iOS 缓冲满时直接 write 会静默丢包。
+    private var pendingBLEWrites: [Data] = []
+    private let maxPendingBLEWrites = 64
+    /// notify 被 MTU 截断时，主动 read 通知特征以取完整载荷。
+    private var notifyReadInFlight = false
+    private var notifyReadAttempts = 0
+    /// 当前正在补读的命令；换命令要重新计次，避免上一条命令用光重试额度。
+    private var notifyReadCommand: String?
+    /// 部分固件对通知特征的 read 回 ATT 0x06（Request Not Supported），此时补读无意义。
+    private var notifyReadUnsupported = false
+    /// 长包被截断时重建链路重协商 MTU：每条链路只做一次，避免反复断连。
+    private var isRelinkingForLongPackets = false
+    private var hasRelinkedForLongPackets = false
+    private let maxNotifyReadAttempts = 6
+    /// 立刻 read 常拿回同一截断值，给设备组包留时间。
+    private let notifyReadRetryDelay: TimeInterval = 0.2
+    /// 关于设备页：串行逐项查询 getdevinfo，避免并发与 MTU 截断丢包。
+    private var aboutDeviceInfoPendingTypes: [AstraA1BleProtocol.DevInfoType] = []
+    private var aboutDeviceInfoQueryTimeout: DispatchWorkItem?
+    private let aboutDeviceInfoQueryTimeoutSeconds: TimeInterval = 2.5
+    /// getdevinfo 连续发送间隔（对齐安卓 DeviceInfoManager ~200ms；曾用 3s 导致电量约 9s 才到）。
+    private static let getDevInfoSendIntervalSeconds: TimeInterval = 0.2
+    private var versionsStoragePendingTypes: [AstraA1BleProtocol.DevInfoType] = []
+    private var versionsStorageQueryTimeout: DispatchWorkItem?
+    private let versionsStorageQueryTimeoutSeconds: TimeInterval = 2.5
+    private var deferredBatteryQuery = false
+    private var deferredPendingImportQuery = false
+    private var photoCompletedResetTask: Task<Void, Never>?
+    private var videoCompletedResetTask: Task<Void, Never>?
+    /// 对齐 Android：拍照命令成功 2.5 秒后主动查询 hasnewfile。
+    private var homePhotoNewFileQueryWorkItem: DispatchWorkItem?
+    /// 对齐 Android HomeFragment：达到设置的录像时长后自动发送停止命令。
+    private var homeVideoAutoStopWorkItem: DispatchWorkItem?
+
+    /// 智能识图传图中：暂停首页例行电量 / hasnewfile，避免写通道抢带宽导致 imgrecdata 丢包。
+    private(set) var isAIVisionTransferBusy = false
+    /// 对齐 Android DeviceUpgradeStateManager：整个 OTA（含 DLL 前置）期间禁止例行 BLE 查询插入升级命令流。
+    private(set) var isFirmwareUpgradeFlowBusy = false
+
+    private var isSerialGetDevInfoInProgress: Bool {
+        isQueryingAboutDeviceInfo
+            || isQueryingDeviceVersionsAndStorage
+            || isInitialDeviceInfoQueryInProgress
+    }
+
+    private static let routineRefreshSkipReasons: Set<String> = [
+        "aboutDevice",
+        "firmwareUpgrade",
+        "otaDetail",
+        "refreshVersionsAndStorage"
+    ]
+
+    private var scanTimeoutWorkItem: DispatchWorkItem?
+    private var probeStartWorkItem: DispatchWorkItem?
+    private var connectWatchdogWorkItem: DispatchWorkItem?
+    private var discoverServicesWorkItem: DispatchWorkItem?
+    /// 自动恢复必须先等旧链路真正断开，再发下一次 connect；防止旧 didDisconnect 打掉新连接。
+    private var automaticGATTRecoveryWorkItem: DispatchWorkItem?
+    private var automaticGATTRecoveryGeneration = 0
+    private var automaticGATTRecoveryCancellationPeripheralID: UUID?
+    private var isAutomaticGATTRecoveryInProgress = false
+    /// 用户点击失败卡片后，重建整个 CBCentralManager 的单次硬重连。
+    private var isManualHardReconnectAttemptInProgress = false
+    private var pendingManualHardReconnectPeripheralID: UUID?
+    private var manualHardReconnectLookupWorkItem: DispatchWorkItem?
+    private var manualHardReconnectLookupAttempt = 0
+    /// 硬重建分两段：先等旧 central 的连接释放，再创建无状态恢复标识的新 central。
+    private var manualHardReconnectReleaseTimeoutWorkItem: DispatchWorkItem?
+    private var manualHardReconnectCentralRebuildWorkItem: DispatchWorkItem?
+    private var manualHardReconnectOldCentral: CBCentralManager?
+    private var manualHardReconnectOldPeripheral: CBPeripheral?
+    /// 断电重连：系统已连但 didConnect 未到时，周期 retrieve + attach。
+    private var systemReconnectMonitorWorkItem: DispatchWorkItem?
+    /// 系统传输层刚连上时，只给每轮 GATT 认领刷新一次完整宽限期，避免轮询无限续期。
+    private var systemTransportGracePeripheralIDs = Set<UUID>()
+    /// 已由 retrieveConnectedPeripherals / peerConnected 明确认定为系统层已连接的目标。
+    private var systemTransportConnectedPeripheralIDs = Set<UUID>()
+    private var didRegisterConnectionEvents = false
+    private var gattDiscoveryAttempt = 0
+    private var loggedPeripheralIDs = Set<UUID>()
+    private var probeCandidates: [ProbeCandidate] = []
+    private var probedIDs = Set<UUID>()
+    /// 配对弹窗：仅扫描并展示列表，用户点「配对」后再连接。
+    private var isPairingSessionActive = false
+    private var isManualPairingScan = false
+    private var isUserInitiatedPairingConnect = false
+    /// 手动重连的失败类型。文案已多语言，UI 不能靠比对字符串区分。
+    enum ManualReconnectFailure {
+        case notFound
+        case connectFailed
+    }
+
+    /// 首页卡片点击触发的手动重连扫描（区别于配对弹窗扫描）。
+    private var isManualReconnectScan = false
+    private var isManualReconnectConnect = false
+    private var manualReconnectCandidateIDs: Set<UUID> = []
+    private var manualReconnectExpectedName: String?
+    private var manualReconnectAllowAnyProtocolDevice = false
+    private var manualReconnectScanWorkItem: DispatchWorkItem?
+    private let manualReconnectScanTimeoutSeconds: TimeInterval = 15
+    /// 已挂起常驻 connect 的外设；避免监控轮询反复重复 connect 刷屏。
+    private var standingConnectPeripheralID: UUID?
+    /// 系统传输层已连接、App GATT 却卡在 connecting 时的重建次数。
+    private var standingConnectRecoveryCount = 0
+    /// 是否允许自动挂常驻 connect。还必须通过系统连接门禁；仅有本地缓存绝不发 connect。
+    private var standingConnectAllowed = false
+    /// 配对弹窗扫描时按设备名过滤，值为所选 model_name（如 G5T71）。
+    private var pairingModelNameFilter: String?
+    private var userPairingTargetID: UUID?
+    private var userPairingRetryCount = 0
+    private let maxUserPairingRetries = 3
+    /// 用户点「配对」时若系统层已连接，先断开再以全新连接触发系统配对弹窗。
+    private var pendingUserPairingPeripheral: CBPeripheral?
+    private var discoveredPeripherals: [UUID: CBPeripheral] = [:]
+    private var activeProbeRSSI: Int?
+
+    private let scanTimeoutSeconds: TimeInterval = 30
+    private let probeStartDelaySeconds: TimeInterval = 1.5
+    /// 对齐 Android HomeFragment：单次 GATT 建链最多等待 15 秒。
+    private let connectWatchdogSeconds: TimeInterval = 15
+    /// Android 可 close 后创建全新 BluetoothGatt；iOS 复用同一 CoreBluetooth 外设，需更长恢复时间。
+    private let standingConnectRetryIntervalSeconds: TimeInterval = 15
+    /// 手机/眼镜重启后，系统蓝牙通常先连接；首次给 App GATT 20 秒认领时间。
+    private let systemTransportConnectGraceSeconds: TimeInterval = 20
+    /// 首次连接失败后只执行一次软 GATT 重建，随后等待用户点击硬重建。
+    private let maxStandingConnectRecoveryAttempts = 1
+    private let automaticGATTRecoveryPollSeconds: TimeInterval = 0.25
+    private let automaticGATTRecoveryResumeDelaySeconds: TimeInterval = 0.25
+    private let manualHardReconnectLookupIntervalSeconds: TimeInterval = 0.5
+    private let maxManualHardReconnectLookupAttempts = 10
+    private let manualHardReconnectReleaseTimeoutSeconds: TimeInterval = 2
+    private let manualHardReconnectCentralRebuildDelaySeconds: TimeInterval = 0.4
+    /// 调试开关：系统蓝牙已连接后不自动认领 GATT，必须点首页卡片执行硬重建。
+    private let temporarilyRequireManualHardReconnectForTesting = false
+    private let maxGATTDiscoveryAttempts = 4
+    /// BLE 就绪后等待 iOS 经典蓝牙（音频）系统配对，与 Android connectClassicBluetooth 对齐。
+    private let systemPairingGraceSeconds: TimeInterval = 8
+    private let minProbeRSSI = -75
+    private let savedPeripheralIDKey = "astraA1.ble.peripheralID"
+    private let centralRestoreIdentifier = "com.mocoai.astraA1.central"
+    private let pendingRecordingCountKey = "astraA1.ble.pendingRecordingCount"
+    private let logTag = "[AstraA1BLE]"
+
+    /// 控制台 + 调试浮窗「连接」Tab 双写。
+    private func connectLog(
+        _ title: String,
+        detail: String = "",
+        direction: DebugLogStore.Direction = .event
+    ) {
+        if detail.isEmpty {
+            print("\(logTag) \(title)")
+        } else {
+            print("\(logTag) \(title) \(detail)")
+        }
+        DebugLogStore.logConnect(title, detail: detail, direction: direction)
+    }
+
+    /// 控制台 + 调试浮窗「Wi-Fi」Tab 双写。detail 禁止包含热点密码明文。
+    private func wifiLog(
+        _ title: String,
+        detail: String = "",
+        direction: DebugLogStore.Direction = .event
+    ) {
+        if detail.isEmpty {
+            print("\(logTag) [WiFi] \(title)")
+        } else {
+            print("\(logTag) [WiFi] \(title) \(detail)")
+        }
+        DebugLogStore.logWiFi(title, detail: detail, direction: direction)
+    }
+
+    private func connectStateDescription(_ state: AstraA1ConnectionState) -> String {
+        switch state {
+        case .idle: return "idle"
+        case .bluetoothUnavailable(let message): return "bluetoothUnavailable(\(message))"
+        case .scanning: return "scanning"
+        case .connecting: return "connecting"
+        case .discoveringServices: return "discoveringServices"
+        case .enablingNotifications: return "enablingNotifications"
+        case .ready: return "ready"
+        case .failed(let message): return "failed(\(message))"
+        case .disconnected: return "disconnected"
+        }
+    }
+
+    private func peripheralStateDescription(_ state: CBPeripheralState) -> String {
+        switch state {
+        case .disconnected: return "disconnected"
+        case .connecting: return "connecting"
+        case .connected: return "connected"
+        case .disconnecting: return "disconnecting"
+        @unknown default: return "unknown(\(state.rawValue))"
+        }
+    }
+    /// 当前会话身份对应的外设；换外设或断开时清空 getdevinfo 缓存，避免首页卡片对错眼镜。
+    private var identityPeripheralID: UUID?
+
+    private struct ProbeCandidate {
+        let peripheral: CBPeripheral
+        let rssi: Int
+    }
+
+    override init() {
+        super.init()
+        // 录音 pending 跨进页保留：hasnewfile 主动查询常只回媒体 type=0。
+        let savedPending = UserDefaults.standard.integer(forKey: pendingRecordingCountKey)
+        if savedPending > 0 {
+            pendingRecordingImportFileCount = savedPending
+        }
+        // 已绑定设备启动后监听系统连接事件；系统未连接前禁止主动 GATT connect。
+        let hasSavedPeripheral = UserDefaults.standard.string(forKey: savedPeripheralIDKey)
+            .flatMap(UUID.init(uuidString:)) != nil
+        autoReconnectEnabled = hasSavedPeripheral
+        standingConnectAllowed = false
+        centralManager = CBCentralManager(
+            delegate: self,
+            queue: nil,
+            options: [CBCentralManagerOptionRestoreIdentifierKey: centralRestoreIdentifier]
+        )
+    }
+
+    var isReady: Bool {
+        if case .ready = connectionState { return true }
+        return false
+    }
+
+    /// Android DeviceStatusManager.isIdleStatus：STANDBY、UNKNOWN 都允许开始新动作。
+    var isDeviceRuntimeIdle: Bool {
+        deviceRuntimeStatus == .standby || deviceRuntimeStatus == .unknown
+    }
+
+    /// 智能图像识别 BLE 回包回调（imgrecrsp0 / imgrecdata）。
+    var aiVisionNotifyHandler: ((String, Data) -> Void)?
+    /// AI 语音回包（aivoicests / aivoicedat / aivoicetur）。
+    var aiVoiceNotifyHandler: ((String, Data) -> Void)?
+    /// 对话翻译眼镜录音回包（trslatests / trslatedat）。
+    var translationVoiceNotifyHandler: ((String, Data) -> Void)?
+    /// 识图传图中设备从 AI_VISION_OPERATING → STANDBY（末包可能丢，用已收包收尾）。
+    var aiVisionDeviceIdleHandler: (() -> Void)?
+    /// 新手引导设备操作事件（guideevt00 的 eventType）。
+    var guideEventHandler: ((UInt8) -> Void)?
+
+    /// 是否正在建立 GATT 连接（用于首页「正在连接...」提示）。
+    var isConnectionInProgress: Bool {
+        if isBatteryRefreshMode { return true }
+        switch connectionState {
+        case .connecting, .discoveringServices, .enablingNotifications:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// 用户点击硬重连后，旧 central 尚未释放或新 central 尚未创建。
+    private var isManualHardReconnectCentralTransitionInProgress: Bool {
+        manualHardReconnectOldCentral != nil
+            || manualHardReconnectCentralRebuildWorkItem != nil
+    }
+
+    /// 解析后的电量百分比（0-100）。未从 getdevinfo batt0 拿到真实读数前返回 nil。
+    var deviceBatteryPercent: Int? {
+        guard isBatteryLevelKnown, let deviceBattery else { return nil }
+        return Int(deviceBattery.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// 拍照、开始录像、导入文件、AI 录音、智能识图共用低电量门禁；未知电量不误拦截。
+    var isBatteryTooLowForMedia: Bool {
+        guard let percent = deviceBatteryPercent else { return false }
+        return percent <= 15
+    }
+
+    var lowBatteryMediaMessage: String {
+        L10n.t("眼镜电量过低，请充电后再试", "Glasses battery is too low. Charge and try again.")
+    }
+
+    /// 首页进入：系统蓝牙已连接才接管 GATT；否则只监听系统连接事件。
+    func ensureConnected(reason: String = "") {
+        if savedPeripheralID() != nil, !userInitiatedDisconnect {
+            // 进 App/回前台恢复监听；系统连接事件到达前不主动 connect。
+            autoReconnectEnabled = true
+        }
+        connectLog(
+            "ensureConnected",
+            detail: "reason=\(reason) state=\(connectStateDescription(connectionState)) inProgress=\(isConnectionInProgress) saved=\(savedPeripheralID()?.uuidString ?? "nil") standingAllowed=\(standingConnectAllowed) autoReconnect=\(autoReconnectEnabled) userDisconnect=\(userInitiatedDisconnect)",
+            direction: .sent
+        )
+        guard !isManualHardReconnectCentralTransitionInProgress else {
+            connectLog("ensureConnected deferred: rebuilding central", detail: "reason=\(reason)")
+            return
+        }
+        if case .ready = connectionState {
+            pendingBatteryRefresh = false
+            guard !Self.routineRefreshSkipReasons.contains(reason) else {
+                connectLog("ensureConnected already ready, skip routine refresh", detail: "reason=\(reason)")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.scheduleRoutineDeviceRefresh()
+            }
+            connectLog("ensureConnected already ready, schedule routine refresh", detail: "reason=\(reason)")
+            return
+        }
+
+        // 系统蓝牙已连接时，优先直接接管 GATT（connect 回调可能不会触发）
+        if attachToAlreadyConnectedPeripheralIfPossible() {
+            connectLog("ensureConnected attached system-connected peripheral", detail: "reason=\(reason)")
+            return
+        }
+
+        // 已在连接中，不重复发起
+        if isConnectionInProgress {
+            connectLog("ensureConnected skipped: connection already in progress", detail: "reason=\(reason)")
+            return
+        }
+
+        refreshBatteryLevel()
+    }
+
+    /// 首页显示时刷新电量：系统已连接则查询，否则只等待系统连接事件。
+    func refreshBatteryLevel() {
+        guard !isManualHardReconnectCentralTransitionInProgress else {
+            connectLog("refreshBatteryLevel deferred: rebuilding central")
+            return
+        }
+        if case .ready = connectionState {
+            pendingBatteryRefresh = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.scheduleRoutineDeviceRefresh()
+            }
+            return
+        }
+
+        // 系统已连接：直接发现服务，不要再 connect（否则可能永远等不到 didConnect）
+        if attachToAlreadyConnectedPeripheralIfPossible() {
+            connectLog("refreshBatteryLevel attached system-connected peripheral")
+            return
+        }
+
+        // 已在连接流程中，不重复发起
+        if isConnectionInProgress {
+            connectLog("refreshBatteryLevel skipped: connection already in progress")
+            return
+        }
+
+        guard centralManager.state == .poweredOn else {
+            pendingBatteryRefresh = true
+            connectLog("refreshBatteryLevel deferred: bluetooth not powered on")
+            return
+        }
+
+        pendingBatteryRefresh = false
+        isBatteryRefreshMode = true
+        hasStartedConnect = false
+        isServiceDiscovered = false
+        isNotificationEnabled = false
+        isProtocolNotificationEnabled = false
+        cancelDeviceStatusSyncRetry()
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+
+        if let id = savedPeripheralID(),
+           let peripheral = centralManager.retrievePeripherals(withIdentifiers: [id]).first {
+            connectLog(
+                "refreshBatteryLevel found saved peripheral",
+                detail: "id=\(id.uuidString) peripheralState=\(peripheralStateDescription(peripheral.state))"
+            )
+            userInitiatedDisconnect = false
+            autoReconnectEnabled = true
+            reconnectPeripheral = peripheral
+
+            // 系统层已是 connected，直接恢复特征
+            if peripheral.state == .connected {
+                attachToConnectedPeripheral(peripheral)
+                return
+            }
+
+            // 系统当前未连接：保留身份并监听，不主动发起 GATT connect。
+            isBatteryRefreshMode = false
+            standingConnectAllowed = false
+            updateState(.disconnected)
+            startSystemReconnectMonitor()
+            return
+        }
+
+        isBatteryRefreshMode = false
+        if savedPeripheralID() != nil {
+            // 系统尚未缓存该外设对象：保持监听，待系统蓝牙连接后回调
+            autoReconnectEnabled = true
+            userInitiatedDisconnect = false
+            updateState(.disconnected)
+            connectLog("refreshBatteryLevel: no peripheral object yet, waiting for system connection", detail: "saved=\(savedPeripheralID()?.uuidString ?? "nil")")
+        } else {
+            connectLog("refreshBatteryLevel: no peripheral available")
+        }
+    }
+
+    /// 挂起 iOS 原生「常驻 connect」：请求不会超时，设备回到范围内会由系统自动连上并回调 didConnect。
+    /// 请求挂起期间 UI 显示「正在连接...」；失败、冷却或用户主动断开后才显示「未连接」。
+    /// 另起轮询：眼镜关机再开时，系统 A2DP 常先连上，但 App 层 didConnect 可能迟迟不来，
+    /// 需主动 retrieveConnectedPeripherals 再 attach（切 Tab 触发 ensureConnected 也能修好，是同一路径）。
+    private func armSystemAutoConnect(
+        _ peripheral: CBPeripheral,
+        force: Bool = false,
+        systemTransportObserved: Bool = false
+    ) {
+        guard !isManualHardReconnectCentralTransitionInProgress else {
+            connectLog(
+                "standing connect deferred: rebuilding central",
+                detail: "id=\(peripheral.identifier.uuidString)"
+            )
+            return
+        }
+        guard !userInitiatedDisconnect, autoReconnectEnabled else {
+            connectLog(
+                "standing connect blocked",
+                detail: "force=\(force) userDisconnect=\(userInitiatedDisconnect) autoReconnect=\(autoReconnectEnabled) id=\(peripheral.identifier.uuidString)"
+            )
+            return
+        }
+        // 已进入人工确认点后，系统连接事件、页面刷新等自动入口都不能绕过用户点击。
+        guard manualHardReconnectPeripheralID == nil || isManualHardReconnectAttemptInProgress else {
+            connectLog(
+                "standing connect skipped: waiting for manual hard reconnect",
+                detail: "id=\(peripheral.identifier.uuidString)"
+            )
+            return
+        }
+        // BLE 已完整就绪时无需再次 connect。同一连接重复 connect 会产生延迟 didConnect，
+        // 把 ready 状态重新推进 connecting，并触发 15 秒 watchdog 无限服务发现。
+        if case .ready = connectionState,
+           connectedPeripheral?.identifier == peripheral.identifier {
+            reconnectPeripheral = connectedPeripheral ?? peripheral
+            standingConnectAllowed = true
+            standingConnectPeripheralID = nil
+            connectLog(
+                "standing connect skipped: GATT already ready",
+                detail: "id=\(peripheral.identifier.uuidString)"
+            )
+            return
+        }
+        guard !isAutomaticGATTRecoveryInProgress else {
+            connectLog(
+                "standing connect deferred: GATT recovery in progress",
+                detail: "id=\(peripheral.identifier.uuidString)"
+            )
+            return
+        }
+        guard force || standingConnectAllowed else {
+            connectLog("standing connect skipped: waiting for user tap", detail: "id=\(peripheral.identifier.uuidString)")
+            return
+        }
+        if force { standingConnectAllowed = true }
+        guard centralManager.state == .poweredOn else {
+            pendingBatteryRefresh = true
+            connectLog("standing connect deferred: bluetooth not powered on", detail: "id=\(peripheral.identifier.uuidString)")
+            return
+        }
+        let requestedID = peripheral.identifier
+        if systemTransportObserved || peripheral.state == .connected {
+            systemTransportConnectedPeripheralIDs.insert(requestedID)
+        }
+        guard let peripheral = systemConnectedPeripheral(matching: requestedID) else {
+            standingConnectAllowed = false
+            reconnectPeripheral = peripheral
+            if !isPairingSessionActive {
+                updateState(.disconnected)
+            }
+            connectLog(
+                "standing connect blocked: system transport not connected",
+                detail: "id=\(requestedID.uuidString) cachedPeripheralState=\(peripheralStateDescription(peripheral.state))"
+            )
+            startSystemReconnectMonitor()
+            return
+        }
+        if shouldRequireTemporaryManualHardReconnect(for: peripheral) {
+            requireTemporaryManualHardReconnect(for: peripheral, source: "armSystemAutoConnect")
+            return
+        }
+        reconnectPeripheral = peripheral
+        connectedPeripheral = peripheral
+        peripheral.delegate = self
+        if !isConnectionInProgress {
+            updateState(.connecting)
+        }
+        let shouldRefreshSystemTransportGrace = systemTransportObserved
+            && !systemTransportGracePeripheralIDs.contains(peripheral.identifier)
+        if shouldRefreshSystemTransportGrace {
+            systemTransportGracePeripheralIDs.insert(peripheral.identifier)
+            connectLog(
+                "system transport connected; extend GATT claim grace",
+                detail: "id=\(peripheral.identifier.uuidString) seconds=\(systemTransportConnectGraceSeconds) peripheralState=\(peripheralStateDescription(peripheral.state))"
+            )
+        }
+        // 常驻 connect 本身不设系统超时；App 看门狗只回收永久卡在 connecting 的旧 GATT。
+        if standingConnectPeripheralID != peripheral.identifier {
+            standingConnectPeripheralID = peripheral.identifier
+            savePeripheralID(peripheral.identifier)
+            connectLog(
+                "arm iOS auto-connect (standing)",
+                detail: "id=\(peripheral.identifier.uuidString) peripheralState=\(peripheralStateDescription(peripheral.state)) force=\(force)",
+                direction: .sent
+            )
+            centralManager.connect(peripheral, options: nil)
+            if !isReady {
+                startConnectWatchdog(
+                    for: peripheral,
+                    timeoutOverride: shouldRefreshSystemTransportGrace
+                        ? systemTransportConnectGraceSeconds
+                        : nil
+                )
+            }
+        } else {
+            connectLog(
+                "standing connect already armed",
+                detail: "id=\(peripheral.identifier.uuidString) peripheralState=\(peripheralStateDescription(peripheral.state))"
+            )
+            if !isReady,
+               peripheral.state == .connecting,
+               (shouldRefreshSystemTransportGrace || connectWatchdogWorkItem == nil),
+               standingConnectRecoveryCount < maxStandingConnectRecoveryAttempts {
+                startConnectWatchdog(
+                    for: peripheral,
+                    timeoutOverride: shouldRefreshSystemTransportGrace
+                        ? systemTransportConnectGraceSeconds
+                        : nil
+                )
+            }
+        }
+        // 已 ready 时只挂站岗 connect，不启轮询（markReady 也会走这里）。
+        if case .ready = connectionState { return }
+        startSystemReconnectMonitor()
+    }
+
+    /// 账号绑定 serial_number（iOS 外设 UUID）或本地已保存外设 ID，供首页卡片精确匹配。
+    var savedPeripheralUUIDString: String? {
+        savedPeripheralID()?.uuidString
+    }
+
+    /// UI 只能在已进入失败确认点时拿到可点击 ID。
+    /// 即使 ID 在一次状态切换中短暂存在，connecting 也不会暴露点击入口。
+    var manualHardReconnectPeripheralUUIDString: String? {
+        guard case .failed = connectionState else { return nil }
+        return manualHardReconnectPeripheralID?.uuidString
+    }
+
+    /// `retrievePeripherals` 只代表系统缓存过外设，不能证明「设置 > 蓝牙」当前已连接。
+    /// 自动连接门禁只接受 retrieveConnectedPeripherals 或目标 peerConnected 事件。
+    private func systemConnectedPeripheral(matching id: UUID) -> CBPeripheral? {
+        guard let centralManager, centralManager.state == .poweredOn else { return nil }
+        let connected = centralManager.retrieveConnectedPeripherals(
+            withServices: [AstraA1BleProtocol.serviceUUID]
+        )
+        if let peripheral = connected.first(where: { $0.identifier == id }) {
+            systemTransportConnectedPeripheralIDs.insert(id)
+            return peripheral
+        }
+        guard systemTransportConnectedPeripheralIDs.contains(id) else { return nil }
+        return centralManager.retrievePeripherals(withIdentifiers: [id]).first
+            ?? reconnectPeripheral.flatMap { $0.identifier == id ? $0 : nil }
+    }
+
+    /// Manager 硬重建后必须由新 Manager 重新确认，不能沿用旧连接事件留下的标记。
+    private func freshlyRetrievedSystemConnectedPeripheral(matching id: UUID) -> CBPeripheral? {
+        guard let centralManager, centralManager.state == .poweredOn else { return nil }
+        let connected = centralManager.retrieveConnectedPeripherals(
+            withServices: [AstraA1BleProtocol.serviceUUID]
+        )
+        guard let peripheral = connected.first(where: { $0.identifier == id }) else { return nil }
+        systemTransportConnectedPeripheralIDs.insert(id)
+        return peripheral
+    }
+
+    private func clearManualHardReconnectRequirement(reason: String) {
+        guard manualHardReconnectPeripheralID != nil else { return }
+        connectLog(
+            "clear manual hard reconnect requirement",
+            detail: "reason=\(reason) id=\(manualHardReconnectPeripheralID?.uuidString ?? "nil")"
+        )
+        manualHardReconnectPeripheralID = nil
+    }
+
+    private func shouldRequireTemporaryManualHardReconnect(for peripheral: CBPeripheral) -> Bool {
+        guard temporarilyRequireManualHardReconnectForTesting,
+              !isManualHardReconnectAttemptInProgress,
+              !isPairingSessionActive,
+              !isUserInitiatedPairingConnect,
+              let savedID = savedPeripheralID() else { return false }
+        return peripheral.identifier == savedID
+    }
+
+    /// 临时测试入口。调用方必须已经通过 retrieveConnectedPeripherals / peerConnected
+    /// 确认系统传输层连接，不能仅凭 retrievePeripherals 缓存进入可点击状态。
+    private func requireTemporaryManualHardReconnect(
+        for peripheral: CBPeripheral,
+        source: String
+    ) {
+        guard shouldRequireTemporaryManualHardReconnect(for: peripheral) else { return }
+        if case .failed = connectionState,
+           manualHardReconnectPeripheralID == peripheral.identifier {
+            return
+        }
+        cancelAutomaticGATTRecovery(reason: "temporary manual-only test", resetAttempts: true)
+        stopSystemReconnectMonitor()
+        cancelConnectWatchdog()
+        cancelDiscoverServicesWorkItem()
+        standingConnectAllowed = false
+        standingConnectPeripheralID = nil
+        hasStartedConnect = false
+        isBatteryRefreshMode = false
+        manualHardReconnectPeripheralID = peripheral.identifier
+        reconnectPeripheral = peripheral
+        resetConnectionHandles()
+        updateState(.failed(L10n.t("连接失败，请点击重试", "Connection failed. Tap to retry.")))
+        connectLog(
+            "temporary manual-only mode: waiting for user hard reconnect",
+            detail: "source=\(source) id=\(peripheral.identifier.uuidString)"
+        )
+    }
+
+    private func cancelManualHardReconnectState(reason: String) {
+        let hadState = manualHardReconnectPeripheralID != nil
+            || pendingManualHardReconnectPeripheralID != nil
+            || isManualHardReconnectAttemptInProgress
+            || manualHardReconnectLookupWorkItem != nil
+            || manualHardReconnectReleaseTimeoutWorkItem != nil
+            || manualHardReconnectCentralRebuildWorkItem != nil
+            || manualHardReconnectOldCentral != nil
+        let oldCentral = manualHardReconnectOldCentral
+        let shouldRestoreOldCentralDelegate = manualHardReconnectCentralRebuildWorkItem != nil
+            && oldCentral != nil
+            && centralManager === oldCentral
+        manualHardReconnectLookupWorkItem?.cancel()
+        manualHardReconnectLookupWorkItem = nil
+        manualHardReconnectReleaseTimeoutWorkItem?.cancel()
+        manualHardReconnectReleaseTimeoutWorkItem = nil
+        manualHardReconnectCentralRebuildWorkItem?.cancel()
+        manualHardReconnectCentralRebuildWorkItem = nil
+        manualHardReconnectLookupAttempt = 0
+        pendingManualHardReconnectPeripheralID = nil
+        isManualHardReconnectAttemptInProgress = false
+        manualHardReconnectPeripheralID = nil
+        manualHardReconnectOldPeripheral?.delegate = nil
+        manualHardReconnectOldPeripheral = nil
+        manualHardReconnectOldCentral = nil
+        if shouldRestoreOldCentralDelegate, let oldCentral {
+            oldCentral.delegate = self
+            didRegisterConnectionEvents = false
+            if oldCentral.state == .poweredOn {
+                registerForSystemConnectionEventsIfNeeded()
+            }
+        }
+        if hadState {
+            connectLog("manual hard reconnect cancelled", detail: "reason=\(reason)")
+        }
+    }
+
+    /// 仅「系统已连接 + 自动软恢复已耗尽」时可调用。
+    /// 用户点击后先等旧连接释放，再创建无状态恢复标识的临时 central。
+    @discardableResult
+    func hardReconnectAfterUserTap(peripheralID: UUID) -> Bool {
+        guard case .failed = connectionState,
+              manualHardReconnectPeripheralID == peripheralID else {
+            connectLog(
+                "manual hard reconnect ignored: card is not retryable",
+                detail: "id=\(peripheralID.uuidString) required=\(manualHardReconnectPeripheralID?.uuidString ?? "nil")"
+            )
+            return false
+        }
+        guard let systemPeripheral = systemConnectedPeripheral(matching: peripheralID) else {
+            clearManualHardReconnectRequirement(reason: "user tap but system transport disconnected")
+            updateState(.disconnected)
+            startSystemReconnectMonitor()
+            return true
+        }
+
+        connectLog(
+            "manual hard reconnect: begin old context release",
+            detail: "id=\(peripheralID.uuidString)",
+            direction: .sent
+        )
+        manualHardReconnectPeripheralID = nil
+        pendingManualHardReconnectPeripheralID = peripheralID
+        isManualHardReconnectAttemptInProgress = true
+        manualHardReconnectLookupAttempt = 0
+        userInitiatedDisconnect = false
+        autoReconnectEnabled = true
+        standingConnectAllowed = false
+        standingConnectRecoveryCount = 0
+        cancelAutomaticGATTRecovery(reason: "user requested hard reconnect", resetAttempts: true)
+        stopSystemReconnectMonitor()
+        cancelConnectWatchdog()
+        cancelDiscoverServicesWorkItem()
+        cancelScanTimeout()
+        cancelProbeStart()
+        manualReconnectScanWorkItem?.cancel()
+        manualReconnectScanWorkItem = nil
+        manualHardReconnectLookupWorkItem?.cancel()
+        manualHardReconnectLookupWorkItem = nil
+
+        let oldCentral = centralManager!
+        let oldPeripheral = connectedPeripheral ?? reconnectPeripheral ?? systemPeripheral
+        manualHardReconnectOldCentral = oldCentral
+        manualHardReconnectOldPeripheral = oldPeripheral
+        oldCentral.stopScan()
+        oldPeripheral.delegate = nil
+        standingConnectPeripheralID = nil
+        reconnectPeripheral = nil
+        resetConnectionHandles()
+        updateState(.connecting)
+        connectLog(
+            "manual hard reconnect: waiting for old link release",
+            detail: "id=\(peripheralID.uuidString) state=\(peripheralStateDescription(oldPeripheral.state)) timeout=\(manualHardReconnectReleaseTimeoutSeconds)s"
+        )
+        if oldPeripheral.state == .disconnected {
+            completeManualHardReconnectOldContextRelease(
+                central: oldCentral,
+                peripheral: oldPeripheral,
+                source: "already-disconnected"
+            )
+        } else {
+            oldCentral.cancelPeripheralConnection(oldPeripheral)
+            scheduleManualHardReconnectReleaseTimeout(
+                central: oldCentral,
+                peripheral: oldPeripheral
+            )
+        }
+        return true
+    }
+
+    private func scheduleManualHardReconnectReleaseTimeout(
+        central: CBCentralManager,
+        peripheral: CBPeripheral
+    ) {
+        manualHardReconnectReleaseTimeoutWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self, weak central, weak peripheral] in
+            guard let self, let central, let peripheral else { return }
+            self.manualHardReconnectReleaseTimeoutWorkItem = nil
+            self.completeManualHardReconnectOldContextRelease(
+                central: central,
+                peripheral: peripheral,
+                source: "timeout"
+            )
+        }
+        manualHardReconnectReleaseTimeoutWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + manualHardReconnectReleaseTimeoutSeconds,
+            execute: work
+        )
+    }
+
+    private func isManualHardReconnectOldContext(
+        central: CBCentralManager,
+        peripheral: CBPeripheral
+    ) -> Bool {
+        guard isManualHardReconnectAttemptInProgress,
+              let targetID = pendingManualHardReconnectPeripheralID,
+              let oldCentral = manualHardReconnectOldCentral else { return false }
+        return central === oldCentral && peripheral.identifier == targetID
+    }
+
+    @discardableResult
+    private func consumeManualHardReconnectOldContextRelease(
+        central: CBCentralManager,
+        peripheral: CBPeripheral,
+        source: String
+    ) -> Bool {
+        guard isManualHardReconnectOldContext(central: central, peripheral: peripheral) else {
+            return false
+        }
+        completeManualHardReconnectOldContextRelease(
+            central: central,
+            peripheral: peripheral,
+            source: source
+        )
+        return true
+    }
+
+    private func completeManualHardReconnectOldContextRelease(
+        central: CBCentralManager,
+        peripheral: CBPeripheral,
+        source: String
+    ) {
+        guard isManualHardReconnectOldContext(central: central, peripheral: peripheral) else {
+            return
+        }
+        manualHardReconnectReleaseTimeoutWorkItem?.cancel()
+        manualHardReconnectReleaseTimeoutWorkItem = nil
+        central.stopScan()
+        if peripheral.state != .disconnected {
+            central.cancelPeripheralConnection(peripheral)
+        }
+        peripheral.delegate = nil
+        central.delegate = nil
+        didRegisterConnectionEvents = false
+        standingConnectPeripheralID = nil
+        reconnectPeripheral = nil
+        resetConnectionHandles()
+        connectLog(
+            "manual hard reconnect: old link released",
+            detail: "source=\(source) id=\(peripheral.identifier.uuidString) state=\(peripheralStateDescription(peripheral.state))"
+        )
+
+        manualHardReconnectCentralRebuildWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self, weak central] in
+            guard let self, let central,
+                  self.isManualHardReconnectAttemptInProgress,
+                  self.pendingManualHardReconnectPeripheralID != nil,
+                  self.centralManager === central,
+                  self.manualHardReconnectOldCentral === central else { return }
+            self.manualHardReconnectCentralRebuildWorkItem = nil
+            self.manualHardReconnectOldPeripheral = nil
+            self.manualHardReconnectOldCentral = nil
+            self.connectLog(
+                "manual hard reconnect: create ephemeral CBCentralManager",
+                detail: "restoreIdentifier=none delay=\(self.manualHardReconnectCentralRebuildDelaySeconds)s",
+                direction: .sent
+            )
+            self.centralManager = CBCentralManager(delegate: self, queue: nil, options: nil)
+        }
+        manualHardReconnectCentralRebuildWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + manualHardReconnectCentralRebuildDelaySeconds,
+            execute: work
+        )
+    }
+
+    private func resumeManualHardReconnectIfPossible() {
+        guard isManualHardReconnectAttemptInProgress,
+              let targetID = pendingManualHardReconnectPeripheralID,
+              !isManualHardReconnectCentralTransitionInProgress,
+              centralManager?.state == .poweredOn else { return }
+
+        // 点击时已确认系统连接。新 manager 优先重新查询；查询窗口内允许使用
+        // 刚刚的 peerConnected 证据取回新 CBPeripheral，peerDisconnected 会立即清掉该证据。
+        guard let peripheral = systemConnectedPeripheral(matching: targetID) else {
+            manualHardReconnectLookupAttempt += 1
+            guard manualHardReconnectLookupAttempt <= maxManualHardReconnectLookupAttempts else {
+                isManualHardReconnectAttemptInProgress = false
+                pendingManualHardReconnectPeripheralID = nil
+                manualHardReconnectLookupWorkItem = nil
+                systemTransportConnectedPeripheralIDs.remove(targetID)
+                updateState(.disconnected)
+                startSystemReconnectMonitor()
+                connectLog(
+                    "manual hard reconnect stopped: system transport not connected",
+                    detail: "id=\(targetID.uuidString)"
+                )
+                return
+            }
+            let work = DispatchWorkItem { [weak self] in
+                self?.manualHardReconnectLookupWorkItem = nil
+                self?.resumeManualHardReconnectIfPossible()
+            }
+            manualHardReconnectLookupWorkItem = work
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + manualHardReconnectLookupIntervalSeconds,
+                execute: work
+            )
+            return
+        }
+
+        manualHardReconnectLookupWorkItem?.cancel()
+        manualHardReconnectLookupWorkItem = nil
+        pendingManualHardReconnectPeripheralID = nil
+        reconnectPeripheral = peripheral
+        standingConnectAllowed = true
+        connectLog(
+            "manual hard reconnect: fresh central connect",
+            detail: "id=\(targetID.uuidString) peripheralState=\(peripheralStateDescription(peripheral.state))",
+            direction: .sent
+        )
+        if peripheral.state == .connected {
+            attachToConnectedPeripheral(peripheral)
+        } else {
+            armSystemAutoConnect(peripheral, force: true, systemTransportObserved: true)
+        }
+    }
+
+    /// 眼镜断电重连后，系统层已连但 App GATT 未就绪时，周期尝试接管。
+    private func startSystemReconnectMonitor() {
+        stopSystemReconnectMonitor()
+        guard autoReconnectEnabled, !userInitiatedDisconnect else { return }
+        guard manualHardReconnectPeripheralID == nil else { return }
+        if case .ready = connectionState { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.tickSystemReconnectMonitor()
+        }
+        systemReconnectMonitorWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    }
+
+    private func stopSystemReconnectMonitor() {
+        systemReconnectMonitorWorkItem?.cancel()
+        systemReconnectMonitorWorkItem = nil
+    }
+
+    private func scheduleNextSystemReconnectMonitor(after seconds: TimeInterval) {
+        stopSystemReconnectMonitor()
+        guard autoReconnectEnabled, !userInitiatedDisconnect else { return }
+        guard manualHardReconnectPeripheralID == nil else { return }
+        if case .ready = connectionState { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.tickSystemReconnectMonitor()
+        }
+        systemReconnectMonitorWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    private func tickSystemReconnectMonitor() {
+        systemReconnectMonitorWorkItem = nil
+        guard autoReconnectEnabled, !userInitiatedDisconnect else { return }
+        guard !isAutomaticGATTRecoveryInProgress else { return }
+        if case .ready = connectionState { return }
+
+        // GATT 发现进行中：不打断，稍后再看是否已 ready / 是否卡住需重 attach。
+        if isGATTDiscoveryInProgress {
+            scheduleNextSystemReconnectMonitor(after: 2.5)
+            return
+        }
+
+        if attachToAlreadyConnectedPeripheralIfPossible() {
+            connectLog("system reconnect monitor: attached system-connected peripheral")
+            // attach 会进入 connecting；ready 后 updateState 停轮询。发现中再盯一眼。
+            scheduleNextSystemReconnectMonitor(after: 3.0)
+            return
+        }
+
+        // 系统未连接：只监听/轮询，不允许拿缓存 CBPeripheral 主动 connect，也不累计失败次数。
+        scheduleNextSystemReconnectMonitor(after: 2.5)
+    }
+
+    /// 系统层外设连接/断开事件（A2DP 先连上、App GATT 未就绪时的补救入口）。
+    private func registerForSystemConnectionEventsIfNeeded() {
+        guard !didRegisterConnectionEvents else { return }
+        didRegisterConnectionEvents = true
+        centralManager.registerForConnectionEvents(options: [
+            CBConnectionEventMatchingOption.serviceUUIDs: [AstraA1BleProtocol.serviceUUID]
+        ])
+        print("\(logTag) registered for system connection events")
+        connectLog("registered for system connection events")
+    }
+
+    /// 接管系统已连接的外设并完成服务发现。成功返回 true。
+    /// 只接管「已保存」那副眼镜，禁止系统已连的其它同型号眼镜抢身份。
+    @discardableResult
+    private func attachToAlreadyConnectedPeripheralIfPossible() -> Bool {
+        if isManualHardReconnectCentralTransitionInProgress {
+            connectLog("attach deferred: rebuilding central")
+            return true
+        }
+        guard centralManager.state == .poweredOn else { return false }
+        if case .ready = connectionState { return true }
+        if case .failed = connectionState, manualHardReconnectPeripheralID != nil {
+            connectLog(
+                "attach skipped: waiting for manual hard reconnect",
+                detail: "id=\(manualHardReconnectPeripheralID?.uuidString ?? "nil")"
+            )
+            return true
+        }
+
+        // 已在对该外设做 GATT 发现：不要重复 attach（会打断 discoverServices）
+        if isGATTDiscoveryInProgress {
+            connectLog(
+                "attach skipped: GATT discovery already in progress",
+                detail: "state=\(connectStateDescription(connectionState))"
+            )
+            return true
+        }
+
+        let savedID = savedPeripheralID()
+        let systemConnected = centralManager.retrieveConnectedPeripherals(
+            withServices: [AstraA1BleProtocol.serviceUUID]
+        )
+        systemTransportConnectedPeripheralIDs.formUnion(systemConnected.map(\.identifier))
+
+        // 0) 当前持有的外设在系统层已是 connected，且必须是已保存目标
+        if let peripheral = connectedPeripheral ?? reconnectPeripheral,
+           peripheral.state == .connected {
+            if let savedID, peripheral.identifier != savedID {
+                connectLog(
+                    "attach held peripheral ignored (not saved)",
+                    detail: "held=\(peripheral.identifier.uuidString) saved=\(savedID.uuidString)"
+                )
+            } else {
+                connectLog(
+                    "attach held peripheral already connected",
+                    detail: "id=\(peripheral.identifier.uuidString)"
+                )
+                attachToConnectedPeripheral(peripheral)
+                return true
+            }
+        }
+
+        // 1) 优先：已保存 UUID 且系统传输层已连接。
+        // retrieveConnectedPeripherals 可能返回 state=disconnected：这表示系统/其它 profile
+        // 已连，但本 CBCentralManager 还没认领 GATT。此时挂起 connect 等 didConnect，不走短看门狗反复取消。
+        if let savedID {
+            if let peripheral = systemConnected.first(where: { $0.identifier == savedID }) {
+                if peripheral.state == .connected {
+                    connectLog("attach saved system-connected peripheral", detail: "id=\(savedID.uuidString)")
+                    attachToConnectedPeripheral(peripheral)
+                } else {
+                    connectLog(
+                        "system transport connected; arm saved GATT peripheral",
+                        detail: "id=\(savedID.uuidString) peripheralState=\(peripheralStateDescription(peripheral.state))"
+                    )
+                    userInitiatedDisconnect = false
+                    autoReconnectEnabled = true
+                    standingConnectAllowed = true
+                    armSystemAutoConnect(
+                        peripheral,
+                        force: true,
+                        systemTransportObserved: true
+                    )
+                }
+                return true
+            }
+            if let peripheral = centralManager.retrievePeripherals(withIdentifiers: [savedID]).first,
+               peripheral.state == .connected {
+                connectLog("attach saved peripheral already connected", detail: "id=\(savedID.uuidString)")
+                attachToConnectedPeripheral(peripheral)
+                return true
+            }
+            if !systemConnected.isEmpty {
+                let others = systemConnected.map(\.identifier.uuidString).joined(separator: ",")
+                connectLog(
+                    "attach skipped: other glasses connected",
+                    detail: "others=\(others) saved=\(savedID.uuidString)"
+                )
+            }
+            return false
+        }
+
+        // 2) 无已保存设备（首次/已清会话）：不自动接管任意眼镜
+        if !systemConnected.isEmpty {
+            connectLog(
+                "attach skipped: no saved peripheral",
+                detail: "ignore system-connected count=\(systemConnected.count)"
+            )
+        }
+        return false
+    }
+
+    private var isGATTDiscoveryInProgress: Bool {
+        guard let peripheral = connectedPeripheral, peripheral.state == .connected else { return false }
+        switch connectionState {
+        case .connecting, .discoveringServices, .enablingNotifications:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// 系统层已连接时：先 connect() 认领连接，再发现服务。
+    /// 仅 discoverServices 而不 connect，iOS 往往不会回调 didDiscoverServices。
+    private func attachToConnectedPeripheral(_ peripheral: CBPeripheral) {
+        guard !isAutomaticGATTRecoveryInProgress else {
+            connectLog(
+                "attach deferred: GATT recovery in progress",
+                detail: "id=\(peripheral.identifier.uuidString)"
+            )
+            return
+        }
+        if shouldRequireTemporaryManualHardReconnect(for: peripheral) {
+            systemTransportConnectedPeripheralIDs.insert(peripheral.identifier)
+            requireTemporaryManualHardReconnect(
+                for: peripheral,
+                source: "attachToConnectedPeripheral"
+            )
+            return
+        }
+        // 同一外设已在连接/发现/就绪流程中，避免 homeAppear / userInfoLoaded 重复 connect()
+        // （重复 connect 会产生多次 didConnect，并可能打断 iOS 的 MTU 协商）。
+        if connectedPeripheral?.identifier == peripheral.identifier {
+            switch connectionState {
+            case .connecting, .discoveringServices, .enablingNotifications, .ready:
+                connectLog(
+                    "attachToConnectedPeripheral ignored",
+                    detail: "state=\(connectStateDescription(connectionState)) id=\(peripheral.identifier.uuidString)"
+                )
+                return
+            default:
+                break
+            }
+        }
+
+        if identityPeripheralID != peripheral.identifier {
+            clearLiveDeviceIdentity(reason: "attach different peripheral")
+        }
+
+        cancelDiscoverServicesWorkItem()
+        userInitiatedDisconnect = false
+        autoReconnectEnabled = true
+        isBatteryRefreshMode = true
+        reconnectPeripheral = peripheral
+        connectedPeripheral = peripheral
+        peripheral.delegate = self
+        hasStartedConnect = true
+        isServiceDiscovered = false
+        isNotificationEnabled = false
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+        gattDiscoveryAttempt = 0
+        savePeripheralID(peripheral.identifier)
+
+        connectLog(
+            "attachToConnectedPeripheral",
+            detail: "id=\(peripheral.identifier.uuidString) peripheralState=\(peripheralStateDescription(peripheral.state)) services=\(peripheral.services?.count ?? -1)",
+            direction: .sent
+        )
+
+        if let services = peripheral.services, !services.isEmpty {
+            startConnectWatchdog(for: peripheral)
+            recoverCharacteristics(from: peripheral)
+            return
+        }
+
+        // Apple 要求：retrieveConnectedPeripherals 拿到的设备仍需 connect，App 才能收 GATT 回调。
+        // 已连接时 didConnect 通常会立刻回调；若没有，由 backup / watchdog 补 discoverServices。
+        updateState(.connecting)
+        connectLog("claim system connection via connect()", detail: "id=\(peripheral.identifier.uuidString)", direction: .sent)
+        centralManager.connect(peripheral, options: nil)
+
+        if peripheral.state == .connected {
+            scheduleDiscoverServices(on: peripheral, delay: 0.25, reason: "post-claim")
+        }
+        startConnectWatchdog(for: peripheral)
+    }
+
+    private func cancelDiscoverServicesWorkItem() {
+        discoverServicesWorkItem?.cancel()
+        discoverServicesWorkItem = nil
+    }
+
+    /// 在已连接外设上发起 / 重试服务发现。
+    private func scheduleDiscoverServices(on peripheral: CBPeripheral, delay: TimeInterval, reason: String) {
+        cancelDiscoverServicesWorkItem()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.beginDiscoverServices(on: peripheral, reason: reason)
+        }
+        discoverServicesWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func beginDiscoverServices(on peripheral: CBPeripheral, reason: String) {
+        cancelDiscoverServicesWorkItem()
+        guard connectedPeripheral?.identifier == peripheral.identifier else { return }
+        if case .ready = connectionState { return }
+        if isServiceDiscovered { return }
+
+        gattDiscoveryAttempt += 1
+        peripheral.delegate = self
+        updateState(.discoveringServices)
+        connectLog(
+            "discoverServices",
+            detail: "reason=\(reason) attempt=\(gattDiscoveryAttempt) peripheralState=\(peripheralStateDescription(peripheral.state))"
+        )
+        peripheral.discoverServices(nil)
+    }
+
+    /// 从已连接外设恢复写/通知特征并读电量。
+    private func recoverCharacteristics(from peripheral: CBPeripheral) {
+        let services = peripheral.services ?? []
+        assignCharacteristics(from: services)
+        if writeCharacteristic != nil {
+            isServiceDiscovered = true
+            if let notifyCharacteristic {
+                if notifyCharacteristic.isNotifying {
+                    isProtocolNotificationEnabled = true
+                    isNotificationEnabled = true
+                    handleRecoveredReady(preferBatteryOnly: isDeviceInfoReady)
+                } else {
+                    // 等协议 notify 订阅成功后再 ready + getdevstat，避免回包丢失。
+                    updateState(.enablingNotifications)
+                    peripheral.setNotifyValue(true, for: notifyCharacteristic)
+                }
+            } else {
+                isProtocolNotificationEnabled = true
+                isNotificationEnabled = true
+                handleRecoveredReady(preferBatteryOnly: isDeviceInfoReady)
+            }
+        } else if let protocolService = services.first(where: { $0.uuid == AstraA1BleProtocol.serviceUUID }) {
+            updateState(.discoveringServices)
+            pendingCharacteristicDiscoveries = 1
+            peripheral.discoverCharacteristics(nil, for: protocolService)
+        } else {
+            updateState(.discoveringServices)
+            peripheral.discoverServices(nil)
+        }
+    }
+
+    /// recoverCharacteristics 直接进 ready 时补刷身份，避免跳过 getdevinfo。
+    private func handleRecoveredReady(preferBatteryOnly: Bool) {
+        prepareBatteryForFreshRead()
+        updateState(.ready)
+        identityPeripheralID = connectedPeripheral?.identifier
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self else { return }
+            self.isBatteryRefreshMode = false
+            // getdevstat 由 updateState(.ready) 统一调度，这里不再重复发。
+            if preferBatteryOnly, self.isDeviceInfoReady {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    self.scheduleRoutineDeviceRefresh()
+                }
+            } else {
+                self.statusMessage = L10n.t("正在读取设备信息...", "Reading device info...")
+                self.queryInitialDeviceInfo()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                    self.markDeviceInfoReadyIfNeeded(force: true)
+                }
+            }
+        }
+    }
+
+    /// 由 AiVisionTransferManager 在识图开始/结束时调用。
+    func setAIVisionTransferBusy(_ busy: Bool) {
+        let wasBusy = isAIVisionTransferBusy
+        guard wasBusy != busy else { return }
+        isAIVisionTransferBusy = busy
+        print("\(logTag) aiVisionTransferBusy=\(busy)")
+        if wasBusy, !busy {
+            finishRuntimeOperationIfNeeded(
+                expected: .aiVisionOperating,
+                fallback: .unknown,
+                reason: "ai-vision-finished"
+            )
+            // 识图结束：补刷电量与待导入（此前被挡的查询）。
+            scheduleRoutineDeviceRefresh()
+        }
+    }
+
+    func queryBatteryOnly() {
+        if isFirmwareUpgradeFlowBusy {
+            deferredBatteryQuery = true
+            print("\(logTag) queryBatteryOnly deferred: firmware upgrade busy")
+            return
+        }
+        if isAIVisionTransferBusy {
+            deferredBatteryQuery = true
+            print("\(logTag) queryBatteryOnly deferred: AI vision transfer busy")
+            return
+        }
+        if isSerialGetDevInfoInProgress {
+            deferredBatteryQuery = true
+            print("\(logTag) queryBatteryOnly deferred: serial getdevinfo in progress")
+            return
+        }
+        let ok = sendCommand(AstraA1BleProtocol.buildGetDevInfoCommand(type: .battery))
+        print("\(logTag) queryBatteryOnly sent=\(ok)")
+    }
+
+    private func scheduleRoutineDeviceRefresh() {
+        if isFirmwareUpgradeFlowBusy {
+            deferredBatteryQuery = true
+            deferredPendingImportQuery = true
+            print("\(logTag) routine refresh deferred: firmware upgrade busy")
+            return
+        }
+        if isAIVisionTransferBusy {
+            deferredBatteryQuery = true
+            deferredPendingImportQuery = true
+            print("\(logTag) routine refresh deferred: AI vision transfer busy")
+            return
+        }
+        if isSerialGetDevInfoInProgress {
+            deferredBatteryQuery = true
+            deferredPendingImportQuery = true
+            print("\(logTag) routine refresh deferred: serial getdevinfo in progress")
+            return
+        }
+        // 首页 onAppear + userInfoLoaded 常连续触发，合并成一次。
+        routineRefreshWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if self.isFirmwareUpgradeFlowBusy || self.isAIVisionTransferBusy || self.isSerialGetDevInfoInProgress {
+                self.deferredBatteryQuery = true
+                self.deferredPendingImportQuery = true
+                print("\(self.logTag) routine refresh deferred after debounce")
+                return
+            }
+            self.queryBatteryOnly()
+            self.queryPendingImportFiles()
+        }
+        routineRefreshWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+    }
+
+    /// 连上/接管 GATT 后等待新读数期间，沿用同一副眼镜上次的非 0 电量，等 batt0 或 batteryntf 覆盖。
+    private func prepareBatteryForFreshRead() {
+        guard let last = lastKnownBatteryPercent, last > 0,
+              lastKnownBatteryPeripheralID == connectedPeripheral?.identifier else {
+            clearBatteryDisplay()
+            return
+        }
+        deviceBattery = "\(last)"
+        isBatteryLevelKnown = true
+    }
+
+    /// 仅清展示值，保留 lastKnown 供同一副眼镜重连后回填。
+    private func clearBatteryDisplay() {
+        deviceBattery = nil
+        isBatteryLevelKnown = false
+    }
+
+    private func resetBatteryDisplayForFreshRead() {
+        lastKnownBatteryPercent = nil
+        lastKnownBatteryPeripheralID = nil
+        clearBatteryDisplay()
+    }
+
+    /// 对齐安卓 DevicePagerAdapter.mergeDeviceInfo：读到 0 时若已有非 0 读数则保留旧值，
+    /// 固件在忙（传输/录音）时会回 0，直接覆盖会让首页反复跳 0%。
+    private func applyBatteryPercent(_ percent: Int, isCharging: Bool, source: String) {
+        let clamped = max(0, min(100, percent))
+        if clamped == 0, let last = lastKnownBatteryPercent, last > 0 {
+            deviceIsCharging = isCharging
+            print("\(logTag) battery \(source)=0 ignored, keep last=\(last)%")
+            return
+        }
+        if clamped > 0 {
+            lastKnownBatteryPercent = clamped
+            lastKnownBatteryPeripheralID = connectedPeripheral?.identifier
+        }
+        deviceBattery = "\(clamped)"
+        deviceIsCharging = isCharging
+        isBatteryLevelKnown = true
+        print("\(logTag) battery updated source=\(source) level=\(clamped)% charging=\(isCharging)")
+    }
+
+    /// 连上后周期性主动查询电量（安卓 startBatteryPolling 等价实现）。
+    private func startBatteryPolling() {
+        stopBatteryPolling()
+        scheduleNextBatteryPoll(after: 2)
+    }
+
+    private func stopBatteryPolling() {
+        batteryPollingWorkItem?.cancel()
+        batteryPollingWorkItem = nil
+    }
+
+    private func scheduleNextBatteryPoll(after seconds: TimeInterval) {
+        batteryPollingWorkItem?.cancel()
+        guard case .ready = connectionState else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.tickBatteryPolling()
+        }
+        batteryPollingWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    private func tickBatteryPolling() {
+        batteryPollingWorkItem = nil
+        guard case .ready = connectionState else { return }
+        if isFirmwareUpgradeFlowBusy {
+            deferredBatteryQuery = true
+            print("\(logTag) battery poll deferred: firmware upgrade busy")
+            return
+        }
+        queryBatteryOnly()
+        let next = isBatteryLevelKnown ? batteryPollingInterval : batteryPollingRetryInterval
+        scheduleNextBatteryPoll(after: next)
+    }
+
+    private func runDeferredBatteryQueryIfNeeded() {
+        guard deferredBatteryQuery else { return }
+        deferredBatteryQuery = false
+        queryBatteryOnly()
+    }
+
+    private func runDeferredRoutineQueriesIfNeeded() {
+        guard !isFirmwareUpgradeFlowBusy else { return }
+        runDeferredBatteryQueryIfNeeded()
+        guard deferredPendingImportQuery else { return }
+        deferredPendingImportQuery = false
+        queryPendingImportFiles()
+    }
+
+    /// 查询眼镜端待导入媒体文件数量。
+    func queryPendingImportFiles() {
+        guard isReady else {
+            print("\(logTag) queryPendingImportFiles skipped: not ready")
+            return
+        }
+        if isFirmwareUpgradeFlowBusy {
+            deferredPendingImportQuery = true
+            print("\(logTag) queryPendingImportFiles deferred: firmware upgrade busy")
+            return
+        }
+        if isAIVisionTransferBusy {
+            deferredPendingImportQuery = true
+            print("\(logTag) queryPendingImportFiles deferred: AI vision transfer busy")
+            return
+        }
+        if isSerialGetDevInfoInProgress {
+            deferredPendingImportQuery = true
+            print("\(logTag) queryPendingImportFiles deferred: serial getdevinfo in progress")
+            return
+        }
+        let ok = sendCommand(AstraA1BleProtocol.buildHasNewFileCommand())
+        print("\(logTag) queryPendingImportFiles sent=\(ok)")
+    }
+
+    /// 导入完成后 BLE 暂不可用时，本地先扣减待导入数量，避免横幅残留。
+    func noteImportedMediaFiles(count: Int) {
+        guard count > 0 else { return }
+        let before = pendingImportFileCount
+        pendingImportFileCount = max(0, pendingImportFileCount - count)
+        print("\(logTag) noteImportedMediaFiles -\(count) pending \(before) -> \(pendingImportFileCount)")
+    }
+
+    /// 升级检测：优先等初连 getdevinfo 回包；仍缺则串行补查（对齐安卓连上就查 ver28/ver63）。
+    func queryUpgradeDeviceInfo() {
+        guard case .ready = connectionState else { return }
+        let needSN = (deviceSN ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let needBle = (deviceVersion2800 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let needFw = (deviceVersion6350 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard needSN || needBle || needFw else {
+            print("\(logTag) queryUpgradeDeviceInfo skipped: versions already present")
+            return
+        }
+        if isSerialGetDevInfoInProgress {
+            print("\(logTag) queryUpgradeDeviceInfo deferred: getdevinfo in progress")
+            return
+        }
+        // 初连约 1.2s 发完；再等一会，缺啥补啥，避免与 queryInitialDeviceInfo 叠发。
+        print("\(logTag) queryUpgradeDeviceInfo will retry fill-in after 2.0s if still missing")
+        let generation = initialDeviceInfoQueryGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self, case .ready = self.connectionState else { return }
+            guard self.initialDeviceInfoQueryGeneration == generation else {
+                print("\(self.logTag) queryUpgradeDeviceInfo fill-in skipped: connection/query generation changed")
+                return
+            }
+            let stillNeedSN = (self.deviceSN ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let stillNeedBle = (self.deviceVersion2800 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let stillNeedFw = (self.deviceVersion6350 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            guard stillNeedSN || stillNeedBle || stillNeedFw else {
+                print("\(self.logTag) queryUpgradeDeviceInfo fill-in skipped: versions arrived")
+                return
+            }
+            guard !self.isSerialGetDevInfoInProgress else {
+                print("\(self.logTag) queryUpgradeDeviceInfo fill-in deferred: getdevinfo in progress")
+                return
+            }
+            self.refreshDeviceVersionsAndStorage(includeSerialNumber: stillNeedSN, clearExisting: false)
+        }
+    }
+
+    /// 关于设备页：逐项串行拉取名称、型号、SN、存储、蓝牙/固件版本等。
+    func queryAboutDeviceInfo() {
+        guard !isFirmwareUpgradeFlowBusy else {
+            print("\(logTag) queryAboutDeviceInfo skipped: firmware upgrade busy")
+            return
+        }
+        guard case .ready = connectionState else {
+            ensureConnected(reason: "aboutDevice")
+            return
+        }
+        cancelVersionsAndStorageQuery()
+        cancelAboutDeviceInfoQuery()
+        // 不先清空版本：查失败时仍可显示上次成功值（安卓 DeviceInfo 也是字段级覆盖）。
+        isQueryingAboutDeviceInfo = true
+        aboutDeviceInfoPendingTypes = [
+            .name, .model, .sn, .storage, .version2800, .version6350
+        ]
+        print("\(logTag) queryAboutDeviceInfo start serial count=\(aboutDeviceInfoPendingTypes.count)")
+        sendNextAboutDeviceInfoQuery()
+    }
+
+    /// 进入升级页等：串行 getdevinfo 拉存储、蓝牙/固件版本。
+    /// - Parameter clearExisting: true 时先清空再查（强制刷新）；false 保留旧值直到新包覆盖。
+    func refreshDeviceVersionsAndStorage(includeSerialNumber: Bool = false, clearExisting: Bool = true) {
+        guard !isFirmwareUpgradeFlowBusy else {
+            print("\(logTag) refreshDeviceVersionsAndStorage skipped: firmware upgrade busy")
+            return
+        }
+        guard case .ready = connectionState else {
+            ensureConnected(reason: "refreshVersionsAndStorage")
+            return
+        }
+        cancelAboutDeviceInfoQuery()
+        isQueryingAboutDeviceInfo = false
+        cancelVersionsAndStorageQuery()
+        if clearExisting {
+            invalidateDeviceVersionsAndStorageCache()
+        }
+
+        isQueryingDeviceVersionsAndStorage = true
+        var types: [AstraA1BleProtocol.DevInfoType] = []
+        if includeSerialNumber {
+            types.append(.sn)
+        }
+        types.append(contentsOf: [.storage, .version2800, .version6350])
+        versionsStoragePendingTypes = types
+        print("\(logTag) refreshDeviceVersionsAndStorage start count=\(types.count) includeSN=\(includeSerialNumber) clear=\(clearExisting)")
+        sendNextVersionsAndStorageQuery()
+    }
+
+    private func invalidateDeviceVersionsAndStorageCache() {
+        deviceStorage = nil
+        deviceVersion2800 = nil
+        deviceVersion6350 = nil
+        settingsVideoResolutionProfile = nil
+        settingsWearDetectionEnabled = nil
+        aiVoiceListeningDurationResponse = nil
+        voiceWakeupResponse = nil
+        factoryResetResult = nil
+    }
+
+    private func cancelVersionsAndStorageQuery() {
+        versionsStorageQueryTimeout?.cancel()
+        versionsStorageQueryTimeout = nil
+        versionsStoragePendingTypes = []
+        isQueryingDeviceVersionsAndStorage = false
+    }
+
+    private func cachedValue(for type: AstraA1BleProtocol.DevInfoType) -> String? {
+        let raw: String?
+        switch type {
+        case .sn: raw = deviceSN
+        case .storage: raw = deviceStorage
+        case .version2800: raw = deviceVersion2800
+        case .version6350: raw = deviceVersion6350
+        case .name: raw = deviceName
+        case .model: raw = deviceModel
+        case .battery: raw = deviceBattery
+        }
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func sendNextVersionsAndStorageQuery() {
+        guard isQueryingDeviceVersionsAndStorage else { return }
+        // 已有值的项跳过（补缺查询时避免重复打通道）。
+        while let type = versionsStoragePendingTypes.first, cachedValue(for: type) != nil {
+            print("\(logTag) refreshDeviceVersionsAndStorage skip cached type=0x\(String(format: "%02X", type.rawValue))")
+            versionsStoragePendingTypes.removeFirst()
+        }
+        guard let type = versionsStoragePendingTypes.first else {
+            isQueryingDeviceVersionsAndStorage = false
+            print("\(logTag) refreshDeviceVersionsAndStorage finished")
+            runDeferredRoutineQueriesIfNeeded()
+            return
+        }
+        notifyReadAttempts = 0
+        let sent = sendCommand(AstraA1BleProtocol.buildGetDevInfoCommand(type: type))
+        print("\(logTag) refreshDeviceVersionsAndStorage type=0x\(String(format: "%02X", type.rawValue)) sent=\(sent)")
+        armVersionsAndStorageTimeout(for: type)
+    }
+
+    private func armVersionsAndStorageTimeout(for type: AstraA1BleProtocol.DevInfoType) {
+        versionsStorageQueryTimeout?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isQueryingDeviceVersionsAndStorage else { return }
+            // 截断后正在 read 完整包：再等一轮，勿直接跳过 ver28/ver63。
+            if self.notifyReadInFlight {
+                print("\(self.logTag) refreshDeviceVersionsAndStorage type=0x\(String(format: "%02X", type.rawValue)) timeout deferred (notify read in flight)")
+                self.armVersionsAndStorageTimeout(for: type)
+                return
+            }
+            print("\(self.logTag) refreshDeviceVersionsAndStorage type=0x\(String(format: "%02X", type.rawValue)) timeout")
+            self.finishVersionsAndStorageQueryStep()
+        }
+        versionsStorageQueryTimeout = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeoutForVersionsAndStorageQuery(type), execute: work)
+    }
+
+    private func timeoutForVersionsAndStorageQuery(_ type: AstraA1BleProtocol.DevInfoType) -> TimeInterval {
+        // ver28 字符串长，notify 常截断再 read，2.5s 不够。
+        switch type {
+        case .version2800, .version6350, .storage: return 5.0
+        default: return versionsStorageQueryTimeoutSeconds
+        }
+    }
+
+    private func finishVersionsAndStorageQueryStep() {
+        versionsStorageQueryTimeout?.cancel()
+        versionsStorageQueryTimeout = nil
+        notifyReadAttempts = 0
+        if !versionsStoragePendingTypes.isEmpty {
+            versionsStoragePendingTypes.removeFirst()
+        }
+        if versionsStoragePendingTypes.isEmpty {
+            isQueryingDeviceVersionsAndStorage = false
+            print("\(logTag) refreshDeviceVersionsAndStorage finished ver28=\(deviceVersion2800 ?? "nil") ver63=\(deviceVersion6350 ?? "nil")")
+            runDeferredRoutineQueriesIfNeeded()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.getDevInfoSendIntervalSeconds) { [weak self] in
+                self?.sendNextVersionsAndStorageQuery()
+            }
+        }
+    }
+
+    private func cancelAboutDeviceInfoQuery() {
+        aboutDeviceInfoQueryTimeout?.cancel()
+        aboutDeviceInfoQueryTimeout = nil
+        aboutDeviceInfoPendingTypes = []
+    }
+
+    private func sendNextAboutDeviceInfoQuery() {
+        guard isQueryingAboutDeviceInfo else { return }
+        // 关于页：名称/型号/SN 可跳过已有；版本与存储始终重查。
+        while let type = aboutDeviceInfoPendingTypes.first {
+            let skippable: Bool = {
+                switch type {
+                case .name, .model, .sn: return cachedValue(for: type) != nil
+                default: return false
+                }
+            }()
+            if skippable {
+                print("\(logTag) queryAboutDeviceInfo skip cached type=0x\(String(format: "%02X", type.rawValue))")
+                aboutDeviceInfoPendingTypes.removeFirst()
+                continue
+            }
+            break
+        }
+        guard let type = aboutDeviceInfoPendingTypes.first else {
+            isQueryingAboutDeviceInfo = false
+            print("\(logTag) queryAboutDeviceInfo finished")
+            runDeferredRoutineQueriesIfNeeded()
+            return
+        }
+        notifyReadAttempts = 0
+        let sent = sendCommand(AstraA1BleProtocol.buildGetDevInfoCommand(type: type))
+        print("\(logTag) queryAboutDeviceInfo type=0x\(String(format: "%02X", type.rawValue)) sent=\(sent)")
+        armAboutDeviceInfoTimeout(for: type)
+    }
+
+    private func armAboutDeviceInfoTimeout(for type: AstraA1BleProtocol.DevInfoType) {
+        aboutDeviceInfoQueryTimeout?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isQueryingAboutDeviceInfo else { return }
+            if self.notifyReadInFlight {
+                print("\(self.logTag) queryAboutDeviceInfo type=0x\(String(format: "%02X", type.rawValue)) timeout deferred (notify read in flight)")
+                self.armAboutDeviceInfoTimeout(for: type)
+                return
+            }
+            print("\(self.logTag) queryAboutDeviceInfo type=0x\(String(format: "%02X", type.rawValue)) timeout")
+            self.finishAboutDeviceInfoQueryStep()
+        }
+        aboutDeviceInfoQueryTimeout = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeoutForAboutDeviceInfoQuery(type), execute: work)
+    }
+
+    private func timeoutForAboutDeviceInfoQuery(_ type: AstraA1BleProtocol.DevInfoType) -> TimeInterval {
+        switch type {
+        case .storage, .version2800, .version6350: return 5.0
+        default: return aboutDeviceInfoQueryTimeoutSeconds
+        }
+    }
+
+    private func finishAboutDeviceInfoQueryStep() {
+        aboutDeviceInfoQueryTimeout?.cancel()
+        aboutDeviceInfoQueryTimeout = nil
+        notifyReadAttempts = 0
+        if !aboutDeviceInfoPendingTypes.isEmpty {
+            aboutDeviceInfoPendingTypes.removeFirst()
+        }
+        if aboutDeviceInfoPendingTypes.isEmpty {
+            isQueryingAboutDeviceInfo = false
+            print("\(logTag) queryAboutDeviceInfo finished ver28=\(deviceVersion2800 ?? "nil") ver63=\(deviceVersion6350 ?? "nil")")
+            runDeferredRoutineQueriesIfNeeded()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.getDevInfoSendIntervalSeconds) { [weak self] in
+                self?.sendNextAboutDeviceInfoQuery()
+            }
+        }
+    }
+
+    var deviceStorageDisplay: String {
+        guard let deviceStorage else { return "—" }
+        return AstraA1BleProtocol.formatStorageDisplay(deviceStorage)
+    }
+
+    /// iOS 不向第三方 App 暴露 BLE MAC，仅连接时可用外设 UUID。
+    var deviceBluetoothIdentifier: String? {
+        connectedPeripheral?.identifier.uuidString
+    }
+
+    // MARK: - 硬件 SN 本地缓存
+
+    /// 断连时 `deviceSN` 会被清空，但解绑接口仍要求上报 `sn`。
+    /// 因此配对成功后按 `serial_number`（BLE UUID）持久化硬件 SN，解绑时从本地读。
+    private static let cachedHardwareSNMapKey = "AstraA1CachedHardwareSNMap"
+
+    private var cachedHardwareSNMap: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: Self.cachedHardwareSNMapKey) as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: Self.cachedHardwareSNMapKey) }
+    }
+
+    private static func normalizedSNKey(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed.uppercased()
+    }
+
+    /// 记录 serial_number → 硬件 SN，供断连后解绑使用。
+    func cacheHardwareSN(serialNumber: String?, sn: String?) {
+        guard let key = Self.normalizedSNKey(serialNumber),
+              let sn = sn?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sn.isEmpty else { return }
+        var map = cachedHardwareSNMap
+        guard map[key] != sn else { return }
+        map[key] = sn
+        cachedHardwareSNMap = map
+        print("\(logTag) cached hardware SN serial_number=\(key) sn=\(sn)")
+    }
+
+    /// 读取本地缓存的硬件 SN；未指定 serial_number 且只缓存过一副眼镜时回退到唯一值。
+    func cachedHardwareSN(forSerialNumber serialNumber: String?) -> String? {
+        let map = cachedHardwareSNMap
+        if let key = Self.normalizedSNKey(serialNumber), let sn = map[key] {
+            return sn
+        }
+        return map.count == 1 ? map.values.first : nil
+    }
+
+    /// 解绑成功后清掉缓存，避免重新绑定其它眼镜时命中旧 SN。
+    func forgetCachedHardwareSN(forSerialNumber serialNumber: String?) {
+        guard let key = Self.normalizedSNKey(serialNumber) else {
+            UserDefaults.standard.removeObject(forKey: Self.cachedHardwareSNMapKey)
+            return
+        }
+        var map = cachedHardwareSNMap
+        map.removeValue(forKey: key)
+        cachedHardwareSNMap = map
+    }
+
+    // MARK: - Media Import BLE Commands
+
+    enum ImportBLEError: LocalizedError {
+        case notReady
+        case sendFailed
+        case timeout
+        case openWifiRejected
+        case truncated
+        case failed(String)
+
+        var isTimeout: Bool {
+            if case .timeout = self { return true }
+            return false
+        }
+
+        /// toopenwifi 超时、被设备拒绝、wificonfig 补读失败，都可以 closewifi 后重开一次。
+        var isOpenWifiRetryable: Bool {
+            switch self {
+            case .timeout, .openWifiRejected, .truncated: return true
+            default: return false
+            }
+        }
+
+        /// 长包收不全：超时多半也是等不到完整 wificonfig 导致的。
+        var isTruncationRelated: Bool {
+            switch self {
+            case .truncated, .timeout: return true
+            default: return false
+            }
+        }
+
+        var errorDescription: String? {
+            switch self {
+            case .notReady: return L10n.t("设备未连接", "Not connected")
+            case .sendFailed: return L10n.t("发送命令失败", "Failed to send command")
+            case .timeout: return L10n.t("等待设备响应超时", "Device response timed out")
+            case .openWifiRejected: return L10n.t("眼镜开启热点失败", "Glasses failed to start hotspot")
+            case .truncated: return L10n.t("Wi-Fi 配置读取失败（BLE 数据被截断）", "Failed to read Wi-Fi config (BLE data truncated)")
+            case .failed(let message): return message
+            }
+        }
+    }
+
+    /// 开启眼镜 Wi-Fi，并等待 wificonfig 通知。
+    /// 首次超时则 closewifi 后再重试一次 toopenwifi。
+    /// - Parameter purpose: `.fileImport` 导图；`.ota` 固件升级。
+    func openWifiAndWaitConfig(
+        purpose: AstraA1BleProtocol.OpenWifiPurpose,
+        timeout: TimeInterval = 15
+    ) async throws -> AstraA1BleProtocol.WifiConfig {
+        wifiLog(
+            "请求眼镜开启热点",
+            detail: "purpose=\(purpose.rawValue)\ntimeout=\(String(format: "%.1f", timeout))s\nbleReady=\(isReady)",
+            direction: .sent
+        )
+        do {
+            let config = try await openWifiAndWaitConfigOnce(purpose: purpose, timeout: timeout)
+            wifiLog(
+                "眼镜热点配置已获取",
+                detail: "purpose=\(purpose.rawValue)\nssid=\(config.ssid ?? "nil")\npasswordEmpty=\((config.password ?? "").isEmpty)\nhttp=\(config.httpAddress ?? "nil")",
+                direction: .received
+            )
+            return config
+        } catch let error as ImportBLEError where error.isOpenWifiRetryable {
+            print("\(logTag) toopenwifi \(error.localizedDescription), closewifi then retry once purpose=\(purpose.rawValue)")
+            wifiLog(
+                "首次开启热点失败，关闭后重试",
+                detail: "purpose=\(purpose.rawValue)\nerror=\(error.localizedDescription)",
+                direction: .received
+            )
+            do {
+                try await closeWifi()
+                print("\(logTag) closewifi ack ok before open retry")
+            } catch {
+                print("\(logTag) closewifi before open retry: \(error.localizedDescription), continue toopenwifi")
+                wifiLog(
+                    "重试前关闭热点失败，继续重试",
+                    detail: "error=\(error.localizedDescription)",
+                    direction: .received
+                )
+            }
+            do {
+                let config = try await openWifiAndWaitConfigOnce(purpose: purpose, timeout: timeout)
+                wifiLog(
+                    "重试后获取热点配置成功",
+                    detail: "purpose=\(purpose.rawValue)\nssid=\(config.ssid ?? "nil")\npasswordEmpty=\((config.password ?? "").isEmpty)\nhttp=\(config.httpAddress ?? "nil")",
+                    direction: .received
+                )
+                return config
+            } catch let retryError as ImportBLEError where retryError.isTruncationRelated {
+                // 长包一直收不全：重建链路重协商 MTU 后再试最后一次。
+                guard !hasRelinkedForLongPackets else {
+                    wifiLog(
+                        "热点配置重试失败",
+                        detail: "purpose=\(purpose.rawValue)\nerror=\(retryError.localizedDescription)\nrelinkAlreadyUsed=true",
+                        direction: .received
+                    )
+                    throw retryError
+                }
+                hasRelinkedForLongPackets = true
+                wifiLog(
+                    "热点配置包不完整，重建 BLE 链路",
+                    detail: "error=\(retryError.localizedDescription)",
+                    direction: .sent
+                )
+                guard await relinkForLongPackets() else {
+                    wifiLog("BLE 链路重建失败", detail: "purpose=\(purpose.rawValue)", direction: .received)
+                    throw retryError
+                }
+                try? await closeWifi()
+                do {
+                    let config = try await openWifiAndWaitConfigOnce(purpose: purpose, timeout: timeout)
+                    wifiLog(
+                        "BLE 重建后获取热点配置成功",
+                        detail: "purpose=\(purpose.rawValue)\nssid=\(config.ssid ?? "nil")\npasswordEmpty=\((config.password ?? "").isEmpty)\nhttp=\(config.httpAddress ?? "nil")",
+                        direction: .received
+                    )
+                    return config
+                } catch {
+                    wifiLog(
+                        "BLE 重建后仍无法获取热点配置",
+                        detail: "purpose=\(purpose.rawValue)\nerror=\(error.localizedDescription)",
+                        direction: .received
+                    )
+                    throw error
+                }
+            } catch {
+                wifiLog(
+                    "再次开启热点失败",
+                    detail: "purpose=\(purpose.rawValue)\nerror=\(error.localizedDescription)",
+                    direction: .received
+                )
+                throw error
+            }
+        } catch {
+            wifiLog(
+                "开启眼镜热点失败",
+                detail: "purpose=\(purpose.rawValue)\nerror=\(error.localizedDescription)",
+                direction: .received
+            )
+            throw error
+        }
+    }
+
+    /// 重建 LE 链路，让 iOS 重新协商 ATT MTU。
+    /// 接管系统已建立的连接时不会重新协商，设备仍按 20 字节发 notify，长包（wificonfig
+    /// 声明 100 字节 payload）会被截断且无续包；安卓靠 requestMtu(512) 规避，iOS 无对应 API。
+    func relinkForLongPackets(timeout: TimeInterval = 20) async -> Bool {
+        guard let peripheral = connectedPeripheral else { return false }
+        guard !isRelinkingForLongPackets else { return false }
+        isRelinkingForLongPackets = true
+        defer { isRelinkingForLongPackets = false }
+
+        print("\(logTag) relink for long packets: disconnect \(peripheral.identifier.uuidString)")
+        // 主动断开期间别让站岗 connect 抢先把链路接回去。
+        cancelAutomaticGATTRecovery(reason: "relink-for-long-packets", resetAttempts: true)
+        userInitiatedDisconnect = true
+        autoReconnectEnabled = false
+        standingConnectPeripheralID = nil
+        standingConnectRecoveryCount = 0
+        centralManager.cancelPeripheralConnection(peripheral)
+
+        // 等链路真正断开，否则重连只是复用旧连接，MTU 不会重协商。
+        let disconnectDeadline = Date().addingTimeInterval(5)
+        while Date() < disconnectDeadline, peripheral.state != .disconnected {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
+
+        userInitiatedDisconnect = false
+        autoReconnectEnabled = true
+        standingConnectAllowed = true
+        resetConnectionHandles()
+        print("\(logTag) relink for long packets: reconnect")
+        attachToConnectedPeripheral(peripheral)
+
+        let readyDeadline = Date().addingTimeInterval(timeout)
+        while Date() < readyDeadline {
+            if isReady {
+                if let mtu = connectedPeripheral?.maximumWriteValueLength(for: .withoutResponse) {
+                    print("\(logTag) relink done, maxWrite withoutResponse=\(mtu)")
+                }
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        print("\(logTag) relink for long packets timed out")
+        return false
+    }
+
+    private func openWifiAndWaitConfigOnce(
+        purpose: AstraA1BleProtocol.OpenWifiPurpose,
+        timeout: TimeInterval
+    ) async throws -> AstraA1BleProtocol.WifiConfig {
+        guard isReady else {
+            wifiLog("无法开启热点：BLE 未就绪", detail: "purpose=\(purpose.rawValue)", direction: .received)
+            throw ImportBLEError.notReady
+        }
+        await waitWifiReopenCooldown()
+        notifyReadAttempts = 0
+        return try await withCheckedThrowingContinuation { continuation in
+            wifiConfigContinuation = continuation
+            self.wifiLog(
+                "发送 toopenwifi",
+                detail: "purpose=\(purpose.rawValue)\ntimeout=\(String(format: "%.1f", timeout))s",
+                direction: .sent
+            )
+            guard sendCommand(AstraA1BleProtocol.buildToOpenWifiCommand(purpose: purpose)) else {
+                wifiConfigContinuation = nil
+                self.wifiLog("发送 toopenwifi 失败", detail: "purpose=\(purpose.rawValue)", direction: .received)
+                continuation.resume(throwing: ImportBLEError.sendFailed)
+                return
+            }
+            scheduleImportTimeout(seconds: timeout) { [weak self] in
+                guard let self, let cont = self.wifiConfigContinuation else { return }
+                self.wifiConfigContinuation = nil
+                self.wifiLog(
+                    "等待 wificonfig 超时",
+                    detail: "purpose=\(purpose.rawValue)\ntimeout=\(String(format: "%.1f", timeout))s",
+                    direction: .received
+                )
+                cont.resume(throwing: ImportBLEError.timeout)
+            }
+        }
+    }
+
+    /// 仅发 toopenwifi 并等待状态回包（13 字节）。
+    func openWifiAwaitStatus(purpose: AstraA1BleProtocol.OpenWifiPurpose) async throws {
+        guard isReady else { throw ImportBLEError.notReady }
+        notifyReadAttempts = 0
+        _ = try await waitStatusResponse(command: "toopenwifi") {
+            self.sendCommand(AstraA1BleProtocol.buildToOpenWifiCommand(purpose: purpose))
+        }
+    }
+
+    /// Wi-Fi 凭据缓存键：优先设备 SN，其次外设 identifier。
+    private var wifiCredentialKey: String? {
+        if let sn = deviceSN?.trimmingCharacters(in: .whitespacesAndNewlines), !sn.isEmpty {
+            return sn
+        }
+        return connectedPeripheral?.identifier.uuidString
+    }
+
+    /// 读取当前设备已缓存的热点凭据（若有）。
+    func cachedWifiCredential() -> GlassesWifiCredential? {
+        guard let key = wifiCredentialKey else { return nil }
+        return GlassesWifiCredentialStore.load(deviceKey: key)
+    }
+
+    /// 缓存失效（用缓存连热点失败）时清除，触发下次重新解析 wificonfig。
+    func invalidateCachedWifiCredential() {
+        guard let key = wifiCredentialKey else { return }
+        GlassesWifiCredentialStore.remove(deviceKey: key)
+        print("\(logTag) wifi credential invalidated for key=\(key)")
+    }
+
+    /// 收到完整（未截断）wificonfig 时按 SN 缓存热点凭据。
+    private func cacheWifiCredentialIfPossible(_ config: AstraA1BleProtocol.WifiConfig) {
+        guard let key = wifiCredentialKey else { return }
+        guard let ssid = config.ssid?.trimmingCharacters(in: .whitespacesAndNewlines), !ssid.isEmpty else { return }
+        let credential = GlassesWifiCredential(
+            ssid: ssid,
+            password: config.password?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            httpAddress: config.httpAddress?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "http://192.168.0.1/"
+        )
+        GlassesWifiCredentialStore.save(deviceKey: key, credential: credential)
+        print("\(logTag) wifi credential cached for key=\(key) ssid=\(ssid)")
+    }
+
+    /// 首次配对后曾用于预缓存热点；现改为每次从 wificonfig 取凭据，此预热不再执行。
+    private func seedWifiCredentialIfNeeded() {
+        // no-op：导入/OTA 统一 toopenwifi → wificonfig。
+    }
+
+    /// 获取下载 HTTP 路径。
+    func getDownloadWorkPath(timeout: TimeInterval = 10) async throws -> String {
+        try await getWorkPath(pathType: 0x01, timeout: timeout)
+    }
+
+    /// 获取 OTA 上传 HTTP 路径（pathType = 0x02）。
+    func getOtaWorkPath(timeout: TimeInterval = 10) async throws -> String {
+        try await getWorkPath(pathType: 0x02, timeout: timeout)
+    }
+
+    /// 获取算法 DLL 上传 HTTP 路径（pathType = 0x04）。
+    func getDLLWorkPath(timeout: TimeInterval = 10) async throws -> String {
+        try await getWorkPath(pathType: 0x04, timeout: timeout)
+    }
+
+    /// 蓝牙 OTA 前查询眼镜现有 DLL。长回包按 iOS MTU 兜底重连一次。
+    func queryAlgorithmInfo(timeout: TimeInterval = 10) async throws -> [AstraA1BleProtocol.DeviceAlgorithmInfo] {
+        do {
+            return try await queryAlgorithmInfoOnce(timeout: timeout)
+        } catch let error as ImportBLEError {
+            guard case .truncated = error else { throw error }
+            guard !hasRelinkedForLongPackets else { throw error }
+            hasRelinkedForLongPackets = true
+            guard await relinkForLongPackets() else { throw error }
+            return try await queryAlgorithmInfoOnce(timeout: timeout)
+        }
+    }
+
+    private func queryAlgorithmInfoOnce(timeout: TimeInterval) async throws -> [AstraA1BleProtocol.DeviceAlgorithmInfo] {
+        guard isReady else { throw ImportBLEError.notReady }
+        notifyReadAttempts = 0
+        return try await withCheckedThrowingContinuation { continuation in
+            algorithmInfoContinuation = continuation
+            guard sendCommand(AstraA1BleProtocol.buildGetAlgorithmInfoCommand()) else {
+                algorithmInfoContinuation = nil
+                continuation.resume(throwing: ImportBLEError.sendFailed)
+                return
+            }
+            scheduleImportTimeout(seconds: timeout) { [weak self] in
+                guard let self, let cont = self.algorithmInfoContinuation else { return }
+                self.algorithmInfoContinuation = nil
+                cont.resume(throwing: ImportBLEError.timeout)
+            }
+        }
+    }
+
+    /// DLL 文件已上传后，下发 dllupload0 并等待 dllupdrsp0。
+    func waitForDLLInstall(
+        items: [AstraA1BleProtocol.DLLUploadItem],
+        timeout: TimeInterval = 120,
+        onProgress: ((Int) -> Void)? = nil
+    ) async throws -> AstraA1BleProtocol.DLLUpdateResult {
+        guard isReady else { throw ImportBLEError.notReady }
+        guard let command = AstraA1BleProtocol.buildDLLUploadCommand(items: items) else {
+            throw ImportBLEError.failed(L10n.t("算法文件安装参数无效", "Invalid algorithm install parameters"))
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            dllUpdateContinuation = continuation
+            dllProgressHandler = onProgress
+            guard sendCommand(command) else {
+                dllUpdateContinuation = nil
+                dllProgressHandler = nil
+                continuation.resume(throwing: ImportBLEError.sendFailed)
+                return
+            }
+            scheduleImportTimeout(seconds: timeout) { [weak self] in
+                guard let self, let cont = self.dllUpdateContinuation else { return }
+                self.dllUpdateContinuation = nil
+                self.dllProgressHandler = nil
+                cont.resume(throwing: ImportBLEError.timeout)
+            }
+        }
+    }
+
+    private func getWorkPath(pathType: UInt8, timeout: TimeInterval) async throws -> String {
+        guard isReady else { throw ImportBLEError.notReady }
+        notifyReadAttempts = 0
+        return try await withCheckedThrowingContinuation { continuation in
+            workPathContinuation = continuation
+            guard sendCommand(AstraA1BleProtocol.buildGetWorkPathCommand(pathType: pathType)) else {
+                workPathContinuation = nil
+                continuation.resume(throwing: ImportBLEError.sendFailed)
+                return
+            }
+            scheduleImportTimeout(seconds: timeout) { [weak self] in
+                guard let self, let cont = self.workPathContinuation else { return }
+                self.workPathContinuation = nil
+                cont.resume(throwing: ImportBLEError.timeout)
+            }
+        }
+    }
+
+    /// 发送 otaupload0，启动蓝牙固件升级。
+    func startBluetoothOtaUpgrade(fileName: String) throws {
+        guard isReady else { throw ImportBLEError.notReady }
+        guard isDeviceRuntimeIdle || deviceRuntimeStatus == .firmwareUpgrading else {
+            throw ImportBLEError.failed(deviceRuntimeStatus.busyMessage)
+        }
+        guard sendCommand(AstraA1BleProtocol.buildOtaUploadBluetoothCommand(fileName: fileName)) else {
+            throw ImportBLEError.sendFailed
+        }
+        print("\(logTag) otaupload0 sent file=\(fileName)")
+    }
+
+    /// 发送 otaupload1，启动主固件升级。
+    func startFirmwareOtaUpgrade(fileName: String) throws {
+        guard isReady else { throw ImportBLEError.notReady }
+        guard isDeviceRuntimeIdle || deviceRuntimeStatus == .firmwareUpgrading else {
+            throw ImportBLEError.failed(deviceRuntimeStatus.busyMessage)
+        }
+        guard sendCommand(AstraA1BleProtocol.buildOtaUploadFirmwareCommand(fileName: fileName)) else {
+            throw ImportBLEError.sendFailed
+        }
+        print("\(logTag) otaupload1 sent file=\(fileName)")
+    }
+
+    /// 发送 otaupload 并等待 otaprogres 到 100%。
+    /// 必须先挂回调再发包，否则设备秒回的进度会被丢掉（对齐安卓 UPGRADING 态常开收包）。
+    func waitForOtaUpgradeCompletion(
+        timeout: TimeInterval = 180,
+        onProgress: ((Int) -> Void)? = nil,
+        sendUpgradeCommand: () throws -> Void
+    ) async throws {
+        guard isReady else { throw ImportBLEError.notReady }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            otaUpgradeContinuation = continuation
+            otaUpgradeProgressHandler = onProgress
+            do {
+                try sendUpgradeCommand()
+            } catch {
+                otaUpgradeContinuation = nil
+                otaUpgradeProgressHandler = nil
+                continuation.resume(throwing: error)
+                return
+            }
+            scheduleImportTimeout(seconds: timeout) { [weak self] in
+                guard let self, let cont = self.otaUpgradeContinuation else { return }
+                self.otaUpgradeContinuation = nil
+                self.otaUpgradeProgressHandler = nil
+                cont.resume(throwing: ImportBLEError.timeout)
+            }
+        }
+    }
+
+    private func completeOtaUpgradeIfNeeded(percent: Int) {
+        print("\(logTag) OTA progress=\(percent)% waiter=\(otaUpgradeContinuation != nil)")
+        otaUpgradeProgressHandler?(percent)
+        guard percent >= 100, let cont = otaUpgradeContinuation else { return }
+        otaUpgradeContinuation = nil
+        otaUpgradeProgressHandler = nil
+        cont.resume()
+    }
+
+    func sendTransferOK(success: Bool) {
+        _ = sendCommand(AstraA1BleProtocol.buildTransferOKCommand(success: success))
+    }
+
+    /// 同步眼镜时间（开始 AI 录音前调用）。
+    @discardableResult
+    func syncAIRecordTime() -> Bool {
+        guard isReady else { return false }
+        let sent = sendCommand(AstraA1BleProtocol.buildSyncTimeCommand())
+        print("\(logTag) synctime00 sent=\(sent)")
+        return sent
+    }
+
+    /// 开始眼镜 AI 录音：空闲校验 → 对时 → 延迟约 180ms → airecord00=1。
+    @discardableResult
+    func startAIRecord() -> Bool {
+        guard isReady else {
+            mediaActionAlertMessage = L10n.t("设备未连接", "Not connected")
+            return false
+        }
+        guard !isBatteryTooLowForMedia else {
+            mediaActionAlertMessage = lowBatteryMediaMessage
+            return false
+        }
+        if deviceRuntimeStatus != .standby, deviceRuntimeStatus != .unknown {
+            mediaActionAlertMessage = deviceRuntimeStatus.busyMessage
+            return false
+        }
+        if isAIRecording {
+            return true
+        }
+        _ = syncAIRecordTime()
+        // 对齐 Android AiRecordingActivity：对时后短暂等待再开录。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+            guard let self else { return }
+            guard self.isReady else {
+                self.mediaActionAlertMessage = L10n.t("设备未连接", "Not connected")
+                return
+            }
+            guard !self.isBatteryTooLowForMedia else {
+                self.mediaActionAlertMessage = self.lowBatteryMediaMessage
+                return
+            }
+            if self.deviceRuntimeStatus != .standby, self.deviceRuntimeStatus != .unknown {
+                self.mediaActionAlertMessage = self.deviceRuntimeStatus.busyMessage
+                return
+            }
+            let sent = self.sendCommand(AstraA1BleProtocol.buildAIRecordCommand(enable: true))
+            print("\(self.logTag) airecord00 start sent=\(sent)")
+            if sent {
+                self.isAIRecording = true
+            } else {
+                self.mediaActionAlertMessage = L10n.t("开始录音失败，请重试", "Failed to start recording. Try again.")
+            }
+        }
+        return true
+    }
+
+    /// 停止眼镜 AI 录音。
+    @discardableResult
+    func stopAIRecord() -> Bool {
+        guard isReady else {
+            isAIRecording = false
+            return false
+        }
+        let sent = sendCommand(AstraA1BleProtocol.buildAIRecordCommand(enable: false))
+        print("\(logTag) airecord00 stop sent=\(sent)")
+        isAIRecording = false
+        if sent {
+            finishRuntimeOperationIfNeeded(
+                expected: .voiceRecording,
+                fallback: .unknown,
+                reason: "ai-record-stop"
+            )
+        }
+        return sent
+    }
+
+    func noteImportedRecordingFiles(count: Int = 0) {
+        if count > 0 {
+            let before = pendingRecordingImportFileCount
+            pendingRecordingImportFileCount = max(0, pendingRecordingImportFileCount - count)
+            print("\(logTag) noteImportedRecordingFiles -\(count) pending \(before) -> \(pendingRecordingImportFileCount)")
+        } else {
+            pendingRecordingImportFileCount = 0
+            print("\(logTag) noteImportedRecordingFiles cleared")
+        }
+        persistPendingRecordingCount(pendingRecordingImportFileCount)
+    }
+
+    /// 录音页：删除失败残留时，本地维持待导入数量以便再次显示导入条。
+    func applyPendingRecordingImportCount(_ count: Int) {
+        pendingRecordingImportFileCount = max(0, count)
+        persistPendingRecordingCount(pendingRecordingImportFileCount)
+        print("\(logTag) applyPendingRecordingImportCount=\(pendingRecordingImportFileCount)")
+    }
+
+    private func persistPendingRecordingCount(_ count: Int) {
+        if count > 0 {
+            UserDefaults.standard.set(count, forKey: pendingRecordingCountKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: pendingRecordingCountKey)
+        }
+    }
+
+    /// 读取设备当前音效。先恢复当前设备缓存，回包后再以设备值覆盖。
+    @discardableResult
+    func querySoundEffectMode() -> Bool {
+        guard isReady else {
+            mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
+            return false
+        }
+        restoreCachedSoundEffectMode()
+        let sent = sendCommand(AstraA1BleProtocol.buildGetEQModeCommand())
+        print("\(logTag) geteqmode0 sent=\(sent)")
+        if !sent {
+            mediaActionAlertMessage = L10n.t("音效模式查询失败", "Failed to query sound mode")
+        }
+        return sent
+    }
+
+    /// 设置设备音效；UI 状态以 eqmodersp0 回包为准。
+    @discardableResult
+    func setSoundEffectMode(_ mode: UInt8) -> Bool {
+        guard isReady else {
+            mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
+            return false
+        }
+        let safeMode = min(mode, 2)
+        let sent = sendCommand(AstraA1BleProtocol.buildSetEQModeCommand(mode: safeMode))
+        print("\(logTag) seteqmode0 mode=\(safeMode) sent=\(sent)")
+        if !sent {
+            mediaActionAlertMessage = L10n.t("音效模式设置失败", "Failed to set sound mode")
+        }
+        return sent
+    }
+
+    @discardableResult
+    func startAIVoice(continuous: Bool = true) -> Bool {
+        guard isReady else {
+            mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
+            return false
+        }
+        if deviceRuntimeStatus != .standby, deviceRuntimeStatus != .unknown {
+            mediaActionAlertMessage = deviceRuntimeStatus.busyMessage
+            return false
+        }
+        let sent = sendCommand(
+            AstraA1BleProtocol.buildAIVoiceCommand(enable: true, continuous: continuous)
+        )
+        print("\(logTag) aivoice000 start continuous=\(continuous) sent=\(sent)")
+        if !sent {
+            mediaActionAlertMessage = L10n.t("语音提问开启失败，请重试", "Failed to start voice Q&A. Try again.")
+        }
+        return sent
+    }
+
+    @discardableResult
+    func stopAIVoice() -> Bool {
+        guard isReady else { return false }
+        let sent = sendCommand(AstraA1BleProtocol.buildAIVoiceCommand(enable: false))
+        print("\(logTag) aivoice000 stop sent=\(sent)")
+        if !sent {
+            mediaActionAlertMessage = L10n.t("语音提问关闭失败，请重试", "Failed to stop voice Q&A. Try again.")
+        } else {
+            finishRuntimeOperationIfNeeded(
+                expected: .voiceRecording,
+                fallback: .unknown,
+                reason: "ai-voice-stop"
+            )
+        }
+        return sent
+    }
+
+    @discardableResult
+    func setAIVoiceListeningDuration(seconds: Int) -> Bool {
+        guard isReady else {
+            mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
+            return false
+        }
+        guard let command = AstraA1BleProtocol.buildSetAIVoiceListeningDurationCommand(seconds: seconds) else {
+            return false
+        }
+        let sent = sendCommand(command)
+        print("\(logTag) setaivsil0 seconds=\(seconds) sent=\(sent)")
+        return sent
+    }
+
+    @discardableResult
+    func queryAIVoiceListeningDuration() -> Bool {
+        guard isReady else { return false }
+        let sent = sendCommand(AstraA1BleProtocol.buildGetAIVoiceListeningDurationCommand())
+        print("\(logTag) getaivsil0 sent=\(sent)")
+        return sent
+    }
+
+    @discardableResult
+    func setVoiceWakeupEnabled(_ enabled: Bool) -> Bool {
+        guard isReady else {
+            mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
+            return false
+        }
+        let sent = sendCommand(AstraA1BleProtocol.buildSetVoiceWakeupCommand(enabled: enabled))
+        print("\(logTag) setwakeup0 enabled=\(enabled) sent=\(sent)")
+        return sent
+    }
+
+    @discardableResult
+    func queryVoiceWakeupEnabled() -> Bool {
+        guard isReady else { return false }
+        let sent = sendCommand(AstraA1BleProtocol.buildGetVoiceWakeupCommand())
+        print("\(logTag) getwakeup0 sent=\(sent)")
+        return sent
+    }
+
+    @discardableResult
+    func resumeAIVoiceListening() -> Bool {
+        guard isReady else { return false }
+        let sent = sendCommand(AstraA1BleProtocol.buildResumeAIVoiceListeningCommand())
+        print("\(logTag) aivlisten0 sent=\(sent)")
+        return sent
+    }
+
+    @discardableResult
+    func startTranslateRecording() -> Bool {
+        guard isReady else {
+            mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
+            return false
+        }
+        if deviceRuntimeStatus != .standby, deviceRuntimeStatus != .unknown {
+            mediaActionAlertMessage = deviceRuntimeStatus.busyMessage
+            return false
+        }
+        let sent = sendCommand(AstraA1BleProtocol.buildTranslateRecordCommand(enable: true))
+        print("\(logTag) trslate000 start sent=\(sent)")
+        if !sent {
+            mediaActionAlertMessage = L10n.t("眼镜录音开启失败，请重试", "Failed to start glasses recording. Try again.")
+        }
+        return sent
+    }
+
+    @discardableResult
+    func stopTranslateRecording() -> Bool {
+        guard isReady else { return false }
+        let sent = sendCommand(AstraA1BleProtocol.buildTranslateRecordCommand(enable: false))
+        print("\(logTag) trslate000 stop sent=\(sent)")
+        if sent {
+            finishRuntimeOperationIfNeeded(
+                expected: .voiceRecording,
+                fallback: .unknown,
+                reason: "translation-record-stop"
+            )
+        }
+        return sent
+    }
+
+    private var soundEffectStorageKey: String? {
+        let raw = deviceSN?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let deviceKey = (raw?.isEmpty == false ? raw : connectedPeripheral?.identifier.uuidString)
+        guard let deviceKey, !deviceKey.isEmpty else { return nil }
+        let normalized = deviceKey.lowercased().replacingOccurrences(of: " ", with: "_")
+        return "sound_effect_mode_\(normalized)"
+    }
+
+    private func restoreCachedSoundEffectMode() {
+        guard let key = soundEffectStorageKey,
+              UserDefaults.standard.object(forKey: key) != nil else { return }
+        soundEffectMode = UInt8(clamping: UserDefaults.standard.integer(forKey: key))
+        if soundEffectMode > 2 { soundEffectMode = 0 }
+    }
+
+    private func applySoundEffectResponse(status: UInt8, mode: UInt8) {
+        soundEffectMode = mode
+        if let key = soundEffectStorageKey {
+            UserDefaults.standard.set(Int(mode), forKey: key)
+        }
+        print("\(logTag) eqmodersp0 status=\(status) mode=\(mode)")
+        if status != 0 {
+            mediaActionAlertMessage = L10n.t("音效模式设置失败", "Failed to set sound mode")
+        }
+    }
+
+    /// 发送拍照指令；业务是否接受以 actionrsp0 为准。
+    @discardableResult
+    func takePhoto() -> Bool {
+        guard isReady else { return false }
+        guard !isBatteryTooLowForMedia else {
+            mediaActionAlertMessage = lowBatteryMediaMessage
+            return false
+        }
+        return sendCommand(AstraA1BleProtocol.buildTakePhotoCommand())
+    }
+
+    /// 开始录像；业务是否接受以 actionrsp0 为准。
+    @discardableResult
+    func startVideo() -> Bool {
+        guard isReady else { return false }
+        guard !isBatteryTooLowForMedia else {
+            mediaActionAlertMessage = lowBatteryMediaMessage
+            return false
+        }
+        return sendCommand(AstraA1BleProtocol.buildStartVideoCommand())
+    }
+
+    /// 停止录像；业务是否接受以 actionrsp0 为准。
+    @discardableResult
+    func stopVideo() -> Bool {
+        guard isReady else { return false }
+        return sendCommand(AstraA1BleProtocol.buildStopVideoCommand())
+    }
+
+    func takePhotoFromHome() {
+        guard !isBatteryTooLowForMedia else {
+            mediaActionAlertMessage = lowBatteryMediaMessage
+            return
+        }
+        guard ensureMediaActionAllowed(busy: isTakingPhoto || photoCompleted) else { return }
+        isTakingPhoto = true
+        photoCompleted = false
+        guard takePhoto() else {
+            isTakingPhoto = false
+            mediaActionAlertMessage = L10n.t("发送拍照命令失败，请重试", "Failed to send photo command. Try again.")
+            return
+        }
+        // Android 发送成功后即认为本次首页操作已受理；状态回包只用于补充反馈。
+        // 旧固件不回 devstatus0/actionrsp0 时，也不能让本地 busy 永久卡住。
+        scheduleHomePhotoNewFileQuery()
+        scheduleMediaCompletionFallback(isPhoto: true)
+        mediaActionToastMessage = L10n.t("眼镜开始拍照，请从相册中导入", "Photo started. Import it from Album.")
+        print("\(logTag) takephoto0 sent, wait PHOTO_TAKING→STANDBY")
+    }
+
+    func toggleVideoRecordingFromHome(
+        maxDurationSeconds: Int = DeviceMediaSettings.defaultRecordDurationSeconds
+    ) {
+        if deviceRuntimeStatus == .videoRecording || isVideoRecording {
+            stopVideoRecordingFromHome()
+        } else {
+            startVideoRecordingFromHome(maxDurationSeconds: maxDurationSeconds)
+        }
+    }
+
+    private func startVideoRecordingFromHome(maxDurationSeconds: Int) {
+        guard !isBatteryTooLowForMedia else {
+            mediaActionAlertMessage = lowBatteryMediaMessage
+            return
+        }
+        guard ensureMediaActionAllowed(busy: isVideoStopping || videoCompleted) else { return }
+        guard isDeviceRuntimeIdle else {
+            mediaActionAlertMessage = deviceRuntimeStatus.busyMessage
+            return
+        }
+        guard startVideo() else {
+            mediaActionAlertMessage = L10n.t("发送开始录像命令失败，请重试", "Failed to start video. Try again.")
+            return
+        }
+        // 对齐 Android：写命令成功后立即切成“结束录像”，后续回包可纠正真实状态。
+        isVideoRecording = true
+        isVideoStopping = false
+        scheduleHomeVideoAutoStop(after: maxDurationSeconds)
+        mediaActionToastMessage = L10n.t("眼镜开始录像，请从相册中导入", "Recording started. Import it from Album.")
+        print("\(logTag) startvideo sent, wait →VIDEO_RECORDING")
+    }
+
+    private func stopVideoRecordingFromHome() {
+        guard ensureMediaActionAllowed(
+            busy: isVideoStopping,
+            allowedRuntimeStatuses: [.videoRecording]
+        ) else { return }
+        cancelHomeVideoAutoStop()
+        isVideoStopping = true
+        guard stopVideo() else {
+            isVideoStopping = false
+            mediaActionAlertMessage = L10n.t("发送停止录像命令失败，请重试", "Failed to stop video. Try again.")
+            return
+        }
+        // actionrsp0/devstatus0 丢失时仍能收尾，避免按钮永久停在“停止中”。
+        scheduleMediaCompletionFallback(isPhoto: false)
+        mediaActionToastMessage = L10n.t("眼镜结束录像，请从相册中导入", "Recording stopped. Import it from Album.")
+        print("\(logTag) stopvideo0 sent, wait VIDEO_RECORDING→STANDBY")
+    }
+
+    private func ensureMediaActionAllowed(
+        busy: Bool,
+        allowedRuntimeStatuses: Set<AstraA1BleProtocol.DeviceRuntimeStatus> = []
+    ) -> Bool {
+        guard isReady else {
+            mediaActionAlertMessage = L10n.t("设备未连接", "Not connected")
+            return false
+        }
+        if deviceRuntimeStatus == .unknown {
+            // Android 将 UNKNOWN 与 STANDBY 都视为空闲。这里保留补查，但不再阻断动作。
+            forceQueryDeviceStatus(reason: "media-action-unknown")
+        }
+        guard isDeviceRuntimeIdle || allowedRuntimeStatuses.contains(deviceRuntimeStatus) else {
+            mediaActionAlertMessage = deviceRuntimeStatus.busyMessage
+            return false
+        }
+        guard !busy else { return false }
+        return true
+    }
+
+    /// 蓝牙一上报状态就进这里：先记 previous，再改 current，再看跳变。
+    private func applyDeviceRuntimeStatus(_ status: AstraA1BleProtocol.DeviceRuntimeStatus, source: String) {
+        let previous = deviceRuntimeStatus
+        previousDeviceRuntimeStatus = previous
+        deviceRuntimeStatus = status
+        print("[device_status] \(status.logDescription) source=\(source) previous=\(previous.name)(\(previous.rawValue))")
+        if status != .unknown {
+            cancelDeviceStatusSyncRetry()
+        }
+        handleDeviceRuntimeStatusTransition(from: previous, to: status)
+    }
+
+    /// 每次状态变化都看上次状态：拍照/录像完成只认这里的跳变。
+    private func handleDeviceRuntimeStatusTransition(
+        from previous: AstraA1BleProtocol.DeviceRuntimeStatus,
+        to current: AstraA1BleProtocol.DeviceRuntimeStatus
+    ) {
+        if current == .photoTaking {
+            isTakingPhoto = true
+        }
+        isVideoRecording = current == .videoRecording
+        if current == .videoRecording {
+            isVideoStopping = false
+        }
+
+        if previous == .photoTaking, current == .standby {
+            finishPhotoCaptureSuccess()
+        }
+        if previous == .videoRecording, current == .standby {
+            finishVideoCaptureSuccess()
+        }
+        // 识图传图：末包可能丢，设备已回空闲 → 通知拼包层用已收数据收尾。
+        if previous == .aiVisionOperating, current == .standby {
+            print("\(logTag) AI vision device idle (AI_VISION_OPERATING→STANDBY)")
+            aiVisionDeviceIdleHandler?()
+        }
+    }
+
+    private func finishPhotoCaptureSuccess() {
+        cancelMediaCompletionFallback()
+        isTakingPhoto = false
+        if deviceRuntimeStatus == .photoTaking {
+            // 该批固件只回 PHOTO_TAKING，不回完成后的 STANDBY；避免陈旧状态阻断后续录像。
+            previousDeviceRuntimeStatus = .photoTaking
+            deviceRuntimeStatus = .unknown
+            resetDeviceStatusQueryGate(reason: "photo-completion-without-standby")
+        }
+        showPhotoCompletedFeedback()
+        print("\(logTag) takephoto completed runtime=\(deviceRuntimeStatus.name)")
+    }
+
+    private func finishVideoCaptureSuccess() {
+        cancelMediaCompletionFallback()
+        cancelHomeVideoAutoStop()
+        isVideoStopping = false
+        isVideoRecording = false
+        if deviceRuntimeStatus == .videoRecording {
+            // 对齐 Android 的乐观收尾：停止命令已发出但固件不补 STANDBY 时，不永久卡录像中。
+            previousDeviceRuntimeStatus = .videoRecording
+            deviceRuntimeStatus = .unknown
+            resetDeviceStatusQueryGate(reason: "video-completion-without-standby")
+        }
+        showVideoCompletedFeedback()
+        print("\(logTag) stopvideo completed runtime=\(deviceRuntimeStatus.name)")
+    }
+
+    private func handleActionResponse(_ response: AstraA1BleProtocol.DeviceActionResponse) {
+        // actionrsp0 里的 current_status 也走同一套全局状态更新。
+        applyDeviceRuntimeStatus(response.currentStatus, source: "actionrsp0")
+
+        switch response.action {
+        case .takePhoto:
+            switch response.result {
+            case .accepted:
+                print("\(logTag) takephoto ACCEPTED status=\(response.currentStatus.name)")
+                // 对齐安卓：ACCEPTED 即业务侧可反馈；STANDBY 立刻收尾，PHOTO_TAKING 等跳变并兜底。
+                if response.currentStatus == .standby {
+                    finishPhotoCaptureSuccess()
+                } else {
+                    scheduleMediaCompletionFallback(isPhoto: true)
+                }
+            case .busy:
+                isTakingPhoto = false
+                cancelMediaCompletionFallback()
+                mediaActionAlertMessage = response.currentStatus.busyMessage
+            case .invalidState:
+                isTakingPhoto = false
+                cancelMediaCompletionFallback()
+                mediaActionAlertMessage = L10n.t("当前状态不允许拍照", "Can't take photo in current state")
+            case .failed:
+                isTakingPhoto = false
+                cancelMediaCompletionFallback()
+                mediaActionAlertMessage = L10n.t("拍照失败，请重试", "Photo failed. Try again.")
+            }
+
+        case .startVideo:
+            switch response.result {
+            case .accepted:
+                print("\(logTag) startvideo ACCEPTED status=\(response.currentStatus.name)")
+                cancelMediaCompletionFallback()
+            case .busy:
+                cancelHomeVideoAutoStop()
+                mediaActionAlertMessage = response.currentStatus.busyMessage
+            case .invalidState:
+                cancelHomeVideoAutoStop()
+                mediaActionAlertMessage = L10n.t("当前状态不允许开始录像", "Can't start video in current state")
+            case .failed:
+                cancelHomeVideoAutoStop()
+                mediaActionAlertMessage = L10n.t("开始录像失败，请重试", "Failed to start video. Try again.")
+            }
+
+        case .stopVideo:
+            switch response.result {
+            case .accepted:
+                print("\(logTag) stopvideo ACCEPTED status=\(response.currentStatus.name)")
+                if response.currentStatus == .standby {
+                    finishVideoCaptureSuccess()
+                } else {
+                    scheduleMediaCompletionFallback(isPhoto: false)
+                }
+            case .busy:
+                isVideoStopping = false
+                cancelMediaCompletionFallback()
+                mediaActionAlertMessage = response.currentStatus.busyMessage
+            case .invalidState:
+                isVideoStopping = false
+                cancelMediaCompletionFallback()
+                mediaActionAlertMessage = L10n.t("当前状态不允许停止录像", "Can't stop video in current state")
+            case .failed:
+                isVideoStopping = false
+                cancelMediaCompletionFallback()
+                mediaActionAlertMessage = L10n.t("停止录像失败，请重试", "Failed to stop video. Try again.")
+            }
+
+        case .startFirmwareUpgrade:
+            // Android 在 OPENING_WIFI 阶段收到 BUSY / INVALID_STATE / FAILED 会立即终止，不等 wificonfig 超时。
+            guard response.result != .accepted,
+                  isFirmwareUpgradeFlowBusy,
+                  let continuation = wifiConfigContinuation else {
+                print("\(logTag) firmware upgrade action result=\(response.result.rawValue) status=\(response.currentStatus.name)")
+                break
+            }
+            wifiConfigContinuation = nil
+            continuation.resume(throwing: ImportBLEError.failed(response.currentStatus.busyMessage))
+
+        default:
+            print("\(logTag) actionrsp0 ignored action=\(response.action.rawValue) result=\(response.result.rawValue)")
+        }
+    }
+
+    private var mediaCompletionFallbackWorkItem: DispatchWorkItem?
+
+    /// STANDBY 丢包时：几秒后主动 getdevstat / 强制收尾，避免 UI 永久「拍照中」。
+    private func scheduleMediaCompletionFallback(isPhoto: Bool) {
+        cancelMediaCompletionFallback()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if isPhoto, self.isTakingPhoto || self.deviceRuntimeStatus == .photoTaking {
+                print("\(self.logTag) photo completion fallback: query status / finish")
+                self.forceQueryDeviceStatus(reason: "photo-fallback")
+                if self.deviceRuntimeStatus == .standby
+                    || self.deviceRuntimeStatus == .photoTaking
+                    || self.deviceRuntimeStatus == .unknown {
+                    // 仍无 STANDBY 上报时，对齐安卓：ACCEPTED 后可结束 UI 等待
+                    self.finishPhotoCaptureSuccess()
+                }
+            } else if !isPhoto, self.isVideoStopping || self.deviceRuntimeStatus == .videoRecording {
+                print("\(self.logTag) video stop completion fallback: query status / finish")
+                self.forceQueryDeviceStatus(reason: "video-stop-fallback")
+                // Android 停止命令写成功后立即恢复本地按钮；这里延迟 4 秒再乐观收尾。
+                self.finishVideoCaptureSuccess()
+            }
+        }
+        mediaCompletionFallbackWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0, execute: work)
+    }
+
+    private func cancelMediaCompletionFallback() {
+        mediaCompletionFallbackWorkItem?.cancel()
+        mediaCompletionFallbackWorkItem = nil
+    }
+
+    private func scheduleHomePhotoNewFileQuery() {
+        homePhotoNewFileQueryWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isReady else { return }
+            self.queryPendingImportFiles()
+            print("\(self.logTag) query hasnewfile after home photo")
+        }
+        homePhotoNewFileQueryWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    }
+
+    private func scheduleHomeVideoAutoStop(after seconds: Int) {
+        cancelHomeVideoAutoStop()
+        let delay = TimeInterval(max(1, seconds))
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isReady else { return }
+            guard self.isVideoRecording || self.deviceRuntimeStatus == .videoRecording else { return }
+            print("\(self.logTag) video duration reached: auto stop after \(Int(delay))s")
+            self.stopVideoRecordingFromHome()
+        }
+        homeVideoAutoStopWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func cancelHomeVideoAutoStop() {
+        homeVideoAutoStopWorkItem?.cancel()
+        homeVideoAutoStopWorkItem = nil
+    }
+
+    private func forceQueryDeviceStatus(reason: String) {
+        let sent = sendCommand(AstraA1BleProtocol.buildGetDeviceStatusCommand())
+        print("[device_status] getdevstat force reason=\(reason) sent=\(sent)")
+    }
+
+    /// 设备不补结束状态时，按业务已完成事实清除陈旧 busy；UNKNOWN 仍按 Android 视为空闲。
+    private func finishRuntimeOperationIfNeeded(
+        expected: AstraA1BleProtocol.DeviceRuntimeStatus,
+        fallback: AstraA1BleProtocol.DeviceRuntimeStatus,
+        reason: String
+    ) {
+        guard deviceRuntimeStatus == expected else { return }
+        applyDeviceRuntimeStatus(fallback, source: reason)
+        resetDeviceStatusQueryGate(reason: reason)
+    }
+
+    /// Android FileImportManager 在完成、取消、失败时都把设备状态本地重置为 STANDBY。
+    func syncDeviceStatusAfterImport(reason: String = "after-import") {
+        if deviceRuntimeStatus == .fileImporting || deviceRuntimeStatus == .unknown {
+            applyDeviceRuntimeStatus(.standby, source: reason)
+            resetDeviceStatusQueryGate(reason: reason)
+        }
+        if isReady {
+            forceQueryDeviceStatus(reason: reason)
+        }
+    }
+
+    /// OTA 完成或失败后清除旧 FIRMWARE_UPGRADING；设备重启断线时连接状态也会置 UNKNOWN。
+    func finishFirmwareUpgradeRuntime(reason: String) {
+        finishRuntimeOperationIfNeeded(
+            expected: .firmwareUpgrading,
+            fallback: .unknown,
+            reason: reason
+        )
+    }
+
+    /// Android 从固件包下载前 markBusy；这里同步暂停例行电量和待导入查询。
+    func beginFirmwareUpgradeFlow() {
+        guard !isFirmwareUpgradeFlowBusy else { return }
+        isFirmwareUpgradeFlowBusy = true
+        routineRefreshWorkItem?.cancel()
+        routineRefreshWorkItem = nil
+        cancelInitialDeviceInfoQuery(reason: "firmware-upgrade")
+        cancelAboutDeviceInfoQuery()
+        isQueryingAboutDeviceInfo = false
+        cancelVersionsAndStorageQuery()
+        stopBatteryPolling()
+        print("\(logTag) firmware upgrade flow busy=true")
+    }
+
+    /// 无论成功、失败或取消都恢复 Android 同等的例行查询。
+    func endFirmwareUpgradeFlow(reason: String) {
+        guard isFirmwareUpgradeFlowBusy else {
+            finishFirmwareUpgradeRuntime(reason: reason)
+            return
+        }
+        isFirmwareUpgradeFlowBusy = false
+        finishFirmwareUpgradeRuntime(reason: reason)
+        print("\(logTag) firmware upgrade flow busy=false reason=\(reason)")
+        guard isReady else { return }
+        startBatteryPolling()
+        scheduleRoutineDeviceRefresh()
+    }
+
+    private func showPhotoCompletedFeedback() {
+        photoCompleted = true
+        photoCompletedResetTask?.cancel()
+        photoCompletedResetTask = Task {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            photoCompleted = false
+        }
+    }
+
+    private func showVideoCompletedFeedback() {
+        videoCompleted = true
+        videoCompletedResetTask?.cancel()
+        videoCompletedResetTask = Task {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            videoCompleted = false
+        }
+    }
+
+    private func resetHomeMediaCaptureState() {
+        photoCompletedResetTask?.cancel()
+        videoCompletedResetTask?.cancel()
+        homePhotoNewFileQueryWorkItem?.cancel()
+        homePhotoNewFileQueryWorkItem = nil
+        cancelHomeVideoAutoStop()
+        isTakingPhoto = false
+        photoCompleted = false
+        isVideoRecording = false
+        isVideoStopping = false
+        videoCompleted = false
+        previousDeviceRuntimeStatus = .unknown
+        deviceRuntimeStatus = .unknown
+        mediaActionAlertMessage = nil
+        mediaActionToastMessage = nil
+    }
+
+    /// Notification 就绪后查询一次设备状态（对齐安卓 syncDeviceStateAfterConnected）；后续靠 devstatus0。
+    private let isGetDeviceStatusQueryEnabled = true
+
+    private func syncDeviceRuntimeStatusAfterConnected() {
+        guard isGetDeviceStatusQueryEnabled else {
+            print("[device_status] getdevstat skipped (temporarily disabled)")
+            cancelDeviceStatusSyncRetry()
+            return
+        }
+        guard writeCharacteristic != nil else {
+            print("[device_status] getdevstat skipped: write characteristic missing")
+            return
+        }
+        // 必须等协议 notify 订阅成功，否则回包收不到（电池 notify 不算）。
+        let protocolNotifying = isProtocolNotificationEnabled
+            || (notifyCharacteristic?.isNotifying == true)
+        guard protocolNotifying else {
+            print("[device_status] getdevstat deferred: protocol notify not enabled")
+            scheduleDeviceStatusSyncRetry()
+            return
+        }
+
+        // 已有权威状态则不再刷；仅 UNKNOWN 时补一枪（避免进首页狂刷）。
+        guard deviceRuntimeStatus == .unknown else {
+            print("[device_status] getdevstat skipped: already \(deviceRuntimeStatus.logDescription)")
+            cancelDeviceStatusSyncRetry()
+            return
+        }
+
+        // 同一连接只主动发一轮，避免 ready / notify / recover 多入口叠发把眼镜打挂。
+        if hasRequestedDeviceStatusThisConnection {
+            print("[device_status] getdevstat skipped: already requested this connection")
+            return
+        }
+        hasRequestedDeviceStatusThisConnection = true
+
+        let sent = sendCommand(AstraA1BleProtocol.buildGetDeviceStatusCommand())
+        print("[device_status] getdevstat sent=\(sent) ready=\(isReady) notify=\(protocolNotifying) current=\(deviceRuntimeStatus.logDescription) attempt=\(deviceStatusSyncAttempt)")
+        scheduleDeviceStatusSyncRetry()
+    }
+
+    private func scheduleDeviceStatusSyncRetry() {
+        deviceStatusSyncRetryWorkItem?.cancel()
+        guard deviceRuntimeStatus == .unknown else {
+            deviceStatusSyncAttempt = 0
+            return
+        }
+        guard deviceStatusSyncAttempt < maxDeviceStatusSyncAttempts else {
+            print("[device_status] getdevstat retry exhausted, still UNKNOWN")
+            return
+        }
+        deviceStatusSyncAttempt += 1
+        let delay = 0.8 * Double(deviceStatusSyncAttempt)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.deviceRuntimeStatus == .unknown else { return }
+            // 重试允许再发一枪。
+            self.hasRequestedDeviceStatusThisConnection = false
+            print("[device_status] getdevstat retry #\(self.deviceStatusSyncAttempt)")
+            self.syncDeviceRuntimeStatusAfterConnected()
+        }
+        deviceStatusSyncRetryWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func cancelDeviceStatusSyncRetry() {
+        deviceStatusSyncRetryWorkItem?.cancel()
+        deviceStatusSyncRetryWorkItem = nil
+        deviceStatusSyncAttempt = 0
+    }
+
+    private func resetDeviceStatusQueryGate(reason: String) {
+        cancelDeviceStatusSyncRetry()
+        hasRequestedDeviceStatusThisConnection = false
+        print("[device_status] gate reset reason=\(reason)")
+    }
+
+    func deleteImportedFiles(_ fileNames: [String], timeout: TimeInterval = 10) async throws {
+        guard isReady else { throw ImportBLEError.notReady }
+        guard !fileNames.isEmpty else { return }
+
+        // 按实际写 MTU 切批：固定 200 在 iOS 常超 maxWrite → 包被截断 → 眼镜回拒绝。
+        let maxWrite = connectedPeripheral.map {
+            max(
+                $0.maximumWriteValueLength(for: .withResponse),
+                $0.maximumWriteValueLength(for: .withoutResponse)
+            )
+        } ?? 182
+        let maxPayload = max(32, min(200, maxWrite - 12))
+        var remaining = fileNames
+        print("\(logTag) deletefile total=\(remaining.count) maxWrite=\(maxWrite) maxPayload=\(maxPayload)")
+
+        while !remaining.isEmpty {
+            guard isReady else { throw ImportBLEError.notReady }
+            let batches = AstraA1BleProtocol.splitDeleteFileBatches(remaining, maxPayloadBytes: maxPayload)
+            guard let batch = batches.first else { break }
+
+            let payloadBytes = AstraA1BleProtocol.deleteFilePayloadByteCount(fileNames: batch)
+            print("\(logTag) deletefile batch count=\(batch.count) payload≈\(payloadBytes)B names=\(batch)")
+
+            var batchOK = false
+            var lastError: Error?
+            for attempt in 1...3 {
+                do {
+                    let deleted = try await waitStatusResponse(
+                        command: "deletefile",
+                        timeout: timeout
+                    ) {
+                        self.sendDeleteFileCommand(fileNames: batch)
+                    }
+                    if deleted {
+                        batchOK = true
+                        print("\(logTag) deletefile ok attempt=\(attempt) count=\(batch.count)")
+                        break
+                    }
+                    lastError = ImportBLEError.failed(L10n.t("眼镜拒绝删除已导入文件", "Glasses refused to delete imported files"))
+                    print("\(logTag) deletefile rejected attempt=\(attempt) count=\(batch.count)")
+                } catch {
+                    lastError = error
+                    print("\(logTag) deletefile attempt=\(attempt) err=\(error.localizedDescription)")
+                }
+                if attempt < 3 {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                }
+            }
+
+            // 批量仍失败：逐个删（录音场景更稳）。
+            if !batchOK, batch.count > 1 {
+                print("\(logTag) deletefile fallback to single-file deletes count=\(batch.count)")
+                var singleFailed: [String] = []
+                for name in batch {
+                    do {
+                        let ok = try await waitStatusResponse(command: "deletefile", timeout: timeout) {
+                            self.sendDeleteFileCommand(fileNames: [name])
+                        }
+                        if ok {
+                            print("\(logTag) deletefile single ok name=\(name)")
+                        } else {
+                            singleFailed.append(name)
+                            print("\(logTag) deletefile single rejected name=\(name)")
+                        }
+                    } catch {
+                        singleFailed.append(name)
+                        print("\(logTag) deletefile single err name=\(name) \(error.localizedDescription)")
+                    }
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+                if singleFailed.isEmpty {
+                    batchOK = true
+                } else {
+                    remaining = singleFailed + Array(batches.dropFirst().joined())
+                    throw lastError ?? ImportBLEError.failed(L10n.t("眼镜拒绝删除已导入文件", "Glasses refused to delete imported files"))
+                }
+            }
+
+            guard batchOK else {
+                throw lastError ?? ImportBLEError.failed(L10n.t("眼镜拒绝删除已导入文件", "Glasses refused to delete imported files"))
+            }
+
+            remaining = Array(batches.dropFirst().joined())
+            if !remaining.isEmpty {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
+    }
+
+    /// deletefile 优先 withResponse，避免 withoutResponse 大包被静默截断。
+    @discardableResult
+    private func sendDeleteFileCommand(fileNames: [String]) -> Bool {
+        let data = AstraA1BleProtocol.buildDeleteFileCommand(fileNames: fileNames)
+        guard case .ready = connectionState,
+              let peripheral = connectedPeripheral,
+              let characteristic = writeCharacteristic else {
+            print("\(logTag) sendDeleteFileCommand failed: not ready")
+            return false
+        }
+        let maxWrite = peripheral.maximumWriteValueLength(for: .withResponse)
+        if data.count > maxWrite {
+            print("\(logTag) sendDeleteFileCommand oversized bytes=\(data.count) maxWrite=\(maxWrite)")
+            return false
+        }
+        if characteristic.properties.contains(.write) {
+            peripheral.writeValue(data, for: characteristic, type: .withResponse)
+            print("\(logTag) deletefile \(data.count) bytes withResponse")
+            DebugLogStore.logBLESent(data)
+            return true
+        }
+        return sendCommand(data)
+    }
+
+    func closeWifi(timeout: TimeInterval = 5) async throws {
+        guard isReady else {
+            wifiLog("无法关闭热点：BLE 未就绪", direction: .received)
+            throw ImportBLEError.notReady
+        }
+        // 设备回包命令头为 closewifi（安卓同）；兼容旧固件 closewifi0。
+        defer { lastWifiCloseAt = Date() }
+        wifiLog(
+            "发送 closewifi",
+            detail: "timeout=\(String(format: "%.1f", timeout))s",
+            direction: .sent
+        )
+        do {
+            _ = try await waitStatusResponse(
+                command: "closewifi",
+                aliases: ["closewifi0"],
+                timeout: timeout
+            ) {
+                self.sendCommand(AstraA1BleProtocol.buildCloseWifiCommand())
+            }
+            wifiLog("眼镜热点关闭成功", direction: .received)
+        } catch {
+            wifiLog("眼镜热点关闭失败", detail: "error=\(error.localizedDescription)", direction: .received)
+            throw error
+        }
+    }
+
+    /// 眼镜关热点后需要时间释放 AP，紧接着 toopenwifi 容易起不来。
+    /// 对齐安卓 `WIFI_REOPEN_DELAY_MS = 1000`。
+    private func waitWifiReopenCooldown() async {
+        guard let last = lastWifiCloseAt else { return }
+        let elapsed = Date().timeIntervalSince(last)
+        guard elapsed < Self.wifiReopenCooldown else { return }
+        let remaining = Self.wifiReopenCooldown - elapsed
+        print("\(logTag) wait \(String(format: "%.2f", remaining))s before toopenwifi (wifi reopen cooldown)")
+        wifiLog("等待眼镜热点释放", detail: "remaining=\(String(format: "%.2f", remaining))s")
+        try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+    }
+
+    private func waitStatusResponse(
+        command: String,
+        aliases: [String] = [],
+        timeout: TimeInterval = 10,
+        send: () -> Bool
+    ) async throws -> Bool {
+        try await withCheckedThrowingContinuation { continuation in
+            statusContinuationCommand = command
+            statusContinuationAliases = Set(aliases).union([command])
+            statusContinuation = continuation
+            guard send() else {
+                statusContinuation = nil
+                statusContinuationCommand = nil
+                statusContinuationAliases = []
+                continuation.resume(throwing: ImportBLEError.sendFailed)
+                return
+            }
+            scheduleImportTimeout(seconds: timeout) { [weak self] in
+                guard let self, let cont = self.statusContinuation else { return }
+                self.statusContinuation = nil
+                self.statusContinuationCommand = nil
+                self.statusContinuationAliases = []
+                cont.resume(throwing: ImportBLEError.timeout)
+            }
+        }
+    }
+
+    /// 下发媒体指令后等待眼镜推送 hasnewfile(hasNew=true)，表示新文件已生成。
+    private func waitForNewMediaFile(timeout: TimeInterval, send: () -> Bool) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            mediaCaptureContinuation = continuation
+            guard send() else {
+                mediaCaptureContinuation = nil
+                continuation.resume(throwing: ImportBLEError.sendFailed)
+                return
+            }
+            scheduleImportTimeout(seconds: timeout) { [weak self] in
+                guard let self, let cont = self.mediaCaptureContinuation else { return }
+                self.mediaCaptureContinuation = nil
+                cont.resume(throwing: ImportBLEError.timeout)
+            }
+        }
+    }
+
+    private func scheduleImportTimeout(seconds: TimeInterval, handler: @escaping () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: handler)
+    }
+
+    /// 眼镜端 notify 默认 MTU 仅 ~20 字节；通知特征支持 read，可读完整 wificonfig / getworkpat。
+    private func requestFullNotifyPayload(for command: String) {
+        guard let peripheral = connectedPeripheral, let char = notifyCharacteristic else { return }
+        guard !notifyReadInFlight else { return }
+        if notifyReadCommand != command {
+            notifyReadCommand = command
+            notifyReadAttempts = 0
+        }
+        guard !notifyReadUnsupported else {
+            print("\(logTag) notify read unsupported by firmware, give up command=\(command)")
+            failWaitersOnTruncation(command: command)
+            return
+        }
+        guard notifyReadAttempts < maxNotifyReadAttempts else {
+            print("\(logTag) notify read exceeded max attempts=\(maxNotifyReadAttempts) command=\(command)")
+            failWaitersOnTruncation(command: command)
+            return
+        }
+        notifyReadInFlight = true
+        notifyReadAttempts += 1
+        print("\(logTag) read notify characteristic attempt \(notifyReadAttempts)/\(maxNotifyReadAttempts) command=\(command)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + notifyReadRetryDelay) { [weak self] in
+            guard let self, self.notifyReadInFlight else { return }
+            peripheral.readValue(for: char)
+        }
+    }
+
+    /// 补读无望时立刻让等待方失败，别让调用方干等到超时。
+    private func failWaitersOnTruncation(command: String) {
+        notifyReadCommand = nil
+        if let cont = wifiConfigContinuation {
+            wifiConfigContinuation = nil
+            cont.resume(throwing: ImportBLEError.truncated)
+        }
+        if let cont = workPathContinuation {
+            workPathContinuation = nil
+            cont.resume(throwing: ImportBLEError.failed(
+                L10n.t("HTTP 路径读取失败（BLE 数据被截断）", "Failed to read HTTP path (BLE data truncated)")
+            ))
+        }
+        if let cont = algorithmInfoContinuation {
+            algorithmInfoContinuation = nil
+            cont.resume(throwing: ImportBLEError.truncated)
+        }
+        if isQueryingAboutDeviceInfo {
+            finishAboutDeviceInfoQueryStep()
+        }
+        if isQueryingDeviceVersionsAndStorage {
+            finishVersionsAndStorageQueryStep()
+        }
+    }
+
+    /// 相册页：刷新待导入文件数（已连接则直接查，否则走重连）。
+    func refreshPendingImportFiles() {
+        if case .ready = connectionState {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.queryPendingImportFiles()
+            }
+            return
+        }
+        // 复用电量刷新的重连路径，连上后会同时查电量与待导入文件
+        refreshBatteryLevel()
+    }
+
+    /// 开始扫描；发现设备后列入弹窗，由用户手动选择再连接。
+    func startPairing(preferredDeviceName: String? = nil) {
+        // 解绑后的 didConnect/didDisconnect 可能延迟抵达。新配对必须先清掉旧链路目标，
+        // 否则旧 ready 回调会结束新 session，首次点击便会永久停在“正在配对”。
+        let stalePeripheral = connectedPeripheral ?? reconnectPeripheral
+        cancelScanTimeout()
+        cancelProbeStart()
+        cancelManualReconnectScanTimeout()
+        cancelConnectWatchdog()
+        cancelDiscoverServicesWorkItem()
+        cancelAutomaticGATTRecovery(reason: "fresh-pairing-session", resetAttempts: true)
+        cancelManualHardReconnectState(reason: "fresh-pairing-session")
+        if let stalePeripheral, stalePeripheral.state != .disconnected {
+            centralManager.cancelPeripheralConnection(stalePeripheral)
+        }
+        resetConnectionHandles()
+        reconnectPeripheral = nil
+        pendingUserPairingPeripheral = nil
+        userPairingTargetID = nil
+        userPairingRetryCount = 0
+        isManualReconnectScan = false
+        isManualReconnectConnect = false
+        userInitiatedDisconnect = false
+        autoReconnectEnabled = false
+        hasStartedConnect = false
+        isServiceDiscovered = false
+        isNotificationEnabled = false
+        isProbingService = false
+        pendingCharacteristicDiscoveries = 0
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+        deviceName = nil
+        deviceModel = nil
+        deviceSN = nil
+        resetBatteryDisplayForFreshRead()
+        deviceIsCharging = false
+        deviceStorage = nil
+        deviceVersion2800 = nil
+        deviceVersion6350 = nil
+        cancelAboutDeviceInfoQuery()
+        isQueryingAboutDeviceInfo = false
+        cancelVersionsAndStorageQuery()
+        pendingImportFileCount = 0
+        pendingRecordingImportFileCount = 0
+        isAIRecording = false
+        isDeviceInfoReady = false
+        identityPeripheralID = nil
+        loggedPeripheralIDs.removeAll()
+        probeCandidates.removeAll()
+        probedIDs.removeAll()
+        discoveredPairingDevices = []
+        discoveredPeripherals = [:]
+        isPairingSessionActive = true
+        isManualPairingScan = true
+        isUserInitiatedPairingConnect = false
+        pairingModelNameFilter = preferredDeviceName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        print("\(logTag) startPairing, central state=\(centralManager.state.rawValue)")
+        if let modelName = pairingModelNameFilter, !modelName.isEmpty {
+            print("\(logTag) pairing scan filter by device name containing model_name=\(modelName)")
+        } else {
+            print("\(logTag) pairing scan missing model_name filter")
+            updateState(.failed(L10n.t("请先选择设备型号", "Select a device model first")))
+            return
+        }
+
+        switch centralManager.state {
+        case .poweredOn:
+            beginScan()
+        case .unauthorized:
+            updateState(.bluetoothUnavailable(L10n.t("请在设置中允许蓝牙权限", "Allow Bluetooth in Settings")))
+        case .poweredOff:
+            updateState(.bluetoothUnavailable(L10n.t("请打开手机蓝牙", "Turn on Bluetooth")))
+        case .unsupported:
+            updateState(.bluetoothUnavailable(L10n.t("当前设备不支持蓝牙", "Bluetooth not supported")))
+        default:
+            pendingStart = true
+            updateState(.scanning)
+        }
+    }
+
+    /// 用户在配对弹窗中选择设备后开始连接。
+    @discardableResult
+    func pairWithDiscoveredDevice(id: UUID) -> Bool {
+        guard isPairingSessionActive else { return false }
+        guard let peripheral = discoveredPeripherals[id] else {
+            print("\(logTag) pairWithDiscoveredDevice missing peripheral \(id.uuidString)")
+            return false
+        }
+
+        print("\(logTag) user selected pairing device \(peripheral.name ?? id.uuidString)")
+        userPairingTargetID = id
+        userPairingRetryCount = 0
+        stopPairingListProbe()
+        isManualPairingScan = false
+        isUserInitiatedPairingConnect = true
+        connectForUserPairing(to: peripheral)
+        return true
+    }
+
+    /// 停止配对弹窗的后台探测，避免与用户点「配对」抢连接。
+    private func stopPairingListProbe() {
+        cancelScanTimeout()
+        cancelProbeStart()
+        cancelConnectWatchdog()
+        cancelDiscoverServicesWorkItem()
+        stopScan()
+        probeCandidates.removeAll()
+        activeProbeRSSI = nil
+        isProbingService = false
+
+        if let peripheral = connectedPeripheral {
+            centralManager.cancelPeripheralConnection(peripheral)
+            connectedPeripheral = nil
+            writeCharacteristic = nil
+            notifyCharacteristic = nil
+            batteryLevelCharacteristic = nil
+            batteryLevelStatusCharacteristic = nil
+            isServiceDiscovered = false
+            isNotificationEnabled = false
+            pendingCharacteristicDiscoveries = 0
+        }
+
+        hasStartedConnect = false
+    }
+
+    private func connectForUserPairing(to peripheral: CBPeripheral) {
+        cancelScanTimeout()
+        cancelProbeStart()
+        stopScan()
+
+        userInitiatedDisconnect = false
+        autoReconnectEnabled = true
+        standingConnectAllowed = true
+        savePeripheralID(peripheral.identifier)
+
+        reconnectPeripheral = peripheral
+        peripheral.delegate = self
+        hasStartedConnect = true
+        isProbingService = false
+        gattDiscoveryAttempt = 0
+        updateState(.connecting)
+
+        if peripheral.state == .connected || peripheral.state == .connecting {
+            print("\(logTag) user pairing: reset existing link to trigger system pairing")
+            pendingUserPairingPeripheral = peripheral
+            connectedPeripheral = peripheral
+            centralManager.cancelPeripheralConnection(peripheral)
+            return
+        }
+
+        connectedPeripheral = peripheral
+        print("\(logTag) user pairing connect \(peripheral.name ?? peripheral.identifier.uuidString)")
+        centralManager.connect(peripheral, options: pairingConnectOptions)
+        startConnectWatchdog(for: peripheral)
+    }
+
+    private var pairingConnectOptions: [String: Any] {
+        [
+            CBConnectPeripheralOptionNotifyOnConnectionKey: true,
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true
+        ]
+    }
+
+    private func resumePendingUserPairingConnect(_ peripheral: CBPeripheral) {
+        connectedPeripheral = peripheral
+        reconnectPeripheral = peripheral
+        peripheral.delegate = self
+        hasStartedConnect = true
+        isProbingService = false
+        gattDiscoveryAttempt = 0
+        updateState(.connecting)
+        print("\(logTag) user pairing reconnect \(peripheral.name ?? peripheral.identifier.uuidString)")
+        centralManager.connect(peripheral, options: pairingConnectOptions)
+        startConnectWatchdog(for: peripheral)
+    }
+
+    private func retryUserPairingConnect(reason: String) {
+        guard isPairingSessionActive, isUserInitiatedPairingConnect else { return }
+        guard userPairingRetryCount < maxUserPairingRetries else {
+            isUserInitiatedPairingConnect = false
+            hasStartedConnect = false
+            updateState(.failed(L10n.t("连接失败，请重试", "Connection failed. Try again.")))
+            return
+        }
+        guard let targetID = userPairingTargetID,
+              let peripheral = discoveredPeripherals[targetID] else {
+            isUserInitiatedPairingConnect = false
+            hasStartedConnect = false
+            updateState(.failed(L10n.t("连接失败，请重试", "Connection failed. Try again.")))
+            return
+        }
+
+        userPairingRetryCount += 1
+        print("\(logTag) retry user pairing (\(userPairingRetryCount)/\(maxUserPairingRetries)): \(reason)")
+        cancelConnectWatchdog()
+        cancelDiscoverServicesWorkItem()
+        if let current = connectedPeripheral, current.identifier != targetID {
+            centralManager.cancelPeripheralConnection(current)
+        }
+        connectedPeripheral = nil
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+        batteryLevelCharacteristic = nil
+        batteryLevelStatusCharacteristic = nil
+        isServiceDiscovered = false
+        isNotificationEnabled = false
+        pendingCharacteristicDiscoveries = 0
+        hasStartedConnect = false
+        gattDiscoveryAttempt = 0
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self, self.isUserInitiatedPairingConnect else { return }
+            self.connectForUserPairing(to: peripheral)
+        }
+    }
+
+    private func shouldPauseBackgroundProbe() -> Bool {
+        isManualPairingScan && !discoveredPairingDevices.isEmpty
+    }
+
+    /// 取消扫描/连接（用户点取消）。
+    func cancelPairing() {
+        pendingStart = false
+        cancelManualReconnectScanTimeout()
+        isManualReconnectScan = false
+        isManualReconnectConnect = false
+        isBatteryRefreshMode = false
+        pendingBatteryRefresh = false
+        userInitiatedDisconnect = true
+        autoReconnectEnabled = false
+        isPairingSessionActive = false
+        isManualPairingScan = false
+        isUserInitiatedPairingConnect = false
+        pairingModelNameFilter = nil
+        userPairingTargetID = nil
+        userPairingRetryCount = 0
+        pendingUserPairingPeripheral = nil
+        standingConnectRecoveryCount = 0
+        cancelManualHardReconnectState(reason: "cancel-pairing")
+        discoveredPairingDevices = []
+        discoveredPeripherals = [:]
+        cancelScanTimeout()
+        cancelProbeStart()
+        stopScan()
+
+        if let peripheral = connectedPeripheral ?? reconnectPeripheral {
+            centralManager.cancelPeripheralConnection(peripheral)
+        }
+        reconnectPeripheral = nil
+        resetConnectionHandles()
+        updateState(.idle)
+    }
+
+    /// 退出登录时断开 BLE，并清除已保存的设备标识。
+    func disconnectAndClearSession() {
+        cancelPairing()
+        isPairingSessionActive = false
+        isManualPairingScan = false
+        systemTransportConnectedPeripheralIDs.removeAll()
+        UserDefaults.standard.removeObject(forKey: savedPeripheralIDKey)
+        deviceName = nil
+        deviceModel = nil
+        deviceSN = nil
+        resetBatteryDisplayForFreshRead()
+        deviceIsCharging = false
+        deviceStorage = nil
+        deviceVersion2800 = nil
+        deviceVersion6350 = nil
+        cancelAboutDeviceInfoQuery()
+        isQueryingAboutDeviceInfo = false
+        cancelVersionsAndStorageQuery()
+        pendingImportFileCount = 0
+        pendingRecordingImportFileCount = 0
+        isAIRecording = false
+        isDeviceInfoReady = false
+        identityPeripheralID = nil
+        resetHomeMediaCaptureState()
+        reconnectPeripheral = nil
+        print("\(logTag) disconnectAndClearSession")
+    }
+
+    /// 配对弹窗扫描阶段：后台连接探测协议服务（尚未由用户点「配对」）。
+    var isPairingListProbeInProgress: Bool {
+        guard isPairingSessionActive, isManualPairingScan else { return false }
+        if isProbingService { return true }
+        switch connectionState {
+        case .connecting, .discoveringServices:
+            return hasStartedConnect
+        default:
+            return false
+        }
+    }
+
+    /// 设置单次录像最大时长（recordtime）。
+    @discardableResult
+    func setRecordTime(seconds: Int) -> Bool {
+        guard isReady else { return false }
+        return sendCommand(AstraA1BleProtocol.buildRecordTimeCommand(seconds: seconds))
+    }
+
+    /// 设置/查询录像分辨率（setvidres0/getvidres0）。
+    @discardableResult
+    func setVideoResolution(profile: UInt8) -> Bool {
+        guard isReady else { return false }
+        return sendCommand(AstraA1BleProtocol.buildSetVideoResolutionCommand(profile: profile))
+    }
+
+    @discardableResult
+    func queryVideoResolution() -> Bool {
+        guard isReady else { return false }
+        return sendCommand(AstraA1BleProtocol.buildGetVideoResolutionCommand())
+    }
+
+    /// 设置/查询摘下休眠（setweardet/getweardet）。
+    @discardableResult
+    func setWearDetection(enabled: Bool) -> Bool {
+        guard isReady else { return false }
+        return sendCommand(AstraA1BleProtocol.buildSetWearDetectionCommand(enabled: enabled))
+    }
+
+    @discardableResult
+    func queryWearDetection() -> Bool {
+        guard isReady else { return false }
+        return sendCommand(AstraA1BleProtocol.buildGetWearDetectionCommand())
+    }
+
+    /// 同步识图质量档位（imgrecset0）。
+    @discardableResult
+    func syncAIVisionLevel(_ level: UInt8) -> Bool {
+        guard isReady else { return false }
+        return sendCommand(AstraA1BleProtocol.buildAIVisionSetLevelCommand(level: level))
+    }
+
+    /// 恢复出厂设置（factreset0）。
+    @discardableResult
+    func factoryResetDevice() -> Bool {
+        guard isReady else { return false }
+        factoryResetResult = nil
+        return sendCommand(AstraA1BleProtocol.buildFactoryResetCommand())
+    }
+
+    /// 进入/退出新手引导模式（guidectrl0）。
+    @discardableResult
+    func setGuideModeEnabled(_ enabled: Bool) -> Bool {
+        let sent = sendCommand(AstraA1BleProtocol.buildGuideModeCommand(enable: enabled))
+        print("\(logTag) guidectrl0 enable=\(enabled) sent=\(sent)")
+        return sent
+    }
+
+    /// 向设备发送 BLE 命令（仅 ready 后可用）。
+    @discardableResult
+    func sendCommand(_ data: Data) -> Bool {
+        guard case .ready = connectionState,
+              let peripheral = connectedPeripheral,
+              let characteristic = writeCharacteristic else {
+            print("\(logTag) sendCommand failed: not ready or missing write characteristic")
+            return false
+        }
+
+        let preferWithoutResponse = characteristic.properties.contains(.writeWithoutResponse)
+        if preferWithoutResponse {
+            if pendingBLEWrites.count >= maxPendingBLEWrites {
+                print("\(logTag) sendCommand dropped: write queue full (\(maxPendingBLEWrites))")
+                return false
+            }
+            pendingBLEWrites.append(data)
+            flushPendingBLEWrites()
+            return true
+        }
+
+        peripheral.writeValue(data, for: characteristic, type: .withResponse)
+        print("\(logTag) sendCommand \(data.count) bytes to \(characteristic.uuid) withResponse")
+        DebugLogStore.logBLESent(data)
+        return true
+    }
+
+    /// 冲刷 withoutResponse 写队列；缓冲满时等 `peripheralIsReady`。
+    private func flushPendingBLEWrites() {
+        guard let peripheral = connectedPeripheral,
+              let characteristic = writeCharacteristic else {
+            pendingBLEWrites.removeAll()
+            return
+        }
+        while !pendingBLEWrites.isEmpty {
+            if !peripheral.canSendWriteWithoutResponse {
+                print("\(logTag) write queue pause remaining=\(pendingBLEWrites.count)")
+                return
+            }
+            let data = pendingBLEWrites.removeFirst()
+            peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
+            print("\(logTag) sendCommand \(data.count) bytes to \(characteristic.uuid)")
+            DebugLogStore.logBLESent(data)
+        }
+    }
+
+    private func clearPendingBLEWrites(reason: String) {
+        guard !pendingBLEWrites.isEmpty else { return }
+        print("\(logTag) clear write queue count=\(pendingBLEWrites.count) reason=\(reason)")
+        pendingBLEWrites.removeAll()
+    }
+
+    // MARK: - Private
+
+    private func beginScan() {
+        pendingStart = false
+        stopScan()
+        updateState(.scanning)
+
+        if !isManualPairingScan {
+            // 首页电量刷新等非配对场景：只接管已保存设备，禁止盲接其它同型号眼镜。
+            if let savedID = savedPeripheralID() {
+                let connected = centralManager.retrieveConnectedPeripherals(
+                    withServices: [AstraA1BleProtocol.serviceUUID]
+                )
+                if let peripheral = connected.first(where: { $0.identifier == savedID }) {
+                    print("\(logTag) found already-connected saved peripheral")
+                    connect(to: peripheral, probing: false)
+                    return
+                }
+                connectLog(
+                    "saved peripheral not system-connected; skip automatic connect",
+                    detail: "id=\(savedID.uuidString)"
+                )
+            }
+        }
+
+        if isManualPairingScan {
+            print("\(logTag) beginScan pairing by device name containing model_name=\(pairingModelNameFilter ?? "nil")")
+        } else {
+            print("\(logTag) beginScan by protocol service UUID (name-independent)")
+        }
+        centralManager.scanForPeripherals(
+            withServices: nil,
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+        )
+
+        if !isManualPairingScan {
+            scheduleProbeStart()
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if case .scanning = self.connectionState {
+                if self.isManualPairingScan {
+                    print("\(self.logTag) pairing scan keep-alive")
+                    if !self.centralManager.isScanning {
+                        self.centralManager.scanForPeripherals(
+                            withServices: nil,
+                            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+                        )
+                    }
+                    self.schedulePairingScanTimeout()
+                    return
+                }
+                self.stopScan()
+                print("\(self.logTag) scan timeout, devices logged: \(self.loggedPeripheralIDs.count)")
+                self.updateState(.failed(L10n.t("未找到设备，请确认眼镜已开机并进入配对状态", "Device not found. Make sure glasses are on and in pairing mode")))
+            }
+        }
+        scanTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + scanTimeoutSeconds, execute: workItem)
+    }
+
+    private func schedulePairingScanTimeout() {
+        cancelScanTimeout()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if case .scanning = self.connectionState, self.isManualPairingScan {
+                if !self.centralManager.isScanning {
+                    self.centralManager.scanForPeripherals(
+                        withServices: nil,
+                        options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+                    )
+                }
+                self.schedulePairingScanTimeout()
+            }
+        }
+        scanTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + scanTimeoutSeconds, execute: workItem)
+    }
+
+    private func stopScan() {
+        if centralManager.isScanning {
+            centralManager.stopScan()
+        }
+    }
+
+    private func cancelScanTimeout() {
+        scanTimeoutWorkItem?.cancel()
+        scanTimeoutWorkItem = nil
+    }
+
+    private func cancelProbeStart() {
+        probeStartWorkItem?.cancel()
+        probeStartWorkItem = nil
+    }
+
+    private func scheduleProbeStart() {
+        cancelProbeStart()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.startProbingIfNeeded()
+        }
+        probeStartWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + probeStartDelaySeconds, execute: workItem)
+    }
+
+    private func resetConnectionHandles() {
+        connectedPeripheral = nil
+        systemTransportGracePeripheralIDs.removeAll()
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+        batteryLevelCharacteristic = nil
+        batteryLevelStatusCharacteristic = nil
+        isServiceDiscovered = false
+        isNotificationEnabled = false
+        isProtocolNotificationEnabled = false
+        resetDeviceStatusQueryGate(reason: "resetConnectionHandles")
+        cancelInitialDeviceInfoQuery(reason: "resetConnectionHandles")
+        routineRefreshWorkItem?.cancel()
+        routineRefreshWorkItem = nil
+        stopBatteryPolling()
+        standingConnectPeripheralID = nil
+        hasStartedConnect = false
+        isProbingService = false
+        pendingCharacteristicDiscoveries = 0
+        gattDiscoveryAttempt = 0
+        // 新链路要重新判定固件是否支持读通知特征。
+        if !isRelinkingForLongPackets { hasRelinkedForLongPackets = false }
+        notifyReadUnsupported = false
+        notifyReadInFlight = false
+        notifyReadCommand = nil
+        notifyReadAttempts = 0
+    }
+
+    /// 断开或换外设时清掉 getdevinfo 缓存，避免首页仍显示上一副眼镜「已连接」。
+    private func clearLiveDeviceIdentity(reason: String) {
+        let hadIdentity = isDeviceInfoReady
+            || deviceSN != nil
+            || deviceName != nil
+            || deviceModel != nil
+            || identityPeripheralID != nil
+        deviceName = nil
+        deviceModel = nil
+        deviceSN = nil
+        isDeviceInfoReady = false
+        identityPeripheralID = nil
+        clearBatteryDisplay()
+        deviceIsCharging = false
+        if hadIdentity {
+            print("\(logTag) cleared live device identity reason=\(reason)")
+        }
+    }
+
+    private func savedPeripheralID() -> UUID? {
+        guard let raw = UserDefaults.standard.string(forKey: savedPeripheralIDKey) else { return nil }
+        return UUID(uuidString: raw)
+    }
+
+    /// 账号绑定设备的 `serial_number` 在 iOS 即外设 UUID。
+    /// 换机 / 重装 / 重新登录后本地无 savedPeripheralID 时，用它认领系统已连接的眼镜，
+    /// 否则首页会一直显示「未连接」（attach 因 no saved peripheral 被跳过）。
+    func adoptBoundPeripheralIDs(_ serialNumbers: [String]) {
+        guard savedPeripheralID() == nil else { return }
+        guard centralManager.state == .poweredOn else {
+            pendingBoundSerialNumbers = serialNumbers
+            connectLog("adopt deferred: bluetooth not powered on", detail: "candidates=\(serialNumbers.count)")
+            return
+        }
+        pendingBoundSerialNumbers = []
+
+        let candidates = serialNumbers.compactMap { value -> UUID? in
+            UUID(uuidString: value.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        guard !candidates.isEmpty else { return }
+
+        let systemConnected = centralManager.retrieveConnectedPeripherals(
+            withServices: [AstraA1BleProtocol.serviceUUID]
+        )
+        systemTransportConnectedPeripheralIDs.formUnion(systemConnected.map(\.identifier))
+        if let peripheral = systemConnected.first(where: { candidates.contains($0.identifier) }) {
+            connectLog("adopt bound peripheral from account", detail: "id=\(peripheral.identifier.uuidString)")
+            savePeripheralID(peripheral.identifier)
+            userInitiatedDisconnect = false
+            autoReconnectEnabled = true
+            standingConnectAllowed = true
+            if peripheral.state == .connected {
+                attachToConnectedPeripheral(peripheral)
+            } else {
+                armSystemAutoConnect(peripheral, force: true, systemTransportObserved: true)
+            }
+            return
+        }
+
+        let known = centralManager.retrievePeripherals(withIdentifiers: candidates)
+        if let peripheral = known.first(where: { $0.state == .connected }) {
+            connectLog("adopt bound peripheral already connected", detail: "id=\(peripheral.identifier.uuidString)")
+            savePeripheralID(peripheral.identifier)
+            userInitiatedDisconnect = false
+            autoReconnectEnabled = true
+            attachToConnectedPeripheral(peripheral)
+            return
+        }
+
+        if let peripheral = known.first {
+            connectLog("adopt bound peripheral, wait for system connection", detail: "id=\(peripheral.identifier.uuidString)")
+            savePeripheralID(peripheral.identifier)
+            userInitiatedDisconnect = false
+            autoReconnectEnabled = true
+            standingConnectAllowed = false
+            reconnectPeripheral = peripheral
+            updateState(.disconnected)
+            startSystemReconnectMonitor()
+            return
+        }
+
+        connectLog(
+            "adopt bound peripheral: no match",
+            detail: "candidates=\(candidates.count) systemConnected=\(systemConnected.count)"
+        )
+    }
+
+    /// 配对流程结束（取消 / 设备已绑定）后恢复原有连接。
+    /// `cancelPairing` 会置 `userInitiatedDisconnect` 并断开当前外设，
+    /// 若不显式恢复，首页会一直显示「设备未连接」，直到切 Tab 触发 ensureConnected。
+    func restoreBoundConnectionAfterPairing(boundSerialNumbers: [String]) {
+        if case .ready = connectionState { return }
+        guard !boundSerialNumbers.isEmpty || savedPeripheralID() != nil else { return }
+
+        userInitiatedDisconnect = false
+        autoReconnectEnabled = true
+        standingConnectAllowed = true
+        isPairingSessionActive = false
+        isManualPairingScan = false
+
+        print("\(logTag) restore bound connection after pairing state=\(connectionState)")
+        connectLog(
+            "restore bound connection after pairing",
+            detail: "state=\(connectStateDescription(connectionState)) boundCount=\(boundSerialNumbers.count)"
+        )
+
+        if savedPeripheralID() == nil {
+            adoptBoundPeripheralIDs(boundSerialNumbers)
+            return
+        }
+
+        if attachToAlreadyConnectedPeripheralIfPossible() { return }
+        // GATT 刚被取消，系统侧可能还在收尾：交给监控轮询继续 attach（不发起常驻 connect）。
+        startSystemReconnectMonitor()
+    }
+
+    /// 首页卡片点击重连：用户在系统蓝牙里断开眼镜后，手动把连接拉回来。
+    /// 解绑/退登设置的 `userInitiatedDisconnect` 会挡住自动重连，这里显式解除。
+    /// - Returns: `false` 表示本地与系统都查不到该外设，需要走重新配对流程。
+    @discardableResult
+    func reconnectBoundDevice(
+        boundSerialNumbers: [String],
+        expectedDeviceName: String? = nil,
+        allowAnyProtocolDevice: Bool = false,
+        reason: String
+    ) -> Bool {
+        print("\(logTag) reconnectBoundDevice reason=\(reason) state=\(connectionState)")
+        connectLog(
+            "reconnectBoundDevice",
+            detail: "reason=\(reason) state=\(connectStateDescription(connectionState)) allowAny=\(allowAnyProtocolDevice)",
+            direction: .sent
+        )
+        if case .ready = connectionState { return true }
+
+        userInitiatedDisconnect = false
+        autoReconnectEnabled = true
+        // 用户显式点了卡片，才允许挂常驻 connect。
+        standingConnectAllowed = true
+
+        if savedPeripheralID() == nil {
+            adoptBoundPeripheralIDs(boundSerialNumbers)
+        }
+
+        guard centralManager.state == .poweredOn else {
+            pendingBatteryRefresh = true
+            print("\(logTag) reconnectBoundDevice deferred: bluetooth not powered on")
+            return true
+        }
+
+        // 系统层已连接：直接接管 GATT，无需扫描。
+        if attachToAlreadyConnectedPeripheralIfPossible() {
+            return true
+        }
+
+        var candidates = Set(boundSerialNumbers.compactMap {
+            UUID(uuidString: $0.trimmingCharacters(in: .whitespacesAndNewlines))
+        })
+        if let saved = savedPeripheralID() {
+            candidates.insert(saved)
+        }
+        guard !candidates.isEmpty else {
+            print("\(logTag) reconnectBoundDevice: no candidate peripheral id, need re-pairing")
+            return false
+        }
+
+        // 用户在系统蓝牙里「忽略此设备」后，retrievePeripherals 拿到的外设已失效，
+        // 常驻 connect 永远等不到 didConnect，必须重新扫描发现。
+        beginManualReconnectScan(
+            candidates: candidates,
+            expectedName: expectedDeviceName,
+            allowAnyProtocolDevice: allowAnyProtocolDevice
+        )
+        return true
+    }
+
+    private func beginManualReconnectScan(
+        candidates: Set<UUID>,
+        expectedName: String?,
+        allowAnyProtocolDevice: Bool
+    ) {
+        cancelAutomaticGATTRecovery(reason: "manual-reconnect-scan", resetAttempts: true)
+        stopSystemReconnectMonitor()
+        cancelScanTimeout()
+        cancelProbeStart()
+        cancelConnectWatchdog()
+        stopScan()
+
+        manualReconnectCandidateIDs = candidates
+        manualReconnectExpectedName = expectedName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        manualReconnectAllowAnyProtocolDevice = allowAnyProtocolDevice
+        isManualReconnectScan = true
+        isManualReconnectConnect = false
+        lastManualReconnectFailure = nil
+        isManualPairingScan = false
+        isPairingSessionActive = false
+        isBatteryRefreshMode = false
+        isProbingService = false
+        hasStartedConnect = false
+        probeCandidates.removeAll()
+
+        print("\(logTag) manual reconnect scan start candidates=\(candidates.count) name=\(manualReconnectExpectedName ?? "nil") allowAny=\(allowAnyProtocolDevice)")
+        updateState(.scanning)
+        centralManager.scanForPeripherals(
+            withServices: nil,
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+        )
+        scheduleManualReconnectScanTimeout()
+    }
+
+    private func scheduleManualReconnectScanTimeout() {
+        cancelManualReconnectScanTimeout()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.isManualReconnectScan else { return }
+            self.isManualReconnectScan = false
+            self.stopScan()
+            print("\(self.logTag) manual reconnect scan timeout: device not found")
+            self.lastManualReconnectFailure = .notFound
+            self.updateState(.failed(L10n.t("未找到设备", "Device not found")))
+            // 用户已显式发起过重连：扫不到也保留常驻 connect，眼镜回到范围内自动连回。
+            if let peripheral = self.reconnectPeripheral
+                ?? self.savedPeripheralID().flatMap({
+                    self.centralManager.retrievePeripherals(withIdentifiers: [$0]).first
+                }) {
+                self.armSystemAutoConnect(peripheral, force: true)
+            }
+        }
+        manualReconnectScanWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + manualReconnectScanTimeoutSeconds, execute: work)
+    }
+
+    private func cancelManualReconnectScanTimeout() {
+        manualReconnectScanWorkItem?.cancel()
+        manualReconnectScanWorkItem = nil
+    }
+
+    /// 优先按外设 UUID 认领；系统「忽略此设备」后 UUID 会变，再按协议服务 + 设备名兜底。
+    private func manualReconnectMatches(
+        _ peripheral: CBPeripheral,
+        advertisementData: [String: Any]
+    ) -> Bool {
+        if manualReconnectCandidateIDs.contains(peripheral.identifier) { return true }
+        guard advertisesProtocolService(advertisementData) else { return false }
+        guard let expected = manualReconnectExpectedName, !expected.isEmpty else {
+            return manualReconnectAllowAnyProtocolDevice
+        }
+        let name = resolvedName(for: peripheral, advertisementData: advertisementData)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return manualReconnectAllowAnyProtocolDevice }
+        return name.localizedCaseInsensitiveContains(expected)
+            || expected.localizedCaseInsensitiveContains(name)
+    }
+
+    private func savePeripheralID(_ id: UUID) {
+        UserDefaults.standard.set(id.uuidString, forKey: savedPeripheralIDKey)
+        print("\(logTag) saved peripheral id \(id.uuidString)")
+    }
+
+    private func updateState(_ state: AstraA1ConnectionState) {
+        let previous = connectionState
+        let becameReady: Bool = {
+            if case .ready = state {
+                if case .ready = previous { return false }
+                return true
+            }
+            return false
+        }()
+
+        connectionState = state
+        switch state {
+        case .idle:
+            cancelAutomaticGATTRecovery(reason: "state-idle", resetAttempts: true)
+            stopSystemReconnectMonitor()
+            stopBatteryPolling()
+            statusMessage = pairingStatusMessage(for: .idle)
+            markDeviceRuntimeStatusUnknown(reason: "idle")
+        case .bluetoothUnavailable(let message):
+            cancelAutomaticGATTRecovery(reason: "bluetooth-unavailable", resetAttempts: true)
+            stopSystemReconnectMonitor()
+            stopBatteryPolling()
+            statusMessage = message
+            markDeviceRuntimeStatusUnknown(reason: "bluetoothUnavailable")
+        case .scanning:
+            statusMessage = pairingStatusMessage(for: .scanning)
+        case .connecting:
+            statusMessage = pairingStatusMessage(for: .connecting)
+            markDeviceRuntimeStatusUnknown(reason: "connecting")
+        case .discoveringServices:
+            statusMessage = pairingStatusMessage(for: .discoveringServices)
+        case .enablingNotifications:
+            statusMessage = pairingStatusMessage(for: .enablingNotifications)
+        case .ready:
+            cancelAutomaticGATTRecovery(reason: "state-ready", resetAttempts: true)
+            stopSystemReconnectMonitor()
+            cancelManualReconnectScanTimeout()
+            isManualReconnectScan = false
+            isManualReconnectConnect = false
+            lastManualReconnectFailure = nil
+            cancelConnectWatchdog()
+            cancelDiscoverServicesWorkItem()
+            isBatteryRefreshMode = false
+            isPairingSessionActive = false
+            isManualPairingScan = false
+            isUserInitiatedPairingConnect = false
+            pairingModelNameFilter = nil
+            statusMessage = L10n.t("连接成功", "Connected")
+            startBatteryPolling()
+            // 设备一进入就绪（刚连上/接管 GATT）就查询运行状态；等 notify 稳定后再发。
+            if becameReady {
+                restoreCachedSoundEffectMode()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    guard let self else { return }
+                    self.syncDeviceRuntimeStatusAfterConnected()
+                    // 日常模式必须让固件直接发送 AVRCP/Absolute Volume 媒体键。
+                    // App 异常退出或 BLE 重连后，防止 guidectrl0 遗留为开启状态，
+                    // 导致双击、三击、滑动只上报 guideevt00 而不再控制系统媒体。
+                    _ = self.setGuideModeEnabled(self.guideEventHandler != nil)
+                }
+            }
+        case .failed(let message):
+            cancelAutomaticGATTRecovery(
+                reason: "state-failed",
+                resetAttempts: manualHardReconnectPeripheralID == nil
+            )
+            stopSystemReconnectMonitor()
+            stopBatteryPolling()
+            cancelConnectWatchdog()
+            cancelDiscoverServicesWorkItem()
+            clearPendingBLEWrites(reason: "failed")
+            statusMessage = message
+            markDeviceRuntimeStatusUnknown(reason: "failed")
+        case .disconnected:
+            stopBatteryPolling()
+            clearPendingBLEWrites(reason: "disconnected")
+            statusMessage = L10n.t("设备已断开", "Disconnected")
+            markDeviceRuntimeStatusUnknown(reason: "disconnected")
+        }
+        print("\(logTag) state -> \(state), message=\(statusMessage)")
+        connectLog(
+            "state -> \(connectStateDescription(state))",
+            detail: "message=\(statusMessage) becameReady=\(becameReady)"
+        )
+    }
+
+    private func markDeviceRuntimeStatusUnknown(reason: String) {
+        isTakingPhoto = false
+        isVideoStopping = false
+        applyDeviceRuntimeStatus(.unknown, source: reason)
+    }
+
+    private func pairingStatusMessage(for state: AstraA1ConnectionState) -> String {
+        guard isPairingSessionActive else {
+            switch state {
+            case .idle, .scanning:
+                return L10n.t("查找设备中...", "Looking for devices...")
+            case .connecting:
+                return L10n.t("正在连接设备...", "Connecting...")
+            case .discoveringServices:
+                return L10n.t("正在发现服务...", "Discovering services...")
+            case .enablingNotifications:
+                return L10n.t("正在配置通信...", "Configuring...")
+            default:
+                return statusMessage
+            }
+        }
+
+        switch state {
+        case .scanning:
+            if let modelName = pairingModelNameFilter, !modelName.isEmpty {
+                return L10n.t("正在搜索 \(modelName) 设备...", "Searching for \(modelName)...")
+            }
+            return L10n.t("正在搜索设备", "Searching for devices")
+        case .connecting, .discoveringServices, .enablingNotifications:
+            return L10n.t("正在配对", "Pairing")
+        default:
+            return statusMessage
+        }
+    }
+
+    private func addVerifiedPairingDevice(
+        _ peripheral: CBPeripheral,
+        displayName: String,
+        rssi: Int
+    ) {
+        discoveredPeripherals[peripheral.identifier] = peripheral
+
+        if let index = discoveredPairingDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
+            let existing = discoveredPairingDevices[index]
+            if rssi > existing.rssi {
+                discoveredPairingDevices[index] = DiscoveredBLEDevice(
+                    id: peripheral.identifier,
+                    displayName: displayName,
+                    rssi: rssi
+                )
+            }
+        } else {
+            discoveredPairingDevices.append(
+                DiscoveredBLEDevice(
+                    id: peripheral.identifier,
+                    displayName: displayName,
+                    rssi: rssi
+                )
+            )
+            print("\(logTag) pairing list + \(displayName) [\(peripheral.identifier.uuidString)]")
+        }
+
+        discoveredPairingDevices.sort { $0.rssi > $1.rssi }
+    }
+
+    private func finishPairingListProbe(for peripheral: CBPeripheral) {
+        cancelConnectWatchdog()
+        isProbingService = false
+        hasStartedConnect = false
+        activeProbeRSSI = nil
+        centralManager.cancelPeripheralConnection(peripheral)
+        resetConnectionHandles()
+        updateState(.scanning)
+        if !centralManager.isScanning {
+            centralManager.scanForPeripherals(
+                withServices: nil,
+                options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+            )
+        }
+        schedulePairingScanTimeout()
+        guard !shouldPauseBackgroundProbe() else {
+            print("\(logTag) pairing list has devices, pause background probe")
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.probeNextCandidate()
+        }
+    }
+
+    private func resumePairingScanAfterFailure() {
+        guard isPairingSessionActive else { return }
+        isUserInitiatedPairingConnect = false
+        hasStartedConnect = false
+        resetConnectionHandles()
+        isManualPairingScan = true
+        updateState(.scanning)
+        if !centralManager.isScanning {
+            centralManager.scanForPeripherals(
+                withServices: nil,
+                options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+            )
+        }
+        schedulePairingScanTimeout()
+    }
+
+    /// 广播包里是否包含协议服务 UUID（不看名字）。
+    private func advertisesProtocolService(_ advertisementData: [String: Any]) -> Bool {
+        let lists = [
+            advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID],
+            advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID]
+        ]
+        return lists.compactMap { $0 }.contains { $0.contains(AstraA1BleProtocol.serviceUUID) }
+    }
+
+    private func connect(to peripheral: CBPeripheral, probing: Bool) {
+        // 系统层已连接时不要再 connect，否则可能永远等不到 didConnect
+        if peripheral.state == .connected {
+            isProbingService = probing
+            if probing && isPairingSessionActive {
+                connectedPeripheral = peripheral
+                peripheral.delegate = self
+                beginDiscoverServices(on: peripheral, reason: "probe-already-connected")
+                startConnectWatchdog(for: peripheral)
+                return
+            }
+            attachToConnectedPeripheral(peripheral)
+            return
+        }
+
+        guard !hasStartedConnect else { return }
+        hasStartedConnect = true
+        isProbingService = probing
+        cancelScanTimeout()
+        cancelProbeStart()
+        stopScan()
+
+        connectedPeripheral = peripheral
+        reconnectPeripheral = peripheral
+        peripheral.delegate = self
+        updateState(.connecting)
+        print("\(logTag) connecting \(peripheral.identifier.uuidString), probing=\(probing), state=\(peripheral.state.rawValue)")
+        centralManager.connect(peripheral, options: nil)
+        startConnectWatchdog(for: peripheral)
+    }
+
+    private func cancelConnectWatchdog() {
+        connectWatchdogWorkItem?.cancel()
+        connectWatchdogWorkItem = nil
+    }
+
+    private var canAutomaticallyRecoverGATT: Bool {
+        guard let centralManager else { return false }
+        let targetID = connectedPeripheral?.identifier
+            ?? reconnectPeripheral?.identifier
+            ?? savedPeripheralID()
+        let systemConnected = targetID.flatMap { systemConnectedPeripheral(matching: $0) } != nil
+        return centralManager.state == .poweredOn
+            && autoReconnectEnabled
+            && !userInitiatedDisconnect
+            && !isPairingSessionActive
+            && !isManualReconnectConnect
+            && manualHardReconnectPeripheralID == nil
+            && systemConnected
+    }
+
+    private func cancelAutomaticGATTRecovery(reason: String, resetAttempts: Bool) {
+        let hadRecovery = isAutomaticGATTRecoveryInProgress
+            || automaticGATTRecoveryWorkItem != nil
+            || automaticGATTRecoveryCancellationPeripheralID != nil
+        automaticGATTRecoveryWorkItem?.cancel()
+        automaticGATTRecoveryWorkItem = nil
+        automaticGATTRecoveryGeneration += 1
+        automaticGATTRecoveryCancellationPeripheralID = nil
+        isAutomaticGATTRecoveryInProgress = false
+        if resetAttempts {
+            standingConnectRecoveryCount = 0
+        }
+        if hadRecovery {
+            connectLog(
+                "automatic GATT recovery cancelled",
+                detail: "reason=\(reason) resetAttempts=\(resetAttempts)"
+            )
+        }
+    }
+
+    private func requireManualHardReconnect(for peripheral: CBPeripheral, reason: String) {
+        guard freshlyRetrievedSystemConnectedPeripheral(matching: peripheral.identifier) != nil else {
+            cancelAutomaticGATTRecovery(reason: "manual retry blocked: system disconnected", resetAttempts: true)
+            manualHardReconnectPeripheralID = nil
+            standingConnectAllowed = false
+            standingConnectPeripheralID = nil
+            resetConnectionHandles()
+            updateState(.disconnected)
+            startSystemReconnectMonitor()
+            return
+        }
+
+        cancelAutomaticGATTRecovery(reason: "soft recovery exhausted", resetAttempts: false)
+        stopSystemReconnectMonitor()
+        cancelConnectWatchdog()
+        cancelDiscoverServicesWorkItem()
+        standingConnectAllowed = false
+        standingConnectPeripheralID = nil
+        hasStartedConnect = false
+        isBatteryRefreshMode = false
+        manualHardReconnectPeripheralID = peripheral.identifier
+        reconnectPeripheral = peripheral
+        resetConnectionHandles()
+        // 此时停在用户确认点。不先主动断开，否则会把「系统仍已连接」
+        // 的唯一可靠证据也清掉，导致点击后反而无法硬重建。
+        updateState(.failed(L10n.t("连接失败，请点击重试", "Connection failed. Tap to retry.")))
+        connectLog(
+            "manual hard reconnect required",
+            detail: "reason=\(reason) attempts=\(standingConnectRecoveryCount) id=\(peripheral.identifier.uuidString)"
+        )
+    }
+
+    @discardableResult
+    private func failManualHardReconnectIfNeeded(
+        for peripheral: CBPeripheral,
+        reason: String
+    ) -> Bool {
+        guard isManualHardReconnectAttemptInProgress else { return false }
+        isManualHardReconnectAttemptInProgress = false
+        pendingManualHardReconnectPeripheralID = nil
+        manualHardReconnectLookupWorkItem?.cancel()
+        manualHardReconnectLookupWorkItem = nil
+        requireManualHardReconnect(for: peripheral, reason: "hard reconnect failed: \(reason)")
+        return true
+    }
+
+    private func failOrRecoverConnectionPipeline(
+        _ peripheral: CBPeripheral,
+        reason: String,
+        message: String
+    ) {
+        if failManualHardReconnectIfNeeded(for: peripheral, reason: reason) {
+            return
+        }
+        if canAutomaticallyRecoverGATT {
+            beginAutomaticGATTRecovery(for: peripheral, reason: reason)
+            return
+        }
+
+        hasStartedConnect = false
+        isBatteryRefreshMode = false
+        isManualReconnectConnect = false
+        updateState(.failed(message))
+    }
+
+    /// 对齐 Android disconnect/close 后再 connectGatt：旧 GATT 未确认断开前，绝不发新 connect。
+    private func beginAutomaticGATTRecovery(for peripheral: CBPeripheral, reason: String) {
+        guard canAutomaticallyRecoverGATT else { return }
+        guard !isAutomaticGATTRecoveryInProgress else {
+            connectLog(
+                "automatic GATT recovery already in progress",
+                detail: "reason=\(reason) id=\(peripheral.identifier.uuidString)"
+            )
+            return
+        }
+
+        automaticGATTRecoveryWorkItem?.cancel()
+        automaticGATTRecoveryWorkItem = nil
+        automaticGATTRecoveryGeneration += 1
+        let generation = automaticGATTRecoveryGeneration
+        isAutomaticGATTRecoveryInProgress = true
+        stopSystemReconnectMonitor()
+        cancelConnectWatchdog()
+        cancelDiscoverServicesWorkItem()
+        standingConnectPeripheralID = nil
+        reconnectPeripheral = peripheral
+        standingConnectAllowed = true
+        hasStartedConnect = false
+        isBatteryRefreshMode = false
+
+        guard standingConnectRecoveryCount < maxStandingConnectRecoveryAttempts else {
+            requireManualHardReconnect(for: peripheral, reason: reason)
+            return
+        }
+
+        standingConnectRecoveryCount += 1
+        automaticGATTRecoveryCancellationPeripheralID = peripheral.identifier
+        resetConnectionHandles()
+        updateState(.connecting)
+        connectLog(
+            "automatic GATT recovery: cancel old link",
+            detail: "reason=\(reason) attempt=\(standingConnectRecoveryCount)/\(maxStandingConnectRecoveryAttempts) id=\(peripheral.identifier.uuidString) peripheralState=\(peripheralStateDescription(peripheral.state))",
+            direction: .sent
+        )
+
+        if peripheral.state == .disconnected {
+            completeAutomaticGATTRecoveryCancellation(
+                for: peripheral,
+                generation: generation,
+                source: "already-disconnected"
+            )
+        } else {
+            centralManager.cancelPeripheralConnection(peripheral)
+            waitForAutomaticGATTRecoveryCancellation(
+                of: peripheral,
+                generation: generation,
+                pollCount: 0
+            )
+        }
+    }
+
+    private func waitForAutomaticGATTRecoveryCancellation(
+        of peripheral: CBPeripheral,
+        generation: Int,
+        pollCount: Int
+    ) {
+        automaticGATTRecoveryWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self, weak peripheral] in
+            guard let self, let peripheral else { return }
+            self.automaticGATTRecoveryWorkItem = nil
+            guard self.automaticGATTRecoveryGeneration == generation,
+                  self.isAutomaticGATTRecoveryInProgress,
+                  self.automaticGATTRecoveryCancellationPeripheralID == peripheral.identifier else { return }
+
+            if peripheral.state == .disconnected {
+                self.completeAutomaticGATTRecoveryCancellation(
+                    for: peripheral,
+                    generation: generation,
+                    source: "state-poll"
+                )
+                return
+            }
+
+            let nextPollCount = pollCount + 1
+            if nextPollCount.isMultiple(of: 4) {
+                self.centralManager.cancelPeripheralConnection(peripheral)
+            }
+            if nextPollCount.isMultiple(of: 20) {
+                self.connectLog(
+                    "automatic GATT recovery: waiting for disconnect",
+                    detail: "id=\(peripheral.identifier.uuidString) seconds=\(Double(nextPollCount) * self.automaticGATTRecoveryPollSeconds) peripheralState=\(self.peripheralStateDescription(peripheral.state))"
+                )
+            }
+            self.waitForAutomaticGATTRecoveryCancellation(
+                of: peripheral,
+                generation: generation,
+                pollCount: nextPollCount
+            )
+        }
+        automaticGATTRecoveryWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + automaticGATTRecoveryPollSeconds,
+            execute: work
+        )
+    }
+
+    @discardableResult
+    private func consumeAutomaticGATTRecoveryCancellation(
+        for peripheral: CBPeripheral,
+        source: String
+    ) -> Bool {
+        guard isAutomaticGATTRecoveryInProgress,
+              automaticGATTRecoveryCancellationPeripheralID == peripheral.identifier else {
+            return false
+        }
+        completeAutomaticGATTRecoveryCancellation(
+            for: peripheral,
+            generation: automaticGATTRecoveryGeneration,
+            source: source
+        )
+        return true
+    }
+
+    private func completeAutomaticGATTRecoveryCancellation(
+        for peripheral: CBPeripheral,
+        generation: Int,
+        source: String
+    ) {
+        guard automaticGATTRecoveryGeneration == generation,
+              isAutomaticGATTRecoveryInProgress,
+              automaticGATTRecoveryCancellationPeripheralID == peripheral.identifier else { return }
+
+        automaticGATTRecoveryWorkItem?.cancel()
+        automaticGATTRecoveryWorkItem = nil
+        automaticGATTRecoveryCancellationPeripheralID = nil
+        reconnectPeripheral = peripheral
+        resetConnectionHandles()
+        updateState(.connecting)
+        connectLog(
+            "automatic GATT recovery: old link closed",
+            detail: "source=\(source) id=\(peripheral.identifier.uuidString) peripheralState=\(peripheralStateDescription(peripheral.state))",
+            direction: .received
+        )
+
+        let work = DispatchWorkItem { [weak self, weak peripheral] in
+            guard let self, let peripheral else { return }
+            self.automaticGATTRecoveryWorkItem = nil
+            guard self.automaticGATTRecoveryGeneration == generation,
+                  self.isAutomaticGATTRecoveryInProgress else { return }
+            guard self.canAutomaticallyRecoverGATT, !self.isReady else {
+                self.cancelAutomaticGATTRecovery(reason: "reconnect no longer needed", resetAttempts: false)
+                return
+            }
+
+            self.isAutomaticGATTRecoveryInProgress = false
+            self.connectLog(
+                "automatic GATT recovery: reconnect",
+                detail: "id=\(peripheral.identifier.uuidString) peripheralState=\(self.peripheralStateDescription(peripheral.state))",
+                direction: .sent
+            )
+            if peripheral.state == .connected {
+                self.attachToConnectedPeripheral(peripheral)
+            } else {
+                self.armSystemAutoConnect(peripheral, force: true)
+            }
+        }
+        automaticGATTRecoveryWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + automaticGATTRecoveryResumeDelaySeconds,
+            execute: work
+        )
+    }
+
+    private func shouldIgnoreGATTCallback(from peripheral: CBPeripheral, event: String) -> Bool {
+        if automaticGATTRecoveryCancellationPeripheralID == peripheral.identifier {
+            connectLog(
+                "GATT callback ignored during recovery cancellation",
+                detail: "event=\(event) id=\(peripheral.identifier.uuidString)"
+            )
+            return true
+        }
+        guard connectedPeripheral?.identifier == peripheral.identifier else {
+            connectLog(
+                "stale GATT callback ignored",
+                detail: "event=\(event) id=\(peripheral.identifier.uuidString)"
+            )
+            return true
+        }
+        return false
+    }
+
+    /// 连接流水线看门狗：自动连接单轮超时后软重建；用户配对可继续重试服务发现。
+    private func startConnectWatchdog(
+        for peripheral: CBPeripheral,
+        timeoutOverride: TimeInterval? = nil
+    ) {
+        cancelConnectWatchdog()
+        let isStandingAttempt = standingConnectPeripheralID == peripheral.identifier
+        let standingTimeout = standingConnectRecoveryCount == 0
+            ? systemTransportConnectGraceSeconds
+            : standingConnectRetryIntervalSeconds
+        let timeout = timeoutOverride
+            ?? (isStandingAttempt ? standingTimeout : connectWatchdogSeconds)
+        if isStandingAttempt {
+            connectLog(
+                "standing connect watchdog armed",
+                detail: "id=\(peripheral.identifier.uuidString) seconds=\(timeout) recoveryAttempt=\(standingConnectRecoveryCount) peripheralState=\(peripheralStateDescription(peripheral.state))"
+            )
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.connectWatchdogWorkItem = nil
+            if case .ready = self.connectionState { return }
+            let isStandingConnect = self.standingConnectPeripheralID == peripheral.identifier
+            switch self.connectionState {
+            case .connecting, .discoveringServices, .enablingNotifications:
+                break
+            default:
+                // 常驻连接不改变首页状态；仅处理 CoreBluetooth 永久卡在 connecting 的情况。
+                guard isStandingConnect, peripheral.state == .connecting else { return }
+            }
+
+            if peripheral.state == .connected {
+                // 连接对象仍保留上一轮完整服务/通知句柄时，说明状态被重复回调误改。
+                // 直接恢复 ready，禁止 watchdog 反复 discoverServices 且计数不增长。
+                if self.isServiceDiscovered,
+                   self.isProtocolNotificationEnabled,
+                   self.writeCharacteristic != nil {
+                    self.connectLog(
+                        "connect watchdog: restore ready from valid GATT handles",
+                        detail: "id=\(peripheral.identifier.uuidString)"
+                    )
+                    self.markReadyIfNeeded()
+                    return
+                }
+                if self.isProbingService && self.isPairingSessionActive {
+                    self.handleProbeFailed(reason: "probe watchdog timeout")
+                    return
+                }
+                if case .enablingNotifications = self.connectionState {
+                    self.connectLog(
+                        "connect watchdog: notification setup timed out",
+                        detail: "id=\(peripheral.identifier.uuidString)"
+                    )
+                    if self.isUserInitiatedPairingConnect && self.isPairingSessionActive {
+                        self.retryUserPairingConnect(reason: "notification setup timeout")
+                    } else {
+                        self.failOrRecoverConnectionPipeline(
+                            peripheral,
+                            reason: "notification-setup-timeout",
+                            message: L10n.t("通信配置超时，请点击重试", "Communication setup timed out. Tap to retry")
+                        )
+                    }
+                    return
+                }
+                if self.isUserInitiatedPairingConnect && self.isPairingSessionActive {
+                    if self.gattDiscoveryAttempt >= self.maxGATTDiscoveryAttempts {
+                        self.isUserInitiatedPairingConnect = false
+                        self.hasStartedConnect = false
+                        self.updateState(.failed(L10n.t("连接超时，请重试", "Connection timed out. Try again.")))
+                        return
+                    }
+                    self.beginDiscoverServices(on: peripheral, reason: "user-pairing-watchdog")
+                    self.startConnectWatchdog(for: peripheral)
+                    return
+                }
+                // 非配对自动连接：一次 watchdog 超时即算一次完整连接失败。
+                // 初次连接 + 一次软 GATT 重建后停在“点击重试”，不在单轮内每 15 秒无限发现服务。
+                self.connectLog(
+                    "connect watchdog: GATT pipeline timed out",
+                    detail: "discoveryAttempt=\(self.gattDiscoveryAttempt) recoveryAttempt=\(self.standingConnectRecoveryCount)/\(self.maxStandingConnectRecoveryAttempts)"
+                )
+                self.failOrRecoverConnectionPipeline(
+                    peripheral,
+                    reason: "gatt-pipeline-timeout",
+                    message: L10n.t("连接超时，请点击重试", "Connection timed out. Tap to retry")
+                )
+                return
+            }
+
+            if isStandingConnect {
+                self.connectLog(
+                    "standing connect stuck; rebuild GATT",
+                    detail: "id=\(peripheral.identifier.uuidString) peripheralState=\(self.peripheralStateDescription(peripheral.state))"
+                )
+                if self.failManualHardReconnectIfNeeded(
+                    for: peripheral,
+                    reason: "standing-connect-timeout"
+                ) {
+                    return
+                }
+                self.beginAutomaticGATTRecovery(for: peripheral, reason: "standing-connect-timeout")
+                return
+            }
+
+            // 仍未完成 GATT 发现：取消挂起请求，改挂 iOS 常驻 connect，等系统自动连上再试
+            print("\(self.logTag) connect watchdog: still not connected, hand off to system auto-connect")
+            self.connectLog("connect watchdog: still not connected, hand off to system auto-connect")
+            if self.isUserInitiatedPairingConnect && self.isPairingSessionActive {
+                self.retryUserPairingConnect(reason: "connect watchdog timeout")
+                return
+            }
+            let wasManualReconnect = self.isManualReconnectConnect
+            self.isManualReconnectConnect = false
+            if !wasManualReconnect, self.canAutomaticallyRecoverGATT {
+                self.beginAutomaticGATTRecovery(for: peripheral, reason: "connect-timeout")
+                return
+            }
+            self.centralManager.cancelPeripheralConnection(peripheral)
+            self.hasStartedConnect = false
+            self.isBatteryRefreshMode = false
+            // 用户点卡片触发的重连要给出明确失败，不能静默回到「设备未连接」。
+            if wasManualReconnect {
+                self.lastManualReconnectFailure = .connectFailed
+            }
+            self.updateState(wasManualReconnect ? .failed(L10n.t("设备连接失败", "Connection failed")) : .disconnected)
+        }
+        connectWatchdogWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: work)
+    }
+
+    private func enqueueProbeCandidate(_ peripheral: CBPeripheral, rssi: NSNumber) {
+        let value = rssi.intValue
+        guard value >= minProbeRSSI else { return }
+        guard !probedIDs.contains(peripheral.identifier) else { return }
+        guard !discoveredPeripherals.keys.contains(peripheral.identifier) else { return }
+        guard !probeCandidates.contains(where: { $0.peripheral.identifier == peripheral.identifier }) else { return }
+
+        let candidate = ProbeCandidate(peripheral: peripheral, rssi: value)
+        if isManualPairingScan, shouldPrioritizeProbe(peripheral) {
+            probeCandidates.insert(candidate, at: 0)
+        } else {
+            probeCandidates.append(candidate)
+            probeCandidates.sort { $0.rssi > $1.rssi }
+        }
+        print("\(logTag) probe candidate \(peripheral.identifier.uuidString) rssi=\(value), queue=\(probeCandidates.count)")
+    }
+
+    private func nameMatchesPairingModelName(
+        _ peripheral: CBPeripheral,
+        advertisementData: [String: Any]
+    ) -> Bool {
+        guard let modelName = pairingModelNameFilter,
+              !modelName.isEmpty else {
+            return false
+        }
+
+        let name = resolvedName(for: peripheral, advertisementData: advertisementData)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return false }
+
+        return name.localizedCaseInsensitiveContains(modelName)
+    }
+
+    private func registerNameMatchedPairingDevice(
+        _ peripheral: CBPeripheral,
+        advertisementData: [String: Any],
+        rssi: NSNumber
+    ) {
+        let name = resolvedName(for: peripheral, advertisementData: advertisementData)
+        let displayName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !displayName.isEmpty else { return }
+        addVerifiedPairingDevice(
+            peripheral,
+            displayName: displayName,
+            rssi: rssi.intValue
+        )
+    }
+
+    private func shouldPrioritizeProbe(_ peripheral: CBPeripheral) -> Bool {
+        guard let name = peripheral.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+            return false
+        }
+        if let modelName = pairingModelNameFilter, !modelName.isEmpty {
+            if name.localizedCaseInsensitiveContains(modelName) { return true }
+        }
+        let upper = name.uppercased()
+        return upper.contains("G5T71") || upper.hasPrefix("L1")
+    }
+
+    private func startProbingIfNeeded() {
+        guard case .scanning = connectionState, !hasStartedConnect else { return }
+        guard !shouldPauseBackgroundProbe() else {
+            print("\(logTag) skip probing: verified devices already in list")
+            return
+        }
+        guard !probeCandidates.isEmpty else {
+            print("\(logTag) no probe candidates yet")
+            return
+        }
+        print("\(logTag) start service probing, candidates=\(probeCandidates.count)")
+        probeNextCandidate()
+    }
+
+    private func probeNextCandidate() {
+        // 已在连接正式目标时不再探测
+        guard !hasStartedConnect || isProbingService else { return }
+        guard case .scanning = connectionState else { return }
+        guard !shouldPauseBackgroundProbe() else { return }
+
+        while let candidate = probeCandidates.first {
+            probeCandidates.removeFirst()
+            if probedIDs.contains(candidate.peripheral.identifier) { continue }
+            probedIDs.insert(candidate.peripheral.identifier)
+            activeProbeRSSI = candidate.rssi
+            connect(to: candidate.peripheral, probing: true)
+            return
+        }
+
+        print("\(logTag) probe queue empty, keep scanning")
+    }
+
+    private func handleProbeFailed(reason: String) {
+        print("\(logTag) probe failed: \(reason)")
+        if isUserInitiatedPairingConnect { return }
+        if let peripheral = connectedPeripheral {
+            centralManager.cancelPeripheralConnection(peripheral)
+        }
+        resetConnectionHandles()
+        updateState(.scanning)
+
+        // 继续扫，并探测下一个候选
+        if !centralManager.isScanning {
+            centralManager.scanForPeripherals(
+                withServices: nil,
+                options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+            )
+        }
+        guard !shouldPauseBackgroundProbe() else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.probeNextCandidate()
+        }
+    }
+
+    private func markReadyIfNeeded() {
+        guard isServiceDiscovered, isProtocolNotificationEnabled else { return }
+        guard case .ready = connectionState else {
+            let awaitingSystemPairing = isUserInitiatedPairingConnect
+            let wasBatteryRefresh = isBatteryRefreshMode
+            isManualHardReconnectAttemptInProgress = false
+            pendingManualHardReconnectPeripheralID = nil
+            manualHardReconnectLookupWorkItem?.cancel()
+            manualHardReconnectLookupWorkItem = nil
+            clearManualHardReconnectRequirement(reason: "BLE ready")
+            prepareBatteryForFreshRead()
+            updateState(.ready)
+            if let id = connectedPeripheral?.identifier {
+                savePeripheralID(id)
+            }
+            if let peripheral = connectedPeripheral {
+                // 已连上只保留重连身份。不要对 ready 外设再次 connect；
+                // 真正掉线后由 didDisconnect / 系统连接事件启动下一轮。
+                reconnectPeripheral = peripheral
+                standingConnectAllowed = true
+                standingConnectPeripheralID = nil
+            }
+            print("\(logTag) ===== BLE READY =====")
+            connectLog(
+                "===== BLE READY =====",
+                detail: "id=\(connectedPeripheral?.identifier.uuidString ?? "nil") write=\(writeCharacteristic?.uuid.uuidString ?? "nil") notify=\(notifyCharacteristic?.uuid.uuidString ?? "nil") awaitingSystemPairing=\(awaitingSystemPairing)"
+            )
+            print("\(logTag) writeCharacteristic: \(writeCharacteristic?.uuid.uuidString ?? "nil")")
+            print("\(logTag) notifyCharacteristic: \(notifyCharacteristic?.uuid.uuidString ?? "nil")")
+            if let peripheral = connectedPeripheral {
+                let mtuNoResp = peripheral.maximumWriteValueLength(for: .withoutResponse)
+                let mtuResp = peripheral.maximumWriteValueLength(for: .withResponse)
+                print("\(logTag) MTU maxWrite withoutResponse=\(mtuNoResp) withResponse=\(mtuResp) (notify payload ≈ ATT_MTU-3)")
+            }
+
+            // 成功连接后允许断线交给 iOS 常驻 connect 自动连回
+            autoReconnectEnabled = true
+            userInitiatedDisconnect = false
+            isBatteryRefreshMode = false
+            reconnectPeripheral = connectedPeripheral
+
+            let deviceInfoReadyDelay = awaitingSystemPairing ? systemPairingGraceSeconds : 2.5
+            if awaitingSystemPairing {
+                statusMessage = L10n.t("请在系统弹窗中完成蓝牙配对...", "Complete Bluetooth pairing in the system alert...")
+                print("\(logTag) waiting \(deviceInfoReadyDelay)s for iOS system Bluetooth pairing")
+            }
+
+            // 首页电量刷新 / 系统自动连回：仅当同一外设且身份仍有效时跳过 getdevinfo。
+            if wasBatteryRefresh {
+                let samePeripheral = connectedPeripheral?.identifier == identityPeripheralID
+                let alreadyBound = isDeviceInfoReady && samePeripheral
+                identityPeripheralID = connectedPeripheral?.identifier
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    guard let self else { return }
+                    if alreadyBound {
+                        // getdevstat 由进入 ready 统一调度；这里只刷电量/待导入。
+                        if self.isAIVisionTransferBusy {
+                            self.deferredBatteryQuery = true
+                            self.deferredPendingImportQuery = true
+                            print("\(self.logTag) post-connect refresh deferred: AI vision transfer busy")
+                        } else {
+                            self.scheduleRoutineDeviceRefresh()
+                        }
+                    } else {
+                        self.statusMessage = L10n.t("正在读取设备信息...", "Reading device info...")
+                        self.queryInitialDeviceInfo()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + deviceInfoReadyDelay) {
+                            self.markDeviceInfoReadyIfNeeded(force: true)
+                        }
+                    }
+                }
+                return
+            }
+
+            identityPeripheralID = connectedPeripheral?.identifier
+            if !awaitingSystemPairing {
+                statusMessage = L10n.t("正在读取设备信息...", "Reading device info...")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.queryInitialDeviceInfo()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + deviceInfoReadyDelay) { [weak self] in
+                self?.markDeviceInfoReadyIfNeeded(force: true)
+            }
+            return
+        }
+
+        // 已 ready：不再重复 getdevstat（由进入 ready 时统一发一次 + 有限重试）。
+    }
+
+    private func queryInitialDeviceInfo() {
+        // 取消上一轮未发出的定时包，避免 recover + markReady + ensureConnected 叠成指令风暴。
+        initialDeviceInfoQueryGeneration += 1
+        let generation = initialDeviceInfoQueryGeneration
+        isInitialDeviceInfoQueryInProgress = true
+
+        // 对齐安卓 DeviceInfoManager：连上就查 ver28/ver63（约 200ms 一枪）。
+        let types: [AstraA1BleProtocol.DevInfoType] = [
+            .battery, .name, .model, .sn, .version2800, .version6350
+        ]
+        for (index, type) in types.enumerated() {
+            let delay = Double(index) * Self.getDevInfoSendIntervalSeconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                guard self.initialDeviceInfoQueryGeneration == generation else {
+                    print("\(self.logTag) queryInitialDeviceInfo cancelled type=\(type.rawValue)")
+                    return
+                }
+                _ = self.sendCommand(AstraA1BleProtocol.buildGetDevInfoCommand(type: type))
+            }
+        }
+        let pendingDelay = Double(types.count) * Self.getDevInfoSendIntervalSeconds
+        DispatchQueue.main.asyncAfter(deadline: .now() + pendingDelay) { [weak self] in
+            guard let self else { return }
+            guard self.initialDeviceInfoQueryGeneration == generation else { return }
+            self.isInitialDeviceInfoQueryInProgress = false
+            if self.isAIVisionTransferBusy {
+                self.deferredPendingImportQuery = true
+                print("\(self.logTag) initial hasnewfile deferred: AI vision transfer busy")
+                self.runDeferredBatteryQueryIfNeeded()
+                return
+            }
+            self.queryPendingImportFiles()
+            self.runDeferredRoutineQueriesIfNeeded()
+            // 对齐 Android 连接就绪后的连续对话时长查询；
+            // 放在 getdevinfo 队列之后，避免敏感固件收到并发命令。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                _ = self?.queryAIVoiceListeningDuration()
+            }
+        }
+        print("\(logTag) queryInitialDeviceInfo scheduled gen=\(generation) count=\(types.count) interval=\(Self.getDevInfoSendIntervalSeconds)s")
+    }
+
+    private func cancelInitialDeviceInfoQuery(reason: String) {
+        if isInitialDeviceInfoQueryInProgress || initialDeviceInfoQueryGeneration > 0 {
+            print("\(logTag) cancelInitialDeviceInfoQuery reason=\(reason) gen=\(initialDeviceInfoQueryGeneration)")
+        }
+        initialDeviceInfoQueryGeneration += 1
+        isInitialDeviceInfoQueryInProgress = false
+    }
+
+    private func handleNotifyData(_ data: Data) {
+        guard let command = AstraA1BleProtocol.parseCommandHeader(from: data) else {
+            print("\(logTag) notify data (\(data.count) bytes): header parse failed")
+            return
+        }
+
+        // 识图大数据包：对齐安卓，只记长度/命令，禁止整包 hex（主线程打满会拖垮收包）。
+        if command == "imgrecdata" || command == "imgrecrsp0" {
+            print("\(logTag) notify command=\(command) bytes=\(data.count)")
+            aiVisionNotifyHandler?(command, data)
+            return
+        }
+
+        if command == "aivoicests" || command == "aivoicedat" || command == "aivoicetur" {
+            print("\(logTag) notify command=\(command) bytes=\(data.count)")
+            aiVoiceNotifyHandler?(command, data)
+            return
+        }
+
+        if command == "aivsilrsp0" {
+            if let response = AstraA1BleProtocol.parseAIVoiceListeningDurationResponse(data) {
+                voiceSettingsResponseSequence += 1
+                aiVoiceListeningDurationResponse = AIVoiceListeningDurationResponse(
+                    status: response.status,
+                    seconds: response.seconds,
+                    sequence: voiceSettingsResponseSequence
+                )
+                print("\(logTag) aivsilrsp0 status=\(response.status) seconds=\(response.seconds)")
+            } else {
+                print("\(logTag) aivsilrsp0 parse failed bytes=\(data.count)")
+            }
+            return
+        }
+
+        if command == "wakeuprsp0" {
+            if let response = AstraA1BleProtocol.parseVoiceWakeupResponse(data) {
+                voiceSettingsResponseSequence += 1
+                voiceWakeupResponse = VoiceWakeupResponse(
+                    status: response.status,
+                    enabled: response.enabled,
+                    sequence: voiceSettingsResponseSequence
+                )
+                print("\(logTag) wakeuprsp0 status=\(response.status) enabled=\(response.enabled)")
+            } else {
+                print("\(logTag) wakeuprsp0 parse failed bytes=\(data.count)")
+            }
+            return
+        }
+
+        if command == "trslatests" || command == "trslatedat" {
+            print("\(logTag) notify command=\(command) bytes=\(data.count)")
+            translationVoiceNotifyHandler?(command, data)
+            return
+        }
+
+        if command == "guideevt00" {
+            if let eventType = AstraA1BleProtocol.parseGuideEvent(data) {
+                print("\(logTag) guideevt00 event=\(eventType)")
+                guideEventHandler?(eventType)
+            } else {
+                print("\(logTag) guideevt00 parse failed bytes=\(data.count)")
+            }
+            return
+        }
+
+        let preview = data.prefix(24).map { String(format: "%02X", $0) }.joined(separator: " ")
+        print("\(logTag) notify data (\(data.count) bytes): \(preview)\(data.count > 24 ? " ..." : "")")
+        DebugLogStore.logBLEReceived(data)
+        print("\(logTag) notify command=\(command)")
+
+        // 眼镜连上后首包电量走 getdevinfo batt0，之后约每 2 分钟主动上报 batteryntf。
+        if command == "batteryntf" {
+            if let level = AstraA1BleProtocol.parseBatteryNotify(data) {
+                applyBatteryPercent(level, isCharging: deviceIsCharging, source: "batteryntf")
+                markDeviceInfoReadyIfNeeded(force: false)
+                // 上报即视为一次有效刷新，重新计时，避免刚上报又立刻主动查。
+                scheduleNextBatteryPoll(after: batteryPollingInterval)
+            } else {
+                print("\(logTag) batteryntf parse failed bytes=\(data.count)")
+            }
+            return
+        }
+
+        if command == "devstatus0" {
+            if let status = AstraA1BleProtocol.parseDevStatus(data) {
+                print("[device_status] recv devstatus0 \(status.logDescription)")
+                applyDeviceRuntimeStatus(status, source: "devstatus0")
+            } else {
+                print("[device_status] recv devstatus0 parse failed raw=\(data.map { String(format: "%02X", $0) }.joined(separator: " "))")
+            }
+            return
+        }
+
+        if command == "actionrsp0" {
+            if let response = AstraA1BleProtocol.parseActionResponse(data) {
+                print("[device_status] recv actionrsp0 action=\(response.action.rawValue) result=\(response.result.rawValue) current=\(response.currentStatus.logDescription)")
+                handleActionResponse(response)
+            } else {
+                print("[device_status] recv actionrsp0 parse failed raw=\(data.map { String(format: "%02X", $0) }.joined(separator: " "))")
+            }
+            return
+        }
+
+        if command == "eqmodersp0" {
+            if let response = AstraA1BleProtocol.parseEQModeResponse(data) {
+                applySoundEffectResponse(status: response.status, mode: response.mode)
+            } else {
+                print("\(logTag) eqmodersp0 parse failed bytes=\(data.count)")
+            }
+            return
+        }
+
+        if command == "vidresrsp0" {
+            if let response = AstraA1BleProtocol.parseVideoResolutionResponse(data) {
+                settingsVideoResolutionProfile = response.profile
+                print("\(logTag) vidresrsp0 status=\(response.status) profile=\(response.profile)")
+            }
+            return
+        }
+
+        if command == "weardetrsp" {
+            if let response = AstraA1BleProtocol.parseWearDetectionResponse(data) {
+                settingsWearDetectionEnabled = response.enabled
+                print("\(logTag) weardetrsp result=\(response.result) enabled=\(response.enabled)")
+            }
+            return
+        }
+
+        if command == "testresult" {
+            if let response = AstraA1BleProtocol.parseFactoryResetResponse(data), response.testID == 0x13 {
+                factoryResetResult = response.result
+                print("\(logTag) factory testresult=\(response.result)")
+            }
+            return
+        }
+
+        if command == "hasnewfile",
+           let info = AstraA1BleProtocol.parseHasNewFileResponse(data) {
+            if info.fileType == 1 {
+                let count = info.hasNew ? max(0, info.fileCount) : 0
+                // 本地仍有删除残留时，勿被「count=0」冲掉导入条。
+                let leftover = AIRecordingImportManager.shared.leftoverDeviceFileCount
+                if count == 0, leftover > 0 {
+                    pendingRecordingImportFileCount = leftover
+                    print("\(logTag) hasnewfile recording count=0 but keep leftover=\(leftover)")
+                } else {
+                    pendingRecordingImportFileCount = count
+                }
+                persistPendingRecordingCount(pendingRecordingImportFileCount)
+                if info.hasNew {
+                    isAIRecording = false
+                    finishRuntimeOperationIfNeeded(
+                        expected: .voiceRecording,
+                        fallback: .unknown,
+                        reason: "ai-record-file-ready"
+                    )
+                }
+                print("\(logTag) hasnewfile recording hasNew=\(info.hasNew) fileCount=\(info.fileCount) pendingRecording=\(pendingRecordingImportFileCount)")
+            } else {
+                pendingImportFileCount = info.hasNew ? max(0, info.fileCount) : 0
+                print("\(logTag) hasnewfile media hasNew=\(info.hasNew) fileCount=\(info.fileCount) pending=\(pendingImportFileCount)")
+                if info.hasNew, isTakingPhoto {
+                    finishPhotoCaptureSuccess()
+                }
+                if info.hasNew, isVideoStopping {
+                    finishVideoCaptureSuccess()
+                }
+                if info.hasNew, let cont = mediaCaptureContinuation {
+                    mediaCaptureContinuation = nil
+                    cont.resume()
+                }
+            }
+            return
+        }
+
+        if command == "wificonfig" {
+            let preview = data.prefix(24).map { String(format: "%02X", $0) }.joined(separator: " ")
+            print("\(logTag) wificonfig raw (\(data.count) bytes): \(preview)\(data.count > 24 ? " ..." : "")")
+            wifiLog(
+                "收到 wificonfig 数据",
+                detail: "bytes=\(data.count)\ndeclaredPayload=\(AstraA1BleProtocol.declaredPayloadLength(data) ?? -1)",
+                direction: .received
+            )
+            if AstraA1BleProtocol.isTruncatedPacket(data) {
+                let declared = AstraA1BleProtocol.declaredPayloadLength(data) ?? -1
+                // 命中缓存的快速路径（无 wifiConfigContinuation）不关心 wificonfig 内容，
+                // 不必发起 read 兜底，避免无谓的“request not supported”噪音。
+                if wifiConfigContinuation != nil {
+                    print("\(logTag) wificonfig truncated: received=\(data.count) declaredPayload=\(declared), reading notify char...")
+                    wifiLog(
+                        "wificonfig 数据被截断，尝试主动读取",
+                        detail: "received=\(data.count)\ndeclaredPayload=\(declared)",
+                        direction: .received
+                    )
+                    requestFullNotifyPayload(for: command)
+                } else {
+                    print("\(logTag) wificonfig truncated (no waiter): received=\(data.count) declaredPayload=\(declared), ignored")
+                    wifiLog(
+                        "wificonfig 数据被截断且当前无等待任务",
+                        detail: "received=\(data.count)\ndeclaredPayload=\(declared)",
+                        direction: .received
+                    )
+                }
+                return
+            }
+            notifyReadAttempts = 0
+            if let config = AstraA1BleProtocol.parseWifiConfig(data),
+               let ssid = config.ssid?.trimmingCharacters(in: .whitespacesAndNewlines), !ssid.isEmpty {
+                print("\(logTag) wificonfig ssid=\(ssid) passwordEmpty=\((config.password ?? "").isEmpty) http=\(config.httpAddress ?? "<nil>")")
+                wifiLog(
+                    "wificonfig 解析成功",
+                    detail: "ssid=\(ssid)\npasswordEmpty=\((config.password ?? "").isEmpty)\nhttp=\(config.httpAddress ?? "nil")",
+                    direction: .received
+                )
+                cacheWifiCredentialIfPossible(config)
+                if let cont = wifiConfigContinuation {
+                    wifiConfigContinuation = nil
+                    cont.resume(returning: config)
+                }
+            } else if let cont = wifiConfigContinuation {
+                wifiConfigContinuation = nil
+                wifiLog(
+                    "wificonfig 解析失败",
+                    detail: "bytes=\(data.count)\ndeclaredPayload=\(AstraA1BleProtocol.declaredPayloadLength(data) ?? -1)",
+                    direction: .received
+                )
+                cont.resume(throwing: ImportBLEError.failed(L10n.t("Wi-Fi 配置解析失败", "Failed to parse Wi-Fi config")))
+            }
+            return
+        }
+
+        if command == "getworkpat" {
+            if AstraA1BleProtocol.isTruncatedPacket(data) {
+                let declared = AstraA1BleProtocol.declaredPayloadLength(data) ?? -1
+                if workPathContinuation != nil {
+                    print("\(logTag) getworkpat truncated: received=\(data.count) declaredPayload=\(declared), reading notify char...")
+                    requestFullNotifyPayload(for: command)
+                } else {
+                    print("\(logTag) getworkpat truncated (no waiter): received=\(data.count) declaredPayload=\(declared), ignored")
+                }
+                return
+            }
+            notifyReadAttempts = 0
+            if let url = AstraA1BleProtocol.parseGetWorkPathResponse(data) {
+                print("\(logTag) getworkpat url=\(url)")
+                if let cont = workPathContinuation {
+                    workPathContinuation = nil
+                    cont.resume(returning: url)
+                }
+            } else if let cont = workPathContinuation {
+                workPathContinuation = nil
+                cont.resume(throwing: ImportBLEError.failed(L10n.t("HTTP 路径解析失败", "Failed to parse HTTP path")))
+            }
+            return
+        }
+
+        if command == "getalgoinf" {
+            if AstraA1BleProtocol.isTruncatedPacket(data) {
+                let declared = AstraA1BleProtocol.declaredPayloadLength(data) ?? -1
+                if algorithmInfoContinuation != nil {
+                    print("\(logTag) getalgoinf truncated: received=\(data.count) declaredPayload=\(declared), reading notify char...")
+                    requestFullNotifyPayload(for: command)
+                }
+                return
+            }
+            notifyReadAttempts = 0
+            if let info = AstraA1BleProtocol.parseAlgorithmInfoResponse(data) {
+                print("\(logTag) getalgoinf count=\(info.count)")
+                if let cont = algorithmInfoContinuation {
+                    algorithmInfoContinuation = nil
+                    cont.resume(returning: info)
+                }
+            } else if let cont = algorithmInfoContinuation {
+                algorithmInfoContinuation = nil
+                cont.resume(throwing: ImportBLEError.failed(
+                    L10n.t("算法文件信息解析失败", "Failed to parse algorithm file information")
+                ))
+            }
+            return
+        }
+
+        if command == "dllprogres" {
+            if let percent = AstraA1BleProtocol.parseDLLProgress(data) {
+                print("\(logTag) dllprogres percent=\(percent)")
+                dllProgressHandler?(percent)
+            }
+            return
+        }
+
+        if command == "dllupdrsp0" {
+            guard let result = AstraA1BleProtocol.parseDLLUpdateResult(data) else {
+                print("\(logTag) dllupdrsp0 parse failed bytes=\(data.count)")
+                return
+            }
+            print("\(logTag) dllupdrsp0 status=\(result.status) done=\(result.doneCount) failID=\(result.failID)")
+            if let cont = dllUpdateContinuation {
+                dllUpdateContinuation = nil
+                dllProgressHandler = nil
+                cont.resume(returning: result)
+            }
+            return
+        }
+
+        if command == "toopenwifi" || command == "closewifi" || command == "closewifi0"
+            || command == "deletefile"
+            || command == "takephoto0" || command == "startvideo" || command == "stopvideo0" {
+            let ok = AstraA1BleProtocol.parseStatusResponse(data) ?? false
+            print("\(logTag) \(command) status=\(ok)")
+            if command == "toopenwifi" || command == "closewifi" || command == "closewifi0" {
+                wifiLog(
+                    "收到 \(command) 状态",
+                    detail: "success=\(ok)\nbytes=\(data.count)",
+                    direction: .received
+                )
+            }
+            // toopenwifi 失败时设备不会再发 wificonfig，直接失败，别白等 15s（对齐安卓快速失败）。
+            if command == "toopenwifi", !ok, let cont = wifiConfigContinuation {
+                wifiConfigContinuation = nil
+                cont.resume(throwing: ImportBLEError.openWifiRejected)
+                return
+            }
+            let matched = statusContinuationAliases.contains(command)
+                || statusContinuationCommand == command
+            if matched, let cont = statusContinuation {
+                statusContinuation = nil
+                statusContinuationCommand = nil
+                statusContinuationAliases = []
+                cont.resume(returning: ok)
+            }
+            return
+        }
+
+        if command == "otaprogres" || command.hasPrefix("otaprogre") {
+            // 对齐安卓：命令头可能被截成 otaprogre（无末尾 s）。
+            if let percent = AstraA1BleProtocol.parseOtaProgress(data) {
+                print("\(logTag) otaprogres cmd=\(command) percent=\(percent)")
+                completeOtaUpgradeIfNeeded(percent: percent)
+            } else {
+                print("\(logTag) otaprogres parse failed cmd=\(command) bytes=\(data.count)")
+            }
+            return
+        }
+
+        if command == "getdevinfo" {
+            if AstraA1BleProtocol.isTruncatedPacket(data) {
+                let declared = AstraA1BleProtocol.declaredPayloadLength(data) ?? -1
+                print("\(logTag) getdevinfo truncated: received=\(data.count) declaredPayload=\(declared), reading notify char...")
+                requestFullNotifyPayload(for: command)
+                // ver28 等长包截断后要读完整特征：延长当前串行步骤超时。
+                if isQueryingDeviceVersionsAndStorage, let type = versionsStoragePendingTypes.first {
+                    armVersionsAndStorageTimeout(for: type)
+                }
+                if isQueryingAboutDeviceInfo, let type = aboutDeviceInfoPendingTypes.first {
+                    armAboutDeviceInfoTimeout(for: type)
+                }
+                return
+            }
+            guard let result = AstraA1BleProtocol.parseGetDevInfoResponse(data) else {
+                let declaredLen = data.count >= 12 ? Int(data[10]) | (Int(data[11]) << 8) : -1
+                print("\(logTag) getdevinfo parse failed: received=\(data.count) declaredPayload=\(declaredLen)")
+                if isQueryingAboutDeviceInfo {
+                    finishAboutDeviceInfoQueryStep()
+                }
+                if isQueryingDeviceVersionsAndStorage {
+                    finishVersionsAndStorageQueryStep()
+                }
+                return
+            }
+            print("\(logTag) getdevinfo key=\(result.key) value=\(result.value)")
+            applyGetDevInfoResult(result)
+            if isQueryingAboutDeviceInfo,
+               let pending = aboutDeviceInfoPendingTypes.first,
+               result.key == AstraA1BleProtocol.devInfoKey(for: pending) {
+                finishAboutDeviceInfoQueryStep()
+            } else if isQueryingAboutDeviceInfo {
+                print("\(logTag) queryAboutDeviceInfo ignored key=\(result.key) waiting=\(AstraA1BleProtocol.devInfoKey(for: aboutDeviceInfoPendingTypes.first ?? .name))")
+            }
+            if isQueryingDeviceVersionsAndStorage,
+               let pending = versionsStoragePendingTypes.first,
+               result.key == AstraA1BleProtocol.devInfoKey(for: pending) {
+                finishVersionsAndStorageQueryStep()
+            } else if isQueryingDeviceVersionsAndStorage {
+                print("\(logTag) refreshDeviceVersionsAndStorage ignored key=\(result.key) waiting=\(AstraA1BleProtocol.devInfoKey(for: versionsStoragePendingTypes.first ?? .storage))")
+            }
+        }
+    }
+
+    private func applyGetDevInfoResult(_ result: (key: String, value: String, rawValue: Data)) {
+        switch result.key {
+        case "name0":
+            deviceName = result.value
+        case "model":
+            deviceModel = result.value
+        case "sn000":
+            deviceSN = result.value
+        case "stor0":
+            deviceStorage = result.value
+        case "ver28":
+            deviceVersion2800 = result.value
+        case "ver63":
+            deviceVersion6350 = result.value
+        case "batt0":
+            let battery = AstraA1BleProtocol.parseBatteryValue(result.value, rawValue: result.rawValue)
+            if let percent = battery.percent {
+                applyBatteryPercent(percent, isCharging: battery.isCharging, source: "getdevinfo batt0")
+            } else if !result.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      result.value.uppercased() != "N/A" {
+                deviceBattery = result.value
+                isBatteryLevelKnown = true
+            }
+            print("\(logTag) battery percent=\(battery.percent.map(String.init) ?? "nil") charging=\(battery.isCharging) raw=\(result.value)")
+        default:
+            break
+        }
+        markDeviceInfoReadyIfNeeded(force: false)
+    }
+
+    /// 绑定前至少要有设备名 / 型号 / SN；SN 不能用 UUID 顶替（UUID 单独作 serial_number）。
+    private func markDeviceInfoReadyIfNeeded(force: Bool) {
+        guard !isDeviceInfoReady else { return }
+        let hasName = !(deviceName ?? "").isEmpty
+        let hasModel = !(deviceModel ?? "").isEmpty
+        let hasSN = !(deviceSN ?? "").isEmpty
+        if (hasName && hasModel && hasSN) || (force && hasSN) {
+            if (deviceName ?? "").isEmpty {
+                deviceName = connectedPeripheral?.name ?? "MOCO AI Glasses"
+            }
+            if (deviceModel ?? "").isEmpty {
+                deviceModel = "Astra A1"
+            }
+            isDeviceInfoReady = true
+            print("\(logTag) device info ready name=\(deviceName ?? "") model=\(deviceModel ?? "") sn=\(deviceSN ?? "") ble=\(deviceBluetoothIdentifier ?? "nil")")
+            // 断连后 deviceSN 会被清空，这里先落盘，保证解绑时还能拿到 sn。
+            cacheHardwareSN(serialNumber: deviceBluetoothIdentifier, sn: deviceSN)
+            // 首次配对（大 MTU）后按需缓存热点凭据，供后续导入直接命中，规避 MTU 截断。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.seedWifiCredentialIfNeeded()
+            }
+        } else if force {
+            print("\(logTag) device info not ready on force timeout name=\(deviceName ?? "") model=\(deviceModel ?? "") sn=\(deviceSN ?? "")")
+        }
+    }
+
+    /// 供绑定接口使用的设备信息快照。
+    /// - Parameter appModelName: 接口型号列表中的 model_name（如 G5T71），后端按此校验。
+    ///
+    /// 字段语义（对照后台「MAC地址」列）：
+    /// - `serial_number`：蓝牙标识。Android 为真实 MAC；iOS CoreBluetooth 不暴露 MAC，传外设 UUID。
+    /// - `sn`：设备 SN（getdevinfo `sn000`），如 `G5T712604R00269`。
+    func bindDeviceSnapshot(appModelName: String) -> BindDeviceRequest? {
+        guard isDeviceInfoReady else { return nil }
+        let name = deviceName ?? appModelName
+        let sn = deviceSN?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bluetoothID = connectedPeripheral?.identifier.uuidString
+            ?? deviceBluetoothIdentifier
+
+        // serial_number 必须是蓝牙标识，不能再把 SN 填进去（后台 MAC 列会显示成 SN）。
+        guard let bluetoothID, !bluetoothID.isEmpty else {
+            print("\(logTag) bind snapshot aborted: missing bluetooth identifier")
+            return nil
+        }
+        guard let sn, !sn.isEmpty else {
+            print("\(logTag) bind snapshot aborted: missing device SN")
+            return nil
+        }
+
+        print("\(logTag) bind snapshot appModel=\(appModelName) hardwareModel=\(deviceModel ?? "nil") name=\(name) serial_number(ble)=\(bluetoothID) sn=\(sn)")
+        cacheHardwareSN(serialNumber: bluetoothID, sn: sn)
+        return BindDeviceRequest(
+            serialNumber: bluetoothID,
+            sn: sn,
+            modelName: appModelName,
+            deviceName: name
+        )
+    }
+
+    private func resolvedName(for peripheral: CBPeripheral, advertisementData: [String: Any]) -> String {
+        peripheral.name
+            ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
+            ?? ""
+    }
+
+    private func logDiscoveredPeripheral(
+        _ peripheral: CBPeripheral,
+        advertisementData: [String: Any],
+        rssi: NSNumber
+    ) {
+        let id = peripheral.identifier
+        guard !loggedPeripheralIDs.contains(id) else { return }
+        loggedPeripheralIDs.insert(id)
+
+        let name = resolvedName(for: peripheral, advertisementData: advertisementData)
+        let serviceUUIDs = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID])?
+            .map(\.uuidString)
+            .joined(separator: ", ") ?? "(none)"
+
+        print("\(logTag) ---------- SCAN DEVICE ----------")
+        print("\(logTag) name: \(name.isEmpty ? "(no name)" : name)")
+        print("\(logTag) identifier: \(id.uuidString)")
+        print("\(logTag) rssi: \(rssi)")
+        print("\(logTag) advertised services: \(serviceUUIDs)")
+        print("\(logTag) hasProtocolService: \(advertisesProtocolService(advertisementData))")
+        print("\(logTag) --------------------------------")
+    }
+
+    private func logAllServicesAndCharacteristics(of peripheral: CBPeripheral) {
+        print("\(logTag) ========== SERVICES & CHARACTERISTICS ==========")
+        print("\(logTag) peripheral: \(peripheral.name ?? "(no name)") [\(peripheral.identifier.uuidString)]")
+
+        guard let services = peripheral.services, !services.isEmpty else {
+            print("\(logTag) no services found")
+            print("\(logTag) ================================================")
+            return
+        }
+
+        for service in services {
+            print("\(logTag) SERVICE: \(service.uuid.uuidString) isPrimary=\(service.isPrimary)")
+            for characteristic in service.characteristics ?? [] {
+                print("\(logTag)   CHAR: \(characteristic.uuid.uuidString)")
+                print("\(logTag)     properties: \(describeProperties(characteristic.properties))")
+            }
+        }
+        print("\(logTag) ================================================")
+    }
+
+    private func describeProperties(_ properties: CBCharacteristicProperties) -> String {
+        var items: [String] = []
+        if properties.contains(.broadcast) { items.append("broadcast") }
+        if properties.contains(.read) { items.append("read") }
+        if properties.contains(.writeWithoutResponse) { items.append("writeWithoutResponse") }
+        if properties.contains(.write) { items.append("write") }
+        if properties.contains(.notify) { items.append("notify") }
+        if properties.contains(.indicate) { items.append("indicate") }
+        if properties.contains(.authenticatedSignedWrites) { items.append("authenticatedSignedWrites") }
+        if properties.contains(.extendedProperties) { items.append("extendedProperties") }
+        return items.isEmpty ? "none" : items.joined(separator: " | ")
+    }
+
+    private func assignCharacteristics(from services: [CBService]) {
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+
+        let protocolService = services.first { $0.uuid == AstraA1BleProtocol.serviceUUID }
+        let candidates = protocolService?.characteristics ?? []
+
+        for characteristic in candidates {
+            if characteristic.uuid == AstraA1BleProtocol.writeCharacteristicUUID {
+                writeCharacteristic = characteristic
+                print("\(logTag) matched write char: \(characteristic.uuid)")
+            }
+            if characteristic.uuid == AstraA1BleProtocol.notifyCharacteristicUUID {
+                notifyCharacteristic = characteristic
+                print("\(logTag) matched notify char: \(characteristic.uuid)")
+            }
+        }
+
+        if let protocolChars = protocolService?.characteristics {
+            if writeCharacteristic == nil {
+                writeCharacteristic = protocolChars.first {
+                    $0.properties.contains(.write) || $0.properties.contains(.writeWithoutResponse)
+                }
+                if let writeCharacteristic {
+                    print("\(logTag) fallback write char in protocol service: \(writeCharacteristic.uuid)")
+                }
+            }
+            if notifyCharacteristic == nil {
+                notifyCharacteristic = protocolChars.first {
+                    $0.properties.contains(.notify) || $0.properties.contains(.indicate)
+                }
+                if let notifyCharacteristic {
+                    print("\(logTag) fallback notify char in protocol service: \(notifyCharacteristic.uuid)")
+                }
+            }
+        }
+    }
+
+    private func finishCharacteristicDiscovery(for peripheral: CBPeripheral) {
+        guard pendingCharacteristicDiscoveries == 0 else { return }
+
+        logAllServicesAndCharacteristics(of: peripheral)
+        assignCharacteristics(from: peripheral.services ?? [])
+
+        print("\(logTag) selected write=\(writeCharacteristic?.uuid.uuidString ?? "nil")")
+        print("\(logTag) selected notify=\(notifyCharacteristic?.uuid.uuidString ?? "nil")")
+
+        if writeCharacteristic == nil {
+            if isProbingService {
+                handleProbeFailed(reason: "协议服务内未找到写特征")
+            } else {
+                failOrRecoverConnectionPipeline(
+                    peripheral,
+                    reason: "write-characteristic-missing",
+                    message: L10n.t("未找到写特征，请查看控制台服务/特征日志", "Write characteristic not found")
+                )
+            }
+            return
+        }
+
+        isProbingService = false
+        isServiceDiscovered = true
+        updateState(.enablingNotifications)
+
+        if let notifyCharacteristic {
+            peripheral.setNotifyValue(true, for: notifyCharacteristic)
+        } else {
+            print("\(logTag) no notify characteristic, continue without notify")
+            isNotificationEnabled = true
+            isProtocolNotificationEnabled = true
+            markReadyIfNeeded()
+        }
+    }
+}
+
+// MARK: - CBCentralManagerDelegate
+
+extension AstraA1BleManager: CBCentralManagerDelegate {
+    nonisolated func centralManager(
+        _ central: CBCentralManager,
+        willRestoreState dict: [String: Any]
+    ) {
+        Task { @MainActor in
+            guard central === centralManager else { return }
+            let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? []
+            connectLog(
+                "central manager restored",
+                detail: "peripherals=\(peripherals.map(\.identifier.uuidString).joined(separator: ","))",
+                direction: .received
+            )
+            guard let savedID = savedPeripheralID(),
+                  let peripheral = peripherals.first(where: { $0.identifier == savedID }) else {
+                return
+            }
+
+            userInitiatedDisconnect = false
+            autoReconnectEnabled = true
+            standingConnectAllowed = peripheral.state == .connected
+            reconnectPeripheral = peripheral
+            peripheral.delegate = self
+
+            guard central.state == .poweredOn else {
+                pendingBatteryRefresh = true
+                return
+            }
+            if peripheral.state == .connected {
+                systemTransportConnectedPeripheralIDs.insert(peripheral.identifier)
+                attachToConnectedPeripheral(peripheral)
+            } else {
+                updateState(.disconnected)
+                startSystemReconnectMonitor()
+            }
+        }
+    }
+
+    nonisolated func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        Task { @MainActor in
+            guard central === centralManager else { return }
+            if manualHardReconnectOldCentral === central {
+                connectLog(
+                    "old central state ignored during hard reconnect release",
+                    detail: "raw=\(central.state.rawValue)"
+                )
+                return
+            }
+            print("\(logTag) centralManagerDidUpdateState=\(central.state.rawValue)")
+            connectLog("centralManagerDidUpdateState", detail: "raw=\(central.state.rawValue)", direction: .received)
+            switch central.state {
+            case .poweredOn:
+                registerForSystemConnectionEventsIfNeeded()
+                if isManualHardReconnectAttemptInProgress {
+                    resumeManualHardReconnectIfPossible()
+                    return
+                }
+                if pendingStart {
+                    beginScan()
+                }
+                if !pendingBoundSerialNumbers.isEmpty {
+                    let serials = pendingBoundSerialNumbers
+                    pendingBoundSerialNumbers = []
+                    print("\(logTag) bluetooth powered on, resume adopt bound peripherals")
+                    connectLog("bluetooth powered on, resume adopt bound peripherals")
+                    adoptBoundPeripheralIDs(serials)
+                }
+                if pendingBatteryRefresh {
+                    print("\(logTag) bluetooth powered on, resume battery refresh")
+                    connectLog("bluetooth powered on, resume battery refresh")
+                    refreshBatteryLevel()
+                }
+                if autoReconnectEnabled, !userInitiatedDisconnect, !isReady {
+                    if !attachToAlreadyConnectedPeripheralIfPossible() {
+                        standingConnectAllowed = false
+                        updateState(.disconnected)
+                        startSystemReconnectMonitor()
+                    }
+                }
+            case .poweredOff:
+                cancelManualHardReconnectState(reason: "bluetooth powered off")
+                systemTransportConnectedPeripheralIDs.removeAll()
+                if let peripheral = connectedPeripheral ?? reconnectPeripheral {
+                    reconnectPeripheral = peripheral
+                }
+                cancelAutomaticGATTRecovery(reason: "bluetooth-powered-off", resetAttempts: true)
+                stopScan()
+                stopSystemReconnectMonitor()
+                cancelConnectWatchdog()
+                cancelDiscoverServicesWorkItem()
+                standingConnectPeripheralID = nil
+                hasStartedConnect = false
+                resetConnectionHandles()
+                updateState(.bluetoothUnavailable(L10n.t("请打开手机蓝牙", "Turn on Bluetooth")))
+            case .unauthorized:
+                cancelManualHardReconnectState(reason: "bluetooth unauthorized")
+                updateState(.bluetoothUnavailable(L10n.t("请在设置中允许蓝牙权限", "Allow Bluetooth in Settings")))
+            case .unsupported:
+                cancelManualHardReconnectState(reason: "bluetooth unsupported")
+                updateState(.bluetoothUnavailable(L10n.t("当前设备不支持蓝牙", "Bluetooth not supported")))
+            default:
+                break
+            }
+        }
+    }
+
+    nonisolated func centralManager(
+        _ central: CBCentralManager,
+        connectionEventDidOccur event: CBConnectionEvent,
+        for peripheral: CBPeripheral
+    ) {
+        Task { @MainActor in
+            guard central === centralManager else { return }
+            if isManualHardReconnectOldContext(central: central, peripheral: peripheral) {
+                switch event {
+                case .peerConnected:
+                    connectLog(
+                        "old central peerConnected while releasing; cancel again",
+                        detail: "id=\(peripheral.identifier.uuidString)",
+                        direction: .received
+                    )
+                    central.cancelPeripheralConnection(peripheral)
+                case .peerDisconnected:
+                    _ = consumeManualHardReconnectOldContextRelease(
+                        central: central,
+                        peripheral: peripheral,
+                        source: "peerDisconnected"
+                    )
+                @unknown default:
+                    break
+                }
+                return
+            }
+            switch event {
+            case .peerConnected:
+                let wasSystemTransportKnown = systemTransportConnectedPeripheralIDs.contains(
+                    peripheral.identifier
+                )
+                systemTransportConnectedPeripheralIDs.insert(peripheral.identifier)
+                print("\(logTag) connectionEvent peerConnected \(peripheral.identifier.uuidString) state=\(peripheral.state.rawValue)")
+                connectLog(
+                    "connectionEvent peerConnected",
+                    detail: "id=\(peripheral.identifier.uuidString) peripheralState=\(peripheralStateDescription(peripheral.state))",
+                    direction: .received
+                )
+                guard autoReconnectEnabled, !userInitiatedDisconnect else { return }
+                guard !isAutomaticGATTRecoveryInProgress else {
+                    connectLog(
+                        "connectionEvent peerConnected deferred: recovery in progress",
+                        detail: "id=\(peripheral.identifier.uuidString)"
+                    )
+                    return
+                }
+                if case .ready = connectionState { return }
+                if isGATTDiscoveryInProgress { return }
+                guard let savedID = savedPeripheralID(), peripheral.identifier == savedID else {
+                    print("\(logTag) connectionEvent ignored: not saved peripheral")
+                    connectLog("connectionEvent ignored: not saved peripheral", detail: "id=\(peripheral.identifier.uuidString)")
+                    return
+                }
+                if case .failed = connectionState,
+                   manualHardReconnectPeripheralID == peripheral.identifier {
+                    connectLog(
+                        "connectionEvent peerConnected: waiting for user retry tap",
+                        detail: "id=\(peripheral.identifier.uuidString)"
+                    )
+                    return
+                }
+                clearManualHardReconnectRequirement(reason: "fresh system peerConnected")
+                // 同一系统连接内的软 GATT 重建也会产生 peerConnected，不能据此清零失败次数。
+                // 仅系统层此前确实不在已连接集合时，才视为全新一轮连接。
+                if !wasSystemTransportKnown {
+                    standingConnectRecoveryCount = 0
+                }
+                if peripheral.state == .connected {
+                    attachToConnectedPeripheral(peripheral)
+                } else {
+                    // connection event 反映系统传输层已连；CBPeripheral 对本 central
+                    // 仍可能是 disconnected。挂起长连请求，等真实 didConnect 后再发现服务。
+                    autoReconnectEnabled = true
+                    standingConnectAllowed = true
+                    reconnectPeripheral = peripheral
+                    armSystemAutoConnect(
+                        peripheral,
+                        force: true,
+                        systemTransportObserved: true
+                    )
+                }
+            case .peerDisconnected:
+                // cancelPeripheralConnection 是软 GATT 重建的必要步骤，也会产生 peerDisconnected。
+                // 此回调属于本轮自动恢复时不能清零次数，否则永远到不了人工重试状态。
+                if isAutomaticGATTRecoveryInProgress {
+                    connectLog(
+                        "connectionEvent peerDisconnected ignored during automatic recovery",
+                        detail: "id=\(peripheral.identifier.uuidString)"
+                    )
+                    return
+                }
+                systemTransportGracePeripheralIDs.remove(peripheral.identifier)
+                systemTransportConnectedPeripheralIDs.remove(peripheral.identifier)
+                print("\(logTag) connectionEvent peerDisconnected \(peripheral.identifier.uuidString)")
+                connectLog(
+                    "connectionEvent peerDisconnected",
+                    detail: "id=\(peripheral.identifier.uuidString)",
+                    direction: .received
+                )
+                if manualHardReconnectPeripheralID == peripheral.identifier
+                    || pendingManualHardReconnectPeripheralID == peripheral.identifier {
+                    cancelManualHardReconnectState(reason: "system peerDisconnected")
+                    updateState(.disconnected)
+                }
+                if savedPeripheralID() == peripheral.identifier, isConnectionInProgress {
+                    cancelAutomaticGATTRecovery(reason: "system peerDisconnected", resetAttempts: true)
+                    cancelConnectWatchdog()
+                    standingConnectPeripheralID = nil
+                    standingConnectAllowed = false
+                    centralManager.cancelPeripheralConnection(peripheral)
+                    updateState(.disconnected)
+                    startSystemReconnectMonitor()
+                }
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    nonisolated func centralManager(
+        _ central: CBCentralManager,
+        didDiscover peripheral: CBPeripheral,
+        advertisementData: [String: Any],
+        rssi RSSI: NSNumber
+    ) {
+        Task { @MainActor in
+            guard central === centralManager else { return }
+            guard case .scanning = connectionState, !hasStartedConnect else { return }
+
+            logDiscoveredPeripheral(peripheral, advertisementData: advertisementData, rssi: RSSI)
+
+            if isManualReconnectScan {
+                guard manualReconnectMatches(peripheral, advertisementData: advertisementData) else { return }
+                print("\(logTag) manual reconnect matched \(peripheral.identifier.uuidString)")
+                isManualReconnectScan = false
+                isManualReconnectConnect = true
+                cancelManualReconnectScanTimeout()
+                savePeripheralID(peripheral.identifier)
+                connect(to: peripheral, probing: false)
+                return
+            }
+
+            if isManualPairingScan {
+                if nameMatchesPairingModelName(peripheral, advertisementData: advertisementData) {
+                    registerNameMatchedPairingDevice(peripheral, advertisementData: advertisementData, rssi: RSSI)
+                }
+                return
+            }
+
+            // 优先：广播里直接带协议服务 UUID
+            if advertisesProtocolService(advertisementData) {
+                print("\(logTag) MATCHED by advertised service UUID")
+                connect(to: peripheral, probing: false)
+                return
+            }
+
+            // 广播未带服务 UUID 时，加入探测队列（连接后校验服务，不看名字）
+            let isConnectable = (advertisementData[CBAdvertisementDataIsConnectable] as? Bool) ?? true
+            if isConnectable {
+                enqueueProbeCandidate(peripheral, rssi: RSSI)
+            }
+        }
+    }
+
+    nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        Task { @MainActor in
+            guard central === centralManager else { return }
+            if isManualHardReconnectOldContext(central: central, peripheral: peripheral) {
+                connectLog(
+                    "old central didConnect while releasing; cancel again",
+                    detail: "id=\(peripheral.identifier.uuidString)",
+                    direction: .received
+                )
+                central.cancelPeripheralConnection(peripheral)
+                return
+            }
+            systemTransportConnectedPeripheralIDs.insert(peripheral.identifier)
+            systemTransportGracePeripheralIDs.remove(peripheral.identifier)
+            if isPairingSessionActive,
+               isManualPairingScan,
+               !isUserInitiatedPairingConnect,
+               !isProbingService {
+                connectLog(
+                    "stale didConnect ignored during fresh pairing scan",
+                    detail: "id=\(peripheral.identifier.uuidString)",
+                    direction: .received
+                )
+                centralManager.cancelPeripheralConnection(peripheral)
+                return
+            }
+            if automaticGATTRecoveryCancellationPeripheralID == peripheral.identifier {
+                connectLog(
+                    "didConnect received while cancelling old GATT; cancel again",
+                    detail: "id=\(peripheral.identifier.uuidString)",
+                    direction: .received
+                )
+                centralManager.cancelPeripheralConnection(peripheral)
+                return
+            }
+            if isAutomaticGATTRecoveryInProgress {
+                cancelAutomaticGATTRecovery(reason: "system connected during recovery wait", resetAttempts: false)
+            }
+            // 探测切换时，上一个外设的连接回调可能延迟到达；只处理当前目标外设，
+            // 否则会打断/顶替正在进行的下一轮探测。
+            if let current = connectedPeripheral, current.identifier != peripheral.identifier {
+                print("\(logTag) didConnect ignored: stale peripheral \(peripheral.identifier.uuidString)")
+                connectLog("didConnect ignored: stale peripheral", detail: "id=\(peripheral.identifier.uuidString)")
+                return
+            }
+            if case .ready = connectionState,
+               connectedPeripheral?.identifier == peripheral.identifier {
+                connectLog(
+                    "duplicate didConnect ignored: GATT already ready",
+                    detail: "id=\(peripheral.identifier.uuidString)",
+                    direction: .received
+                )
+                return
+            }
+            cancelDiscoverServicesWorkItem()
+            standingConnectPeripheralID = nil
+            print("\(logTag) didConnect: \(peripheral.name ?? peripheral.identifier.uuidString), probing=\(isProbingService), peripheralState=\(peripheral.state.rawValue)")
+            connectLog(
+                "didConnect",
+                detail: "name=\(peripheral.name ?? "nil") id=\(peripheral.identifier.uuidString) probing=\(isProbingService) peripheralState=\(peripheralStateDescription(peripheral.state))",
+                direction: .received
+            )
+            connectedPeripheral = peripheral
+            peripheral.delegate = self
+            beginDiscoverServices(on: peripheral, reason: "didConnect")
+            startConnectWatchdog(for: peripheral)
+        }
+    }
+
+    nonisolated func centralManager(
+        _ central: CBCentralManager,
+        didFailToConnect peripheral: CBPeripheral,
+        error: Error?
+    ) {
+        Task { @MainActor in
+            guard central === centralManager else { return }
+            if consumeManualHardReconnectOldContextRelease(
+                central: central,
+                peripheral: peripheral,
+                source: "didFailToConnect"
+            ) {
+                return
+            }
+            if consumeAutomaticGATTRecoveryCancellation(for: peripheral, source: "didFailToConnect") {
+                return
+            }
+            if isPairingSessionActive,
+               isManualPairingScan,
+               !isUserInitiatedPairingConnect,
+               !isProbingService {
+                connectLog(
+                    "stale didFailToConnect ignored during fresh pairing scan",
+                    detail: "id=\(peripheral.identifier.uuidString)",
+                    direction: .received
+                )
+                return
+            }
+            if centralManager.state != .poweredOn {
+                reconnectPeripheral = peripheral
+                resetConnectionHandles()
+                return
+            }
+            // 探测切换时，被取消的上一个外设可能延迟回调 didFailToConnect；忽略非当前外设。
+            if let current = connectedPeripheral, current.identifier != peripheral.identifier {
+                print("\(logTag) didFailToConnect ignored: stale peripheral \(peripheral.identifier.uuidString)")
+                return
+            }
+            cancelConnectWatchdog()
+            standingConnectPeripheralID = nil
+            print("\(logTag) didFailToConnect: \(error?.localizedDescription ?? "unknown")")
+            connectLog(
+                "didFailToConnect",
+                detail: "error=\(error?.localizedDescription ?? "unknown") id=\(peripheral.identifier.uuidString) autoReconnect=\(autoReconnectEnabled)",
+                direction: .received
+            )
+            if isProbingService {
+                handleProbeFailed(reason: error?.localizedDescription ?? "connect failed")
+                return
+            }
+            if failManualHardReconnectIfNeeded(
+                for: peripheral,
+                reason: error?.localizedDescription ?? "didFailToConnect"
+            ) {
+                return
+            }
+            if canAutomaticallyRecoverGATT {
+                isBatteryRefreshMode = false
+                beginAutomaticGATTRecovery(for: peripheral, reason: "didFailToConnect")
+                return
+            }
+            if isPairingSessionActive {
+                if isUserInitiatedPairingConnect {
+                    retryUserPairingConnect(reason: error?.localizedDescription ?? "connect failed")
+                    return
+                }
+                resumePairingScanAfterFailure()
+                return
+            }
+            resetConnectionHandles()
+            updateState(.failed(error?.localizedDescription ?? L10n.t("BLE连接失败", "BLE connection failed")))
+        }
+    }
+
+    nonisolated func centralManager(
+        _ central: CBCentralManager,
+        didDisconnectPeripheral peripheral: CBPeripheral,
+        error: Error?
+    ) {
+        Task { @MainActor in
+            guard central === centralManager else { return }
+            if consumeManualHardReconnectOldContextRelease(
+                central: central,
+                peripheral: peripheral,
+                source: "didDisconnect"
+            ) {
+                return
+            }
+            systemTransportGracePeripheralIDs.remove(peripheral.identifier)
+            print("\(logTag) didDisconnect: \(error?.localizedDescription ?? "nil"), userInitiated=\(userInitiatedDisconnect), autoReconnect=\(autoReconnectEnabled)")
+            connectLog(
+                "didDisconnect",
+                detail: "error=\(error?.localizedDescription ?? "nil") userInitiated=\(userInitiatedDisconnect) autoReconnect=\(autoReconnectEnabled) id=\(peripheral.identifier.uuidString)",
+                direction: .received
+            )
+            if consumeAutomaticGATTRecoveryCancellation(for: peripheral, source: "didDisconnect") {
+                return
+            }
+            if centralManager.state != .poweredOn {
+                reconnectPeripheral = peripheral
+                resetConnectionHandles()
+                updateState(.bluetoothUnavailable(L10n.t("请打开手机蓝牙", "Turn on Bluetooth")))
+                return
+            }
+            // 断开后旧的常驻 connect 已失效，允许重新下发。
+            standingConnectPeripheralID = nil
+
+            if let current = connectedPeripheral, current.identifier != peripheral.identifier {
+                print("\(logTag) didDisconnect ignored: stale callback \(peripheral.identifier.uuidString)")
+                return
+            }
+
+            // 顺序探测会 cancelPeripheralConnection 后立刻连接下一个候选，
+            // 被取消外设的 didDisconnect 会延迟到达。若它不是当前正在处理的外设，
+            // 视为过期回调直接忽略——否则会打断新一轮探测，或在探测结束后误报“设备已断开”。
+            if isProbingService, connectedPeripheral?.identifier != peripheral.identifier {
+                print("\(logTag) didDisconnect ignored: stale probe callback \(peripheral.identifier.uuidString)")
+                return
+            }
+            if connectedPeripheral == nil, case .scanning = connectionState {
+                print("\(logTag) didDisconnect ignored: scanning, no active peripheral")
+                return
+            }
+
+            cancelConnectWatchdog()
+            if let pending = pendingUserPairingPeripheral, peripheral.identifier == pending.identifier {
+                print("\(logTag) user pairing: fresh connect after reset")
+                resumePendingUserPairingConnect(pending)
+                return
+            }
+            if isProbingService {
+                handleProbeFailed(reason: "disconnected during probe")
+                return
+            }
+
+            if isPairingSessionActive && isUserInitiatedPairingConnect {
+                retryUserPairingConnect(reason: error?.localizedDescription ?? "disconnected")
+                return
+            }
+
+            reconnectPeripheral = peripheral
+
+            if userInitiatedDisconnect {
+                resetConnectionHandles()
+                clearLiveDeviceIdentity(reason: "didDisconnect-user-initiated")
+                userInitiatedDisconnect = false
+                autoReconnectEnabled = false
+                updateState(.idle)
+                return
+            }
+
+            if failManualHardReconnectIfNeeded(
+                for: peripheral,
+                reason: error?.localizedDescription ?? "didDisconnect"
+            ) {
+                return
+            }
+
+            if case .failed = connectionState {
+                resetConnectionHandles()
+                clearLiveDeviceIdentity(reason: "didDisconnect-after-failure")
+                return
+            }
+
+            clearLiveDeviceIdentity(reason: "didDisconnect")
+            if canAutomaticallyRecoverGATT {
+                beginAutomaticGATTRecovery(for: peripheral, reason: "unexpected-disconnect")
+                return
+            }
+
+            resetConnectionHandles()
+
+            updateState(.disconnected)
+
+            // 对齐 Android BLE 异常断开自动重连：保留绑定身份，约 1.5s 后监控会重挂 connect。
+            // 解绑/退登会先走 userInitiatedDisconnect 分支，不会进入此处。
+            standingConnectAllowed = true
+            connectLog(
+                "standing connect remains enabled after disconnect",
+                detail: "autoReconnect=\(autoReconnectEnabled) willMonitor=\(autoReconnectEnabled)"
+            )
+            if autoReconnectEnabled {
+                startSystemReconnectMonitor()
+            }
+        }
+    }
+}
+
+// MARK: - CBPeripheralDelegate
+
+extension AstraA1BleManager: CBPeripheralDelegate {
+    nonisolated func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        Task { @MainActor in
+            self.flushPendingBLEWrites()
+        }
+    }
+
+    nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        Task { @MainActor in
+            guard !shouldIgnoreGATTCallback(from: peripheral, event: "didDiscoverServices") else { return }
+            cancelDiscoverServicesWorkItem()
+            if let error {
+                print("\(logTag) didDiscoverServices error: \(error.localizedDescription)")
+                if isProbingService {
+                    handleProbeFailed(reason: error.localizedDescription)
+                } else if gattDiscoveryAttempt < maxGATTDiscoveryAttempts {
+                    scheduleDiscoverServices(on: peripheral, delay: 0.5, reason: "retry-after-error")
+                } else {
+                    failOrRecoverConnectionPipeline(
+                        peripheral,
+                        reason: "service-discovery-error",
+                        message: L10n.t("服务发现失败: \(error.localizedDescription)", "Service discovery failed: \(error.localizedDescription)")
+                    )
+                }
+                return
+            }
+
+            let services = peripheral.services ?? []
+            print("\(logTag) didDiscoverServices count=\(services.count)")
+            for service in services {
+                print("\(logTag) found service: \(service.uuid.uuidString)")
+            }
+
+            let hasProtocolService = services.contains { $0.uuid == AstraA1BleProtocol.serviceUUID }
+            if !hasProtocolService {
+                if isProbingService {
+                    handleProbeFailed(reason: "no protocol service \(AstraA1BleProtocol.serviceUUID.uuidString)")
+                } else if isPairingSessionActive && isUserInitiatedPairingConnect {
+                    isUserInitiatedPairingConnect = false
+                    updateState(.failed(L10n.t("未找到眼镜协议服务，请确认设备型号", "Glasses protocol service not found. Check device model")))
+                } else if isPairingSessionActive {
+                    resumePairingScanAfterFailure()
+                } else {
+                    failOrRecoverConnectionPipeline(
+                        peripheral,
+                        reason: "protocol-service-missing",
+                        message: L10n.t("未找到眼镜协议服务", "Glasses protocol service not found")
+                    )
+                }
+                return
+            }
+
+            print("\(logTag) protocol service confirmed")
+
+            if isPairingSessionActive && isProbingService {
+                let name = peripheral.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let displayName = name.isEmpty ? L10n.t("未知设备", "Unknown device") : name
+                addVerifiedPairingDevice(
+                    peripheral,
+                    displayName: displayName,
+                    rssi: activeProbeRSSI ?? minProbeRSSI
+                )
+                finishPairingListProbe(for: peripheral)
+                return
+            }
+
+            isProbingService = false
+
+            // 发现协议服务下的特征；若存在标准电池服务(0x180F)一并发现，用它读电量。
+            guard let protocolService = services.first(where: { $0.uuid == AstraA1BleProtocol.serviceUUID }) else {
+                failOrRecoverConnectionPipeline(
+                    peripheral,
+                    reason: "protocol-service-lost",
+                    message: L10n.t("未找到眼镜协议服务", "Glasses protocol service not found")
+                )
+                return
+            }
+
+            var servicesToDiscover = [protocolService]
+            if let batteryService = services.first(where: { $0.uuid == AstraA1BleProtocol.batteryServiceUUID }) {
+                servicesToDiscover.append(batteryService)
+                print("\(logTag) standard battery service 0x180F present, will read 0x2A19")
+            }
+
+            pendingCharacteristicDiscoveries = servicesToDiscover.count
+            for service in servicesToDiscover {
+                peripheral.discoverCharacteristics(nil, for: service)
+            }
+        }
+    }
+
+    nonisolated func peripheral(
+        _ peripheral: CBPeripheral,
+        didDiscoverCharacteristicsFor service: CBService,
+        error: Error?
+    ) {
+        Task { @MainActor in
+            guard !shouldIgnoreGATTCallback(from: peripheral, event: "didDiscoverCharacteristics") else { return }
+            if let error {
+                print("\(logTag) didDiscoverCharacteristics error for \(service.uuid): \(error.localizedDescription)")
+                if service.uuid == AstraA1BleProtocol.serviceUUID {
+                    pendingCharacteristicDiscoveries = 0
+                    if isPairingSessionActive && isUserInitiatedPairingConnect {
+                        retryUserPairingConnect(reason: error.localizedDescription)
+                    } else {
+                        failOrRecoverConnectionPipeline(
+                            peripheral,
+                            reason: "characteristic-discovery-error",
+                            message: L10n.t("通信特征发现失败，请重试", "Communication characteristic discovery failed. Try again.")
+                        )
+                    }
+                    return
+                }
+            } else {
+                print("\(logTag) characteristics for service \(service.uuid.uuidString):")
+                for characteristic in service.characteristics ?? [] {
+                    print("\(logTag)   - \(characteristic.uuid.uuidString) [\(describeProperties(characteristic.properties))]")
+                }
+            }
+
+            // 标准电池服务：读取 0x2A19（电量），并尝试 0x2BED（含充电状态）
+            if service.uuid == AstraA1BleProtocol.batteryServiceUUID {
+                if let batteryChar = service.characteristics?.first(where: {
+                    $0.uuid == AstraA1BleProtocol.batteryLevelCharacteristicUUID
+                }) {
+                    batteryLevelCharacteristic = batteryChar
+                    if batteryChar.properties.contains(.read) {
+                        peripheral.readValue(for: batteryChar)
+                    }
+                    if batteryChar.properties.contains(.notify) {
+                        peripheral.setNotifyValue(true, for: batteryChar)
+                    }
+                    print("\(logTag) subscribed standard battery level 0x2A19")
+                }
+
+                if let statusChar = service.characteristics?.first(where: {
+                    $0.uuid == AstraA1BleProtocol.batteryLevelStatusCharacteristicUUID
+                }) {
+                    batteryLevelStatusCharacteristic = statusChar
+                    if statusChar.properties.contains(.read) {
+                        peripheral.readValue(for: statusChar)
+                    }
+                    if statusChar.properties.contains(.notify) {
+                        peripheral.setNotifyValue(true, for: statusChar)
+                    }
+                    print("\(logTag) battery level status 0x2BED present (charging supported)")
+                } else {
+                    print("\(logTag) battery level status 0x2BED absent (no charging info from standard service)")
+                }
+            }
+
+            pendingCharacteristicDiscoveries = max(0, pendingCharacteristicDiscoveries - 1)
+            finishCharacteristicDiscovery(for: peripheral)
+        }
+    }
+
+    nonisolated func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateNotificationStateFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        Task { @MainActor in
+            guard !shouldIgnoreGATTCallback(from: peripheral, event: "didUpdateNotificationState") else { return }
+            if let error {
+                print("\(logTag) notify enable failed for \(characteristic.uuid): \(error.localizedDescription)")
+            } else {
+                print("\(logTag) notify enabled for \(characteristic.uuid), isNotifying=\(characteristic.isNotifying)")
+            }
+
+            let isProtocolNotify =
+                characteristic.uuid == AstraA1BleProtocol.notifyCharacteristicUUID
+                || characteristic.uuid == notifyCharacteristic?.uuid
+
+            if isProtocolNotify {
+                isProtocolNotificationEnabled = (error == nil) && characteristic.isNotifying
+                isNotificationEnabled = isProtocolNotificationEnabled
+                print("[device_status] protocol notify ready=\(isProtocolNotificationEnabled)")
+                guard isProtocolNotificationEnabled else {
+                    if isPairingSessionActive && isUserInitiatedPairingConnect {
+                        retryUserPairingConnect(reason: error?.localizedDescription ?? "notification not enabled")
+                    } else {
+                        failOrRecoverConnectionPipeline(
+                            peripheral,
+                            reason: "notification-enable-failed",
+                            message: L10n.t("通信通知订阅失败，请重试", "Notification setup failed. Try again.")
+                        )
+                    }
+                    return
+                }
+                markReadyIfNeeded()
+                // getdevstat 仅由进入 .ready 时统一调度，避免 notify 回调再叠一枪。
+            }
+            // 电池等其它特征的 notify 不触发 ready / getdevstat。
+        }
+    }
+
+    nonisolated func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateValueFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        // 必须在回调内立刻拷贝 value。characteristic.value 会被下一包覆盖；
+        // 若拖到 Task/@MainActor 再读，高速 imgrecdata 会丢包/错包（安卓是同步 getValue）。
+        let uuid = characteristic.uuid
+        let dataCopy = characteristic.value.map { Data($0) }
+        let errorCopy = error
+        Task { @MainActor in
+            if let errorCopy {
+                print("\(logTag) didUpdateValue error: \(errorCopy.localizedDescription)")
+                if uuid == AstraA1BleProtocol.notifyCharacteristicUUID {
+                    notifyReadInFlight = false
+                    let nsError = errorCopy as NSError
+                    if nsError.domain == CBATTErrorDomain,
+                       nsError.code == CBATTError.requestNotSupported.rawValue {
+                        // 固件不支持读通知特征：本次连接内不再尝试补读。
+                        notifyReadUnsupported = true
+                        print("\(logTag) notify characteristic read unsupported (ATT 0x06), disable read fallback")
+                    }
+                    // 读失败也要收尾，否则等 wificonfig / getworkpat 的调用方只能干等超时。
+                    if let command = notifyReadCommand {
+                        requestFullNotifyPayload(for: command)
+                    } else if isQueryingAboutDeviceInfo {
+                        requestFullNotifyPayload(for: "getdevinfo")
+                    }
+                }
+                return
+            }
+            guard let data = dataCopy else { return }
+            print("\(logTag) didUpdateValue char=\(uuid)")
+
+            // 标准电池服务电量（0x2A19）：连接后几乎立刻可读，先展示；
+            // 随后 getdevinfo batt0 会覆盖（含充电态解析）。读到 0 视为固件尚未采样，忽略。
+            if uuid == AstraA1BleProtocol.batteryLevelCharacteristicUUID {
+                if let raw = data.first {
+                    let percent = max(0, min(100, Int(raw)))
+                    if percent == 0 {
+                        print("\(logTag) standard battery level 0 ignored")
+                    } else if !isBatteryLevelKnown || deviceBattery != "\(percent)" {
+                        applyBatteryPercent(percent, isCharging: deviceIsCharging, source: "bas0x2A19")
+                        markDeviceInfoReadyIfNeeded(force: false)
+                    }
+                }
+                return
+            }
+
+            // 标准电池状态（0x2BED）：解析充电状态
+            if uuid == AstraA1BleProtocol.batteryLevelStatusCharacteristicUUID {
+                if let charging = AstraA1BleProtocol.parseCharging(fromLevelStatus: data) {
+                    deviceIsCharging = charging
+                    print("\(logTag) battery level status charging=\(charging)")
+                }
+                return
+            }
+
+            if uuid == AstraA1BleProtocol.notifyCharacteristicUUID {
+                notifyReadInFlight = false
+            }
+            handleNotifyData(data)
+        }
+    }
+}
+
+// MARK: - Wi-Fi 凭据本地缓存
+
+/// 眼镜热点凭据（SSID / 密码 / HTTP 地址）。设备端固定不变，可按 SN 缓存，
+/// 后续导入只需发 toopenwifi 拿到状态回包即可，不再依赖会被 MTU 截断的 wificonfig。
+struct GlassesWifiCredential: Codable, Equatable {
+    var ssid: String
+    var password: String
+    var httpAddress: String
+}
+
+/// 按设备 SN 持久化眼镜热点凭据（支持多副眼镜各自缓存）。
+enum GlassesWifiCredentialStore {
+    private static let storageKey = "astraA1.wifiCredentials"
+
+    private static func loadAll() -> [String: GlassesWifiCredential] {
+        guard let data = UserDefaults.standard.data(forKey: storageKey),
+              let map = try? JSONDecoder().decode([String: GlassesWifiCredential].self, from: data) else {
+            return [:]
+        }
+        return map
+    }
+
+    private static func saveAll(_ map: [String: GlassesWifiCredential]) {
+        guard let data = try? JSONEncoder().encode(map) else { return }
+        UserDefaults.standard.set(data, forKey: storageKey)
+    }
+
+    static func load(deviceKey: String) -> GlassesWifiCredential? {
+        loadAll()[deviceKey]
+    }
+
+    static func save(deviceKey: String, credential: GlassesWifiCredential) {
+        var map = loadAll()
+        map[deviceKey] = credential
+        saveAll(map)
+    }
+
+    static func remove(deviceKey: String) {
+        var map = loadAll()
+        map.removeValue(forKey: deviceKey)
+        saveAll(map)
+    }
+}

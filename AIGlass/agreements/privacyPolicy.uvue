@@ -1,0 +1,525 @@
+<template>
+	<view class="app" v-if="lang">
+		<app-title txt="隐私政策"></app-title>
+		
+		<scroll-view scroll-y="true" class="content">
+			<text class="fs14 mt12">更新时间：2026年05月01日</text>
+			<text class="fs14 mt12">生效时间：2026年05月01日</text>
+			<text class="fs18 fw7 mt20 ta">MOCO AI 隐私政策</text>
+			<text class="fs14 mt12">MOCO AI（以下称“本应用”或“MOCO AI”）是由上海昶音智能科技有限公司及关联公司（以 下简称“我们”或“MOCO”）提供的基于智能眼镜的移动应用产品和服务，我们的注册地点为：上海市崇明区新海镇星村公路700号13幢102-1室(上海新海经济开发区)。</text>
+			<text class="fs14 mt12">本隐私政策的目的在于告知您：当您使用MOCO产品和服务时，我们将如何收集、存储、使用并保护您的个人信息。当您使用我们的产品和服务，即表示您已阅读、认可并接受本隐私政策中所述之所有条款。我们严格遵守法律、法规的规定以及与用户的约定，按照本隐私政策所述方式收集处理您主动提供的或因为使用服务而产生的信息，用以向您提供服务、优化我们的服务以及保障您的账户安全。如我们使用您的个人信息，超出了与收集时所称的目的及与其具有直接或合理关联的范围，我们将在使用您的个人信息前，再次向您告知并征得您的明示同意。</text>
+			<text class="fs14 mt12">1.定义</text>
+			<text class="fs14 mt12">2.我们如何收集和使用您的个人信息</text>
+			<text class="fs14 mt12">3.我们如何共享、转让和披露您的个人信息</text>
+			<text class="fs14 mt12">4.我们如何存储和保护您的个人信息</text>
+			<text class="fs14 mt12">5.您如何管理您的个人信息</text>
+			<text class="fs14 mt12">6.我们如何使用Cookies和其他同类技术</text>
+			<text class="fs14 mt12">7.我们如何将您的个人信息在全球范围内转移</text>
+			<text class="fs14 mt12">8.儿童个人信息保护</text>
+			<text class="fs14 mt12">9.本隐私政策如何修改和更新</text>
+			<text class="fs14 mt12">10.如何联系我们</text>
+			<text class="fs16 fw7 mt12">1. 定义</text>
+			<text class="fs14 mt12">1.1 个人信息：是指以电子或者其他方式记录的与已识别或者可识别的自然人有关的各种信息，不包括匿名化处理后的信息。</text>
+			<text class="fs14 mt12">1.2 敏感个人信息：是指一旦泄露或者非法使用，容易导致自然人的人格尊严受到侵害或者人身、财产安全受到危害的个人信息，包括生物识别、宗教信仰、特定身份、医疗健康、金融账户、行踪轨迹等信息，以及不满十四周岁未成年人的个人信息。</text>
+			<text class="fs14 mt12">1.3 用户：指使用个人手机号等方式注册使用MOCO产品和服务的个人。</text>
+			<text class="fs14 mt12">1.4 MOCO：指上海昶音智能科技有限公司及其关联公司，即MOCO产品和服务的提供商。</text>
+			<text class="fs16 fw7 mt12">2. 我们如何收集和使用您的个人信息</text>
+			<text class="fs14 mt12 fw7">2.1 当您使用MOCO产品和服务时，我们需要收集和使用您的个人信息的场景包括如下两种：</text>
+			<text class="fs14 mt12">(1) 为实现向您提供我们产品及服务的基本功能，以及履行相关法律法规规定所要求的 法定义务，您须授权我们收集、使用的必要的个人信息。如您拒绝提供相应信息，您将无法正常使用我们的产品及服务。</text>
+			<text class="fs14 mt12">(2) 为实现向您提供我们产品及服务的附加功能，您可选择授权我们收集、使用的个人信息。如您拒绝提供，您将无法正常使用相关附加功能，或无法达到我们的相关产 品及服务拟达到的功能效果，但并不会影响您正常使用我们产品及服务的基本功能。2.2 为实现本隐私政策下述的各项目的及业务功能，我们将在以下场景中收集和使用您的个人信息：</text>
+			<text class="fs14 mt12 fw7">2.2 为实现本隐私政策下述的各项目的及业务功能，我们将在以下场景中收集和使用您的个人信息：</text>
+			<text class="fs14 mt12 fw7">(1) 注册/登录账户</text>
+			<text class="fs14 mt12">
+				为满足相关法律法规要求及提供基础服务的必要前提，您需要创建专属的MOCO账号。在账号注册过程中，您需提供以下必要个人信息：
+				<text class="fw7 fs14">手机号码</text>
+				（用于身份核 验和账号安全保护）、账号名称及密码（作为您的专属登录凭证）。若您选择通过微信账号注册，我们还会收集并处理您的
+				<text class="fw7 fs14">微信标识符、头像、昵称、手机号码</text>
+				，用于您注册/登录账号时验证您的身份。
+			</text>
+			<text class="fs14 mt12">
+				通过手机号码注册的MOCO AI账号，可以绑定微信账号实现快捷登录，您通过此种方式登录的，我们将收集并处理您的
+				<text class="fs14 fw7">手机号码、微信标识符、头像、昵称，</text>
+				用于您登录账号时验证您的身份。若您拒绝提供上述信息，将无法完成账号注册流程，并影响智能眼镜核心功能的正常使用（如设备激活、设备绑定、云端数据同步等）。注册完成后，您可选择补充完善账户信息（如头像、昵称等非必需字段），但不提供补充信息不会影响您使用产品的基本功能（如基础AR显示、相机拍摄等）。
+			</text>
+			<text class="fs14 mt12">若您拒绝提供上述信息，将无法完成账号注册流程，并影响智能眼镜核心功能的正常使用（如设备激活、设备绑定、云端数据同步等）。注册完成后，您可选择补充完善账户信息（如头像、昵称等非必需字段），但不提供补充信息不会影响您使用产品的基本功能（如基础AR显示、相机拍摄等）。</text>
+			<text class="fs14 mt12">注册完成后，您可选择补充完善账户信息（如头像、昵称等非必需字段），但不提供补充信息不会影响您使用产品的基本功能（如基础AR显示、相机拍摄等）。</text>
+			<text class="fs14 mt12 fw7">(2) 设备互联与指令传输</text>
+			<text class="fs14 mt12">为实现眼镜与服务器及其他智能设备（如手机、平板）的安全互联与交互控制， 我们需要收集并处理以下必要信息：</text>
+			<text class="fs14 mt12">
+				1）网络标识信息：包括<text class="fs14 fw7"> IP地址、网络连接状态（Wi-Fi/移动数据）、设备唯一序列号（SN）；</text>
+			</text>
+			<text class="fs14 mt12">
+				2）交互信息：您的<text class="fs14 fw7">账号ID、蓝牙连接状态；</text>
+			</text>
+			<text class="fs14 mt12">
+				3）设备运行信息：当前<text class="fs14 fw7">固件版本、安全证书状态；</text>
+			</text>
+			<text class="fs14 mt12 fw7">(3) 智能语音交互</text>
+			<text class="fs14 mt12">
+				当您使用语音交互与AI助手功能时，我们会收集并处理以下相关信息：您的
+				<text class="fs14 fw7">语音音频及指令内容、设备与账户标识信息、相关应用程序及设备状态信息，</text>
+				以及基于网络位置的
+				<text class="fs14 fw7">地理位置信息。</text>
+				收集并处理此类信息的目的是为在同一设备内对语音内容进行分析，完成语音语义识别，从而生成对应的文本或操作指令，以便实现智能眼镜设备及其关联应用的控制、联动与交互，为您提供基础语音操控服务。
+			</text>
+			<text class="fs14 mt12">
+				我们还可能会额外收集并处理您主动提供的其他信息（如
+				<text class="fw7 fs14">图像、视频、文字补充信息等</text>
+				）。这些信息将被识别、提取并转写为对话文本，以生成对应的回复结果，从而实现更丰富的AI对话功能以及无障碍阅读功能。为确保对 话的连贯性以及履行法定责任，我们将在合理必要的时间范围内保留您的对话历史记录， 以及由此产生的上下文背景、互动行为和反馈信息。在留存期限结束后，所有数据将依 照法律要求被安全删除或匿名化处理。您也可以通过该功能提供的管理工具，自行查看、管理和删除相关信息。如您拒绝我们收集和使用前述个人信息，请您谨慎输入和提交该信息，您拒绝后仅会影响您使用该部分功能，不会影响您使用智能眼镜的其他基础功能。
+			</text>
+			<text class="fs14 mt12">如您输入的对话内容、提交的信息反馈中包含本人及他人的个人信息，请确保已获得相应主体的合法授权。我们将按照本隐私政策所述的安全措施，努力保障您所提供信息的安全性。但鉴于互联网环境存在一定的安全风险，我们建议您尽量避免在对话中输入您本人或他人的敏感个人信息，以免因信息泄露、损毁或不当使用而造成合法权益的损害。</text>
+			<text class="fs14 mt12 fw7">(4) 智能内容生成</text>
+			<text class="fs14 mt12">
+				当您使用MOCO AI搭载的智能内容生成功能时，例如信息摘要提炼、会议智能总结以及第三方智能插件等，我们还会额外收集并处理您主动提供的
+				<text class="fs14 fw7">文本、图像、音视频</text>
+				等素材。 收集并处理这些信息的目的在于智能处理您所输入的资料，为您高效生成摘要、概要等文字内容。若您不同意授权我们收集和使用上述信息，该功能的部分或全部服务将无法正常使用。
+			</text>
+			<text class="fs14 mt12 fw7">(5) 翻译</text>
+			<text class="fs14 mt12">
+				当您启用本项功能时，我们会收集并处理您的以下信息：您
+				<text class="fs14 fw7">通过设备音频输入的内容</text>
+				上述信息可能将被传输至服务器端，用于识别并处理语音中的文字内容，从而向您提供实时语音翻译等相关服务。若您不同意授权我们收集和使用上述信息，翻译功能的使用及翻译效果将会受到限制。
+			</text>
+			<text class="fs14 mt12 fw7">(6) 运营与安全运行</text>
+			<text class="fs14 mt12">
+				我们会收集您的
+				<text class="fs14 fw7">硬件型号、操作系统版本号、手机状态信息、设备识别信息、存储设备信息、ANDROID_ID、IP、ICCID、IMEI、MAC地址、IDFA、应用安装列表及错误日志信息，</text>
+				用以提供软件与服务的安全运行、运营的质量及效率，但请您放心，该功 能不影响您使用智能眼镜的所有功能。
+			</text>
+			<text class="fs14 mt12 fw7">(7) 问题处理与技术支持</text>
+			<text class="fs14 mt12">
+				在使用本产品过程中，如您遇到设备故障或操作异常并提交相关反馈时，我们可能收集以下信息：您在描述问题或提出建议时主动提供的
+				<text class="fs14 fw7">文本、照片、视频、问题日志</text>；您账号的
+				<text class="fs14 fw7">关联手机号码</text>；您的
+				<text class="fs14 fw7">眼镜序列号、眼镜版本、手机型号、手机系统版本、App版本</text>
+				；以及历史反馈记录。上述信息的收集旨在帮助我们准确了解问题情况，核实故障现象，并及时跟进解决。
+			</text>
+			<text class="fs14 mt12">
+				为了提升服务质量与技术支持效率，我们可能会使用您的
+				<text class="fs14 fw7">MOCO账号、关联的设备信息、手机号、昵称、头像、登录行为记录、订单信息</text>
+				等内容，或通过产品内置的客服系统与您联系，以便及时沟通问题处理进展、提供解决方案或归档处理结果。在此过程中，我们可能会保存您与客服之间的
+				<text class="fs14 fw7">交流内容、通话录音及相关补充材料。</text>
+			</text>
+			<text class="fs14 mt12 fw7">(8) 服务优化与体验提升</text>
+			<text class="fs14 mt12">
+				在提升产品性能和服务质量的过程中，我们可能会收集与您使用服务相关的其他信息。这些信息可能包括您使用本服务的
+				<text class="fw7 fs14">具体行为数据、使用时段</text>、所使用的
+				<text class="fw7 fs14">设备型号</text>及相关
+				<text class="fw7 fs14">设备标识、IP地址、</text>服务运行过程中产生的
+				<text class="fw7 fs14">错误日志</text>
+				等。通过分析这些数据，我们可以更好地了解用户在实际操作中的体验情况，并据此不断优化产品功能与服务质量。同时，我们也可能将从您不同设备上获取的信息进行整合，以便为您提供更加连贯、统一的使用体验。
+			</text>
+			<text class="fs14 mt12 fw7">(9) 信息推送与用户反馈收集</text>
+			<text class="fs14 mt12">
+				为了便于您及时获取我们最新的产品动态及相关通知，我们可能会在征得您同意的前提下，使用您在注册账户时所提供的个人信息（如
+				<text class="fs14 fw7">手机号码</text>
+				等），通过短信、应用内通知或电子邮件等方式向您发送相关信息。此外，为持续优化我们的产品和服务体验，我们还可能结合您提供的基本信息以及设备识别信息（如设备序列号）来开展用户满意度调查、产品使用反馈收集及服务改进相关的回访工作。 需要特别说明的是，智能眼镜设备存在不同版本，功能有所不同，如您使用的智能眼镜设备不支持上述部分功能，我们不会收集处理您在此类功能场景下涉及的个人信息，我们收集处理的个人信息范围以您所使用的、且智能眼镜产品具有的功能为准。
+			</text>
+			<text class="fs14 mt12 fw7">2.3 设备权限调用汇总</text>
+			<text class="fs14 mt12">当我们为您提供MOCO AI相关服务时，可能会调用您的主要设备权限汇总如下。您可以在设备的设置功能中选择关闭部分或全部权限。在不同设备中，权限显示方式及关闭方式可能有所不同，具体请参考设备及系统开发方说明或指引：</text>
+			<view class="table">
+				<view class="dr">
+					<text class="fs12 fw7 w1 ta">设备权限</text>
+					<text class="fs12 fw7 w2 ta">对应业务功能</text>
+					<text class="fs12 fw7 w2 ta">功能场景说明</text>
+					<view class="ta w2">
+						<text class="fs12 fw7">适用APP版本</text>
+						<text class="fs12 fw7">（iOS/Android）</text>
+					</view>
+				</view>
+				<view class="dr">
+					<text class="fs12 fw7 w1 ta">位置信息</text>
+					<text class="fs12 w2 ta">1.设备互联与指令传输<text class="fs12 ta">2.智能语音交互与AI助手</text></text>
+					<text class="fs12 w2 ta">1.利用地理位置信息搜索附近的蓝牙设备<text class="fs12 ta">2.根据地理位置信息提供天气信息</text></text>
+					<text class="fs12 w2 ta">iOS、Android</text>
+				</view>
+				<view class="dr">
+					<text class="fs12 fw7 w1 ta">相机</text>
+					<text class="fs12 w2 ta">1.智能语音交互与AI助手</text>
+					<text class="fs12 w2 ta">1.在AI助手功能中拍摄照片或视频<text class="fs12 ta">2.通过眼镜拍摄照片或视频</text></text>
+					<text class="fs12 w2 ta">iOS、Android</text>
+				</view>
+				<view class="dr">
+					<text class="fs12 fw7 w1 ta">麦克风(录音)</text>
+					<text class="fs12 w2 ta">1.智能语音交互与AI助手<text class="fs12 ta">2.智能内容生成</text></text>
+					<text class="fs12 w2 ta">在智能语音交互与AI助手功能、智能内容生成中用于收音</text>
+					<text class="fs12 w2 ta">iOS、Android</text>
+				</view>
+				<view class="dr">
+					<text class="fs12 fw7 w1 ta">读取/写入存储（包括相册、媒体和其他文件）</text>
+					<text class="fs12 w2 ta">1.智能语音交互<text class="fs12 ta">2.智能内容生成</text></text>
+					<text class="fs12 w2 ta">1.访问用户的存储并上传图像、文档<text class="fs12 ta">2.用于设备照片、视频的保存</text><text class="fs12 ta">3.在眼镜侧存储相关用户信息，作为安全校验</text></text>
+					<text class="fs12 w2 ta">iOS、Android</text>
+				</view>
+				<view class="dr">
+					<text class="fs12 fw7 w1 ta">网络权限</text>
+					<text class="fs12 w2 ta">1.上网功能</text>
+					<text class="fs12 w2 ta">用于连接互联网</text>
+					<text class="fs12 w2 ta">iOS、Android</text>
+				</view>
+				<view class="dr">
+					<text class="fs12 fw7 w1 ta">读取已安装应用列表  </text>
+					<text class="fs12 w2 ta">1.设备互联与指令传输<text class="fs12 ta">2.智能语音交互与AI助手</text></text>
+					<text class="fs12 w2 ta">用于获取已安装应用列表，实现应用间的相互唤醒</text>
+					<text class="fs12 w2 ta">Android</text>
+				</view>
+			</view>
+			
+			<text class="fs14 mt12 fw7">2.4 其他</text>
+			<text class="fs14 mt12">请您理解，我们向您提供的功能和服务是不断更新和发展的，如果某一功能或服务 未在前述说明中且收集了您的信息，我们会通过页面提示、交互流程、网站公告等方式另行向您说明信息收集的内容、范围和目的，以征得您的同意。</text>
+			<text class="fs14 mt12">您知悉并同意，在不透露您的个人信息且不违反相关法律法规的前提下，我们有权对用户数据进行分析并予以利用，包括但不限于使用技术处理后的对话信息提高MOCO AI产品智能问答对您输入内容的理解能力，以便不断改进MOCO AI产品智能问答的识别和响应的速度和质量，提高其智能性。</text>
+			<text class="fs14 mt12">向其他方收集个人信息：为了MOCO账户服务体系之目的，我们可能会在您同意的范围内从我们的关联方处收集并使用您的个人信息。我们保证依照与关联方签订的合同以及相关法律规定处理您的个人信息，同时请您详细阅读关联方的个人信息保护政策。如您拒绝提供您的必要个人信息，将可能导致您无法使用相应服务功能。</text>
+			<text class="fs16 fw7 mt12">3. 我们如何共享、转让和披露您的个人信息</text>
+			<text class="fs14 mt12 fw7">3.1 共享</text>
+			<text class="fs14 mt12">(1) 我们遵照法律法规的规定，对信息的分享进行严格的限制。我们不会将任何个人信息出售给第三方。</text>
+			<text class="fs14 mt12">(2) 为使您能够便捷使用本软件相关服务，在获得您的明确同意或主动选择的情况下， 您的信息可能会在各服务提供方之间共享。我们会使用加密、匿名化处理、去标 识化等安全保护措施保障您的信息安全。一旦涉及共享您的敏感个人信息，我们将再次征求您的明示同意。</text>
+			<text class="fs14 mt12">(3) 仅为实现外部处理的目的，我们可能会与第三方合作伙伴（这可能包括我们的应用开发者、数据中心、数据存储设施、客户服务供应商、广告和营销服务供应商以及其他业务合作伙伴）分享您的个人信息，让他们按照我们的说明、隐私政策 以及其他相关的保密和安全措施来为我们处理上述信息，并用于以下用途：</text>
+			<text class="fs14 mt12">1) 向您提供我们的服务；</text>
+			<text class="fs14 mt12">2) 实现“我们如何收集和使用您的个人信息”部分所述目的；</text>
+			<text class="fs14 mt12">3) 履行我们在本政策中的义务和行使我们的权利；</text>
+			<text class="fs14 mt12">4) 理解、维护和改善我们的服务。</text>
+			<text class="fs14 mt12">如我们与上述第三方分享您的信息，我们将会采用加密、匿名化处理等手段保障您的信息安全。我们保证仅出于正当、合法、必要、特定、明确的目的共享为您提供服务所必要的个人信息。</text>
+			<text class="fs14 mt12 fw7">3.2 转让</text>
+			<text class="fs14 mt12">我们不会将您的个人信息转让给第三方，除非发生以下情形：</text>
+			<text class="fs14 mt12">(1) 已取得您的明确同意；</text>
+			<text class="fs14 mt12">(2) 我们或我们的关联方发生吸收合并、收购、重组、破产清算等情形时，如涉及转让您的个人信息，我们将告知您接收方的名称/姓名、联系方式，并要求接收方继续按照本隐私政策的规则处理和保护您的个人信息；如果接收方改变原先的处理目的和处理方式，其应当依法重新取得您的授权同意，法律法规另有规定的除外。</text>
+			<text class="fs14 mt12 fw7">3.3 公开披露</text>
+			<text class="fs14 mt12">我们仅在发生以下情形时，公开披露您的个人信息：</text>
+			<text class="fs14 mt12">(1) 取得您的单独同意后；</text>
+			<text class="fs14 mt12">(2) 在法律、法规、司法、法律程序、政府主管部门强制性的执法要求规定必须提供您的个人信息的情况下，我们可能会依该等规定公开披露您的个人信息；</text>
+			<text class="fs14 mt12">(3) 在我们收到基于法律、法规、司法、法律程序、政府主管部门强制性的执法要求需要披露您的相关个人信息时，我们会请求提出要求的机关/部门出具合理的文件，以确保该等要求具有合法的依据；</text>
+			<text class="fs14 mt12 fw7">3.4 其他情形</text>
+			<text class="fs14 mt12">在下述情形中，我们可能也会共享、转让或公开披露您的个人信息，但请您知晓，这些共享、转让或公开披露无需获取您的授权同意：</text>
+			<text class="fs14 mt12">(1) 为订立、履行您作为一方当事人的合同所必需；</text>
+			<text class="fs14 mt12">(2) 为履行法定职责或者法定义务所必需；</text>
+			<text class="fs14 mt12">(3) 为应对为应对突发公共卫生事件，或者紧急情况下为保护自然人的生命健康和财产安全所必需；</text>
+			<text class="fs14 mt12">(4) 为公共利益实施新闻报道、舆论监督等行为，在合理的范围内处理个人信息；</text>
+			<text class="fs14 mt12">(5) 依照《中华人民共和国个人信息保护法》规定在合理的范围内处理您自行公开或者其他已经合法公开的个人信息；</text>
+			<text class="fs14 mt12">(6) 法律、行政法规规定的其他情形。</text>
+			<text class="fs16 fw7 mt12">4. 我们如何存储和保护您的个人信息</text>
+			<text class="fs14 mt12 fw7">4.1 信息存储期限</text>
+			<text class="fs14 mt12">我们仅会在为您提供本隐私政策所述目的所必需的期间内存储您的个人信息，如果您注销账号、主动删除个人信息或信息超出必要的存储期限后，我们将对您的个人信息 进行删除或匿名化处理，但相关法律法规另有规定，或基于争议解决等目的需要合理延长存储期限的除外。我们主要依据下列情形确定个人信息的存储期限：</text>
+			<text class="fs14 mt12">(1) 税务、财务会计记录的要求；</text>
+			<text class="fs14 mt12">(2) 为您提供产品或服务、用于响应您的权利请求（如查询、投诉）等；</text>
+			<text class="fs14 mt12">(3) 潜在的法律诉讼或仲裁需要；</text>
+			<text class="fs14 mt12">(4) 您与我们之间关于个人信息存储期限的特别约定；</text>
+			<text class="fs14 mt12">(5) 法律法规等关于个人信息存储期限的特别规定。</text>
+			<text class="fs14 mt12 fw7">4.2 安全保护措施</text>
+			<text class="fs14 mt12">我们采取符合业界标准的措施和技术手段存储及保护您的个人信息，防止个人信息丢失、被误用、受到未授权访问或泄漏、被篡改或毁坏。例如，通过网络安全层技术 SSL进行加密传输、使用加密技术确保数据的保密性、使用受信赖的保护机制防止数据 遭到恶意攻击、部署访问控制机制以确保只有授权人员才可访问个人信息以及举办安全 和隐私保护培训课程，加强员工对于保护个人信息重要性的认识。虽然我们致力于保护您的个人信息，但我们无法担保或保证其绝对的安全。因此，您也应采取积极措施保证 个人信息的安全，如定期修改账号密码，不将个人的账号密码信息透露给他人等</text>
+			<text class="fs14 mt12 fw7">4.3 安全事件处置措施</text>
+			<text class="fs14 mt12">若发生个人信息泄露、损毁、丢失等安全事件，我们会启动应急预案，阻止安全事 件扩大。安全事件发生后，我们将按照法律法规的要求及时以推送通知、邮件、电话等 形式告知您该事件的基本情况、我们即将或已经采取的处置措施和补救措施，以及我们对您的应对建议。如果难以实现逐一告知，我们将通过公告等方式发布警示。</text>
+			<text class="fs16 fw7 mt12">5. 您如何管理您的个人信息</text>
+			<text class="fs14 mt12">5.1 如何查询、变更或要求删除您的个人信息</text>
+			<text class="fs14 mt12">除法律法规另有规定外，您有权查询您的个人信息。若您发现您的个人信息中有任何错误，或者您需要变更或验证该等信息，您可以通过本隐私政策第10条载明的方式联系我们修改您的个人信息。</text>
+			<text class="fs14 mt12">按照适用法律法规的要求，在以下情形下，您可以要求我们删除我们所收集的您的个人信息：</text>
+			<text class="fs14 mt12">(1) 个人信息处理目的已实现、无法实现或为实现处理目的不再必要；</text>
+			<text class="fs14 mt12">(2) MOCO停止提供服务，或者保存期限已届满；</text>
+			<text class="fs14 mt12">(3) 您已经撤回同意；</text>
+			<text class="fs14 mt12">(4) MOCO违反法律、行政法规或者违反约定处理您的个人信息；</text>
+			<text class="fs14 mt12">(5) 您注销账户。</text>
+			<text class="fs14 mt12 fw7">5.2 如何获取您的个人信息副本或个人信息携带权</text>
+			<text class="fs14 mt12">您有权获取我们已收集的您的个人信息副本，例如：个人基本资料、个人身份信息。 若满足相关法律法规所规定的条件，您有权要求我们根据适用法律法规的要求将您的个人信息 转移至您指定的第三方。</text>
+			<text class="fs14 mt12 fw7">5.3 如何撤回您的授权或变更授权范围</text>
+			<text class="fs14 mt12">您可以联系我们撤回您对于您的个人信息的授权或变更相关的授权范围，但请您理解，每项业务功能的实现需要基于一些基本的个人信息才能完成，当您撤回同意或授权后，我们将无法继续为您提供撤回同意或授权所对应的服务，也不再处理您相应的个人信息。但您撤回同意或授权的决定，不会影响此前基于您的授权而开展的信息处理。</text>
+			<text class="fs14 mt12 fw7">5.4 如何注销账户</text>
+			<text class="fs14 mt12">您可以在MOCO AI应用中注销账户，或在连接眼镜后进入“设置”注销账户，或根据本隐私政策第10条载明的联系方式联系我们注销您的注册账户。账户注销后，除非法律或法规有其他规定，我们将停止向您提供相关服务并将根据您的要求删除或匿名化您的个人信息。</text>
+			<text class="fs14 mt12 fw7">5.5 如何限制或拒绝我们处理您的个人信息</text>
+			<text class="fs14 mt12">您可以要求我们停止或限制我们处理您的个人信息，除非我们对您个人信息的处理为您提供服务所必须或是适用法律法规所要求。</text>
+			<text class="fs14 mt12 fw7">5.6 如何行使您的上述权利</text>
+			<text class="fs14 mt12">如您希望行使上述权利，请通过本隐私政策第10条载明的联系方式与我们取得联系，除法律或行政法规另有规定外，我们将尽快响应您的权利请求。</text>
+			<text class="fs16 fw7 mt12">6. 我们如何使用Cookies和其他同类技术</text>
+			<text class="fs14 mt12">我们和第三方服务供应商使用cookie、标签和脚本等技术。这些技术用于分析趋势、 管理网站、追踪用户的网站活动并收集关于整个用户群的人口统计信息。我们会收到这些公司基于使用上述技术的单独和汇总报告。日志文件：我们收集特定信息并保存在日志文件中。 此类信息可能包括互联网协议（IP）地址、浏览器类型、互联网服务供应商（ISP）、引用/退出页面、操作系统、日期/时间戳和点击流数据。我们不会将自动收集的数据链接到我们收集的关于您的其他信息之中。</text>
+			<text class="fs16 fw7 mt12">7. 我们如何将您的个人信息在全球范围内转移</text>
+			<text class="fs14 mt12">我们在中华人民共和国境内收集和产生的个人信息，将存储在中华人民共和国境内。如果将来我们的服务发生变更，需要将您的个人信息传输至其他国家或地区，我们将向您告知出境个人信息的类型、出境的目的和方式、境外接收方的名称和联系方式，以及您向接收方行使权利的方式和程序等事项，并按照法律法规要求通过履行相应的合规义务以及获得您的单独同意，法律法规另有规定的除外。</text>
+			<text class="fs16 fw7 mt12">8. 儿童个人信息保护</text>
+			<text class="fs14 mt12">我们的产品和服务仅向十八周岁以上且具备完整的民事权利能力和民事行为能力的成年人提供。未满十八周岁或不具备完整民事权利能力和民事行为能力的自然人不应使用我们的产品和服务。</text>
+			<text class="fs14 mt12">但是需要提醒您注意的是，在 MOCO AI产品和服务的大部分场景下，由于“年龄”和“出生日期”并非必须提供的信息，在您未向我们提供此类信息的情况下，我们无法准确识别您的年龄。如果发现在未征得法定监护人同意的情况下收集了未成年人的个人信息请通过本隐私政策第10条载明的联系方式联系我们，我们将在验证您的身份及事由后依法对相关个人信息作出处理。</text>
+			<text class="fs16 fw7 mt12">9. 本隐私政策如何修改和更新</text>
+			<text class="fs14 mt12">本隐私政策自标题下方显示的生效日期起生效。我们保留随时修改本隐私政策的权利。在MOCO AI上发布最新版隐私政策后，本隐私政策的所有修改立即生效。请务必定期查看本隐私政策，以确保知悉最新版隐私政策的内容。当本隐私政策条款发生重大变更时，我们会在您登录MOCO AI应用时以推送通知、弹窗或其他符合法律法规要求的适当形式向您展示变化后的政策。您也可以通过查看本隐私政策的生效日期，来确认自您最后一次MOCO AI后，是否有发布任何最新修改。但是，若您不同意我们对本隐私政策的修改，请在该等通知在MOCO AI上公布后停止使用MOCO AI。</text>
+			<text class="fs14 mt12">本隐私政策在MOCO AI中的查询路径为：</text>
+			<text class="fs14 mt12">路径1：打开MOCO AI应用-点击“我的”-点击“关于”-点击“隐私政策”查看；</text>
+			<text class="fs16 fw7 mt12">10. 如何联系我们</text>
+			<text class="fs14 mt12">我们非常重视隐私保护问题，并积极保护您在个人信息处理活动中的权利。若您希望实现您的前述个人信息主体权利，或对本隐私政策/我们的隐私保护实践有任何疑问或建议，您可以通过以下方式联系我们：</text>
+			<text class="fs14 mt12">负责部门：【MOCO用户隐私保护组】</text>
+			<text class="fs14 mt12">电子邮箱：【support@mocoviso.com】</text>
+			<text class="fs14 mt12">地址：上海市闵行区万康路328号2号楼南栋5楼</text>
+			<text class="fs14 mt12">为保障您的账户安全，我们可能需要您提供书面请求，我们也可能会先要求您提供相关信息 验证您的身份后，再处理您的请求和/或投诉。一般情况下，我们将在十五（15）个工作日 内回复。</text>
+			<text class="fs14 mt12"></text>
+		</scroll-view>
+	</view>
+	<view class="app" v-else>
+		<app-title txt="Privacy Policy"></app-title>
+		<scroll-view scroll-y="true" class="content">
+			<text class="fs14 mt12">Last Updated: May 01, 2026</text>
+			<text class="fs14 mt12">Effective Date: May 01, 2026</text>
+			<text class="fs18 fw7 mt20 ta">MOCO AI Privacy Policy</text>
+			<text class="fs14 mt12">MOCO AI (hereinafter referred to as "this App" or "MOCO AI") is a mobile application product and service based on smart glasses provided by Shanghai Chamsion Intelligent Technology Co., Ltd. and its affiliates (hereinafter referred to as "we," "us," or "MOCO"). Our registered address is: Room 102-1, Building 13, No. 700 Xingcun Road, Xinhai Town, Chongming District, Shanghai (Shanghai Xinhai Economic Development Zone).</text>
+			<text class="fs14 mt12">The purpose of this Privacy Policy is to inform you how we collect, store, use, and protect your personal information when you use MOCO products and services. By using our products and services, you signify that you have read, acknowledged, and accepted all the terms described in this Privacy Policy. We strictly abide by laws, regulations, and our agreements with users, collecting and processing the information you voluntarily provide or that is generated from your use of the services in the manner described herein, to provide and optimize our services and to ensure your account's security. If we use your personal information beyond the purposes stated at the time of collection or outside a direct or reasonably related scope, we will notify you and obtain your explicit consent again before using your personal information.</text>
+			<text class="fs14 mt12">1.Definitions</text>
+			<text class="fs14 mt12">2.How We Collect and Use Your Personal Information</text>
+			<text class="fs14 mt12">3.How We Share, Transfer, and Disclose Your Personal Information</text>
+			<text class="fs14 mt12">4.How We Store and Protect Your Personal Information</text>
+			<text class="fs14 mt12">5.How You Can Manage Your Personal Information</text>
+			<text class="fs14 mt12">6.How We Use Cookies and Similar Technologies</text>
+			<text class="fs14 mt12">7.How We Transfer Your Personal Information Globally</text>
+			<text class="fs14 mt12">8.Children's Privacy Protection</text>
+			<text class="fs14 mt12">9.How We Modify and Update This Privacy Policy</text>
+			<text class="fs14 mt12">10.10.How to Contact Us</text>
+			<text class="fs16 fw7 mt12">1. Definitions</text>
+			<text class="fs14 mt12">1.1 Personal Information: Refers to various information recorded electronically or otherwise relating to an identified or identifiable natural person, excluding anonymized information.</text>
+			<text class="fs14 mt12">1.2 Sensitive Personal Information: Refers to personal information that, once leaked or used illegally, could easily cause harm to the personal dignity of a natural person or endanger their personal or property safety. This includes biometrics, religious beliefs, specific identities, medical health, financial accounts, whereabouts and tracking information, as well as the personal information of minors under the age of fourteen.</text>
+			<text class="fs14 mt12">1.3 User: Refers to an individual who registers and uses MOCO products and services using a personal mobile phone number or other methods.</text>
+			<text class="fs14 mt12">1.4 MOCO: Refers to Shanghai Changyin Intelligent Technology Co., Ltd. and its affiliates, which are the providers of MOCO products and services.</text>
+			<text class="fs16 fw7 mt12">2. How We Collect and Use Your Personal Information</text>
+			<text class="fs14 mt12 fw7">2.1 When you use MOCO products and services, we collect and use your personal information in the following two scenarios:</text>
+			<text class="fs14 mt12">(1) To provide you with the basic functions of our products and services, and to fulfill our legal obligations under relevant laws and regulations, you must authorize us to collect and use your necessary personal information. If you refuse to provide this information, you will not be able to use our products and services normally.</text>
+			<text class="fs14 mt12">(2) To provide you with the additional functions of our products and services, you may choose to authorize us to collect and use your personal information. If you refuse to provide this, you will not be able to use the relevant additional functions normally, or achieve the intended functional results, but it will not affect your normal use of the basic functions of our products and services.</text>
+			<text class="fs14 mt12 fw7">2.2 To achieve the various purposes and business functions described in this Privacy Policy, we will collect and use your personal information in the following scenarios:</text>
+			<text class="fs14 mt12 fw7">(1) Account Registration/Login</text>
+			<text class="fs14 mt12">
+				To meet the requirements of relevant laws and regulations and as a necessary prerequisite for providing basic services, you need to create a dedicated MOCO account. During the registration process, you must provide the following necessary personal information: 
+				<text class="fw7 fs14">Mobile phone number</text>
+				 (for identity verification and account security) and 
+				<text class="fw7 fs14">Account Name and Password</text>
+				 (as your exclusive login credentials). If you choose to register via a WeChat account, we will also collect and process your 
+				<text class="fw7 fs14">WeChat identifier, avatar, nickname, and mobile phone number</text>
+				to verify your identity upon registration/login.
+			</text>
+			<text class="fs14 mt12">
+				MOCO AI accounts registered via a mobile phone number can be bound to a WeChat account for quick login. If you log in this way, we will collect and process your 
+				<text class="fs14 fw7">mobile phone number, WeChat identifier, avatar, and nickname</text>
+				to verify your identity.
+			</text>
+			<text class="fs14 mt12">If you refuse to provide the above information, you will not be able to complete the account registration process, which will affect the normal use of the core functions of the smart glasses (such as device activation, device binding, and cloud data synchronization).</text>
+			<text class="fs14 mt12">After registration is complete, you may choose to supplement your profile information (such as an avatar, nickname, and other non-mandatory fields). Failing to provide this supplementary information will not affect your use of the basic features of the product (such as basic AR display and camera shooting).</text>
+			<text class="fs14 mt12 fw7">(2) Device Interconnection and Command Transmission</text>
+			<text class="fs14 mt12">To achieve secure interconnection and interactive control between the glasses and servers, as well as other smart devices (e.g., mobile phones, tablets), we need to collect and process the following necessary information:</text>
+			<text class="fs14 mt12">
+				1. Network Identification Information: Includes<text class="fs14 fw7">1. IP address, network connection status (Wi-Fi/Mobile Data), and unique device serial number (SN);</text>
+			</text>
+			<text class="fs14 mt12">
+				2. Interaction Information: Your<text class="fs14 fw7"> Account ID and Bluetooth connection status;</text>
+			</text>
+			<text class="fs14 mt12">
+				3. Device Operation Information:<text class="fs14 fw7"> Current firmware version and security certificate status.</text>
+			</text>
+			<text class="fs14 mt12 fw7">(3) Smart Voice Interaction</text>
+			<text class="fs14 mt12">
+				When you use voice interaction and the AI Assistant function, we will collect and process the following related information: Your
+				<text class="fs14 fw7">voice audio and command content, device and account identification information, related application and device status information,</text>
+				as well as
+				<text class="fs14 fw7">network-based geolocation information. </text>
+				The purpose of collecting and processing this information is to analyze the voice content on the same device, perform speech and semantic recognition, and thereby generate corresponding text or operation commands to achieve control, linkage, and interaction between the smart glasses device and its associated applications, providing you with basic voice control services.
+			</text>
+			<text class="fs14 mt12">
+				We may also additionally collect and process other information you voluntarily provide (such as
+				<text class="fw7 fs14">supplementary information in the form of images, videos, and text</text>
+				). This information will be recognized, extracted, and transcribed into conversational text to generate corresponding replies, thereby enabling richer AI dialogue functions and accessible reading features. To ensure conversational continuity and fulfill legal responsibilities, we will retain your conversational history, context, interactive behavior, and feedback information within a reasonable and necessary timeframe. After the retention period ends, all data will be securely deleted or anonymized in accordance with legal requirements. You can also view, manage, and delete relevant information yourself through the management tools provided in this feature. If you refuse our collection and use of the aforementioned personal information, please be cautious when inputting and submitting such information. Your refusal will only affect your use of this specific feature and will not affect your use of other basic features of the smart glasses.
+			</text>
+			<text class="fs14 mt12">If the dialogue content or feedback you input contains personal information about yourself or others, please ensure you have obtained the legal authorization from the relevant subjects. We will strive to protect the security of the information you provide in accordance with the security measures described in this Privacy Policy. However, given the inherent security risks of the Internet, we advise you to avoid inputting sensitive personal information about yourself or others into the dialogue to prevent any infringement of legal rights and interests caused by information leakage, damage, or improper use.</text>
+			<text class="fs14 mt12 fw7">(4) Smart Content Generation</text>
+			<text class="fs14 mt12">
+				When you use smart content generation features equipped on MOCO AI, such as information extraction, smart meeting summaries, and third-party smart plugins, we will additionally collect and process
+				<text class="fs14 fw7">text, images, audio, and video materials</text>
+				you voluntarily provide. The purpose of collecting and processing this information is to intelligently process the materials you input and efficiently generate summaries, outlines, and other text content for you. If you do not consent to our collection and use of the above information, you will not be able to use part or all of the services for this feature normally.
+			</text>
+			<text class="fs14 mt12 fw7">(5) Translation</text>
+			<text class="fs14 mt12">
+				When you enable this feature, we will collect and process the following information: 
+				<text class="fs14 fw7">The content you input via the device's audio.</text>
+				This information may be transmitted to the server to recognize and process the text within the speech, thereby providing you with services such as real-time voice translation. If you do not consent to our collection and use of this information, your use of the translation feature and its performance will be restricted.
+			</text>
+			<text class="fs14 mt12 fw7">(6) Operations and Secure Functioning</text>
+			<text class="fs14 mt12">
+				We will collect your
+				<text class="fs14 fw7">hardware model, operating system version, mobile phone status information, device identification information, storage device information, ANDROID_ID, IP, ICCID, IMEI, MAC address, IDFA, installed application list, and crash log information.</text>
+				This is used to ensure the secure operation of the software and services and improve operational quality and efficiency. Please rest assured that this feature does not affect your use of all the functions of the smart glasses.
+			</text>
+			<text class="fs14 mt12 fw7">(7) Troubleshooting and Technical Support</text>
+			<text class="fs14 mt12">
+				During your use of this product, if you encounter device failures or abnormal operations and submit related feedback, we may collect the following information: 
+				<text class="fs14 fw7">text, photos, videos, and issue logs</text>
+				voluntarily provided by you when describing the issue or making suggestions; your account's associated
+				<text class="fs14 fw7">mobile phone number;</text> your
+				<text class="fs14 fw7">glasses serial number, glasses version, phone model, phone OS version, and App version;</text> as well as
+				<text class="fs14 fw7">historical feedback records.</text>
+				Collecting this information aims to help us accurately understand the problem, verify the failure symptoms, and follow up with a solution in a timely manner.
+			</text>
+			<text class="fs14 mt12">
+				To improve service quality and technical support efficiency, we may use your
+				<text class="fs14 fw7">MOCO account, associated device information, mobile phone number, nickname, avatar, login behavior records, order information,</text>
+				or contact you via the product's built-in customer service system to communicate processing progress, provide solutions, or archive handling results in a timely manner. During this process, we may save the 
+				<text class="fs14 fw7">communication records, call recordings, and related supplementary materials</text>
+				between you and customer service.
+			</text>
+			<text class="fs14 mt12 fw7">(8) Service Optimization and Experience Enhancement</text>
+			<text class="fs14 mt12">
+				In the process of improving product performance and service quality, we may collect other information related to your use of the services. This information may include 
+				<text class="fw7 fs14">specific behavioral data related to your use of this service, time periods of use, device models used and related device identifiers, IP addresses,</text>and 
+				<text class="fw7 fs14">error logs</text>
+				generated during service operations. By analyzing this data, we can better understand the user experience during actual operations and continuously optimize product functions and service quality accordingly. At the same time, we may integrate the information obtained from your different devices to provide you with a more consistent and unified user experience.
+			</text>
+			<text class="fs14 mt12 fw7">(9) Information Push and User Feedback Collection</text>
+			<text class="fs14 mt12">
+				To easily provide you with our latest product updates and relevant notices, we may, with your consent, use the personal information you provided during account registration (such as your
+				<text class="fs14 fw7">mobile phone number</text>
+				) to send you related information via SMS, in-app notifications, or emails. In addition, to continually optimize our product and service experience, we may use your basic information and device identification information (such as the device serial number) to conduct user satisfaction surveys, collect product usage feedback, and conduct follow-up visits related to service improvements. Please specifically note that different versions of smart glasses have varying functions. If the smart glasses device you are using does not support certain functions mentioned above, we will not collect or process your personal information in those specific scenarios. The scope of personal information we collect and process is subject to the functions actually available on the smart glasses product you are using.
+			</text>
+			<text class="fs14 mt12 fw7">2.3 Summary of Device Permissions</text>
+			<text class="fs14 mt12">When we provide you with MOCO AI-related services, we may request the following primary device permissions. You can choose to disable some or all permissions in your device settings. The display and method of disabling permissions may vary across different devices; please refer to the instructions or guidelines provided by your device and operating system developer:</text>
+			<view class="table">
+				<view class="dr">
+					<text class="fs12 fw7 w1 ta">Device Permission</text>
+					<text class="fs12 fw7 w2 ta">Corresponding Business Function</text>
+					<text class="fs12 fw7 w2 ta">Functional Scenario Description</text>
+					<text class="fs12 fw7 w2 ta">Applicable App Version (iOS/Android)</text>
+					<!-- <view class="ta w2">
+						<text class="fs12 fw7">适用Version版本</text>
+						<text class="fs12 fw7">（iOS/Android）</text>
+					</view> -->
+				</view>
+				<view class="dr">
+					<text class="fs12 fw7 w1 ta">Location Information</text>
+					<text class="fs12 w2 ta">1.Device Interconnection &Command Transmission <text class="fs12 ta">2. Smart Voice Interaction & AI Assistant</text></text>
+					<text class="fs12 w2 ta">1. Use location info to search for nearby Bluetooth devices. <text class="fs12 ta">2. Provide weather info based on location.</text></text>
+					<text class="fs12 w2 ta">iOS、Android</text>
+				</view>
+				<view class="dr">
+					<text class="fs12 fw7 w1 ta">Camera</text>
+					<text class="fs12 w2 ta">1.Smart Voice Interaction & AI Assistant</text>
+					<text class="fs12 w2 ta">1. Take photos or videos within the AI Assistant feature. <text class="fs12 ta">2. Take photos or videos via the glasses.</text></text>
+					<text class="fs12 w2 ta">iOS、Android</text>
+				</view>
+				<view class="dr">
+					<text class="fs12 fw7 w1 ta">Microphone (Audio Recording</text>
+					<text class="fs12 w2 ta">1.Smart Voice Interaction & AI Assistant<text class="fs12 ta">2.Smart Content Generation</text></text>
+					<text class="fs12 w2 ta">Used for voice reception during smart voice interaction, AI Assistant, and smart content generation.</text>
+					<text class="fs12 w2 ta">iOS、Android</text>
+				</view>
+				<view class="dr">
+					<text class="fs12 fw7 w1 ta">Read/Write Storage (including Albums, Media, and other files)</text>
+					<text class="fs12 w2 ta">1. Smart Voice Interaction<text class="fs12 ta">2.Smart Content Generation</text></text>
+					<text class="fs12 w2 ta">1. Access user storage to upload images and documents.<text class="fs12 ta">2. Used for saving device photos and videos.</text><text class="fs12 ta">3. Store relevant user info on the glasses side for security verification.</text></text>
+					<text class="fs12 w2 ta">iOS、Android</text>
+				</view>
+			</view>
+			
+			<text class="fs14 mt12 fw7">2.4 Others</text>
+			<text class="fs14 mt12">Please understand that the functions and services we provide are constantly updating and evolving. If a specific function or service is not described above but collects your information, we will separately explain the content, scope, and purpose of the information collection through page prompts, interactive processes, website announcements, etc., to obtain your consent.</text>
+			<text class="fs14 mt12">You acknowledge and agree that, provided your personal information is not disclosed and relevant laws and regulations are not violated, we have the right to analyze and utilize user data. This includes, but is not limited to, using dialogue information processed via technical means to improve the MOCO AI product's ability to understand your inputs, thereby continuously improving the recognition and response speed and quality of the MOCO AI intelligent Q&A and enhancing its intelligence.</text>
+			<text class="fs14 mt12">Collecting personal information from other parties: For the purpose of the MOCO account service system, we may collect and use your personal information from our affiliates within the scope of your consent. We guarantee that your personal information will be processed in accordance with the contracts signed with affiliates and relevant legal provisions. At the same time, please carefully read the privacy protection policies of our affiliates. If you refuse to provide necessary personal information, it may result in you being unable to use the corresponding service functions.</text>
+			<text class="fs16 fw7 mt12">3. How We Share, Transfer, and Disclose Your Personal Information</text>
+			<text class="fs14 mt12 fw7">3.1 Sharing</text>
+			<text class="fs14 mt12">(1) We strictly restrict the sharing of information in accordance with laws and regulations. We will not sell any personal information to third parties.</text>
+			<text class="fs14 mt12">(2) To enable you to conveniently use this software's related services, your information may be shared among various service providers with your explicit consent or proactive choice. We will use security measures such as encryption, anonymization, and de-identification to protect your information security. If sensitive personal information is involved, we will seek your explicit consent again.</text>
+			<text class="fs14 mt12">(3) Solely for external processing purposes, we may share your personal information with third-party partners (which may include our app developers, data centers, data storage facilities, customer service providers, advertising and marketing service providers, and other business partners), requiring them to process the information for us according to our instructions, Privacy Policy, and other relevant confidentiality and security measures, for the following purposes:</text>
+			<text class="fs14 mt12">1.To provide you with our services;</text>
+			<text class="fs14 mt12">2.To fulfill the purposes described in the "How We Collect and Use Your Personal Information" section;</text>
+			<text class="fs14 mt12">3.To fulfill our obligations and exercise our rights under this policy;</text>
+			<text class="fs14 mt12">4.To understand, maintain, and improve our services.</text>
+			<text class="fs14 mt12">If we share your information with the aforementioned third parties, we will employ measures such as encryption and anonymization to ensure your information's security. We guarantee that we will only share personal information necessary to provide services to you for legitimate, lawful, necessary, specific, and explicit purposes.</text>
+			<text class="fs14 mt12 fw7">3.2 Transfer</text>
+			<text class="fs14 mt12">We will not transfer your personal information to any third party, except in the following circumstances:</text>
+			<text class="fs14 mt12">(1) We have obtained your explicit consent;</text>
+			<text class="fs14 mt12">(2) In the event of a merger, acquisition, reorganization, or bankruptcy liquidation involving us or our affiliates, if the transfer of your personal information is involved, we will inform you of the receiving party's name and contact information, and require the receiving party to continue to process and protect your personal information in accordance with this Privacy Policy. If the receiving party changes the original processing purposes or methods, they must obtain your authorized consent again according to the law, unless otherwise prescribed by laws and regulations.</text>
+			<text class="fs14 mt12 fw7">3.3 Public Disclosure</text>
+			<text class="fs14 mt12">We will publicly disclose your personal information only under the following circumstances:</text>
+			<text class="fs14 mt12">(1) After obtaining your separate consent;</text>
+			<text class="fs14 mt12">(2) In cases where we must provide your personal information pursuant to mandatory law enforcement requirements under laws, regulations, judicial proceedings, or government authorities, we may publicly disclose your personal information in accordance with such requirements.</text>
+			<text class="fs14 mt12">(3) When we receive a request to disclose your personal information based on mandatory law enforcement requirements from laws, regulations, judicial proceedings, or government authorities, we will request the demanding authority to issue reasonable documents to ensure the request has a lawful basis.</text>
+			<text class="fs14 mt12 fw7">3.4 Other Circumstances</text>
+			<text class="fs14 mt12">In the following situations, we may also share, transfer, or publicly disclose your personal information; however, please be aware that such sharing, transferring, or public disclosure does not require your authorized consent:</text>
+			<text class="fs14 mt12">(1) Where necessary for the conclusion or performance of a contract to which you are a party;</text>
+			<text class="fs14 mt12">(2) Where necessary for fulfilling statutory duties or legal obligations;</text>
+			<text class="fs14 mt12">(3) Where necessary to respond to public health emergencies, or to protect the life, health, and property safety of natural persons in emergencies;</text>
+			<text class="fs14 mt12">(4) Processing personal information within a reasonable scope for acts such as news reporting and public opinion supervision carried out in the public interest;</text>
+			<text class="fs14 mt12">(5) Processing personal information that you have voluntarily made public or other legally publicly disclosed personal information within a reasonable scope, in accordance with the Personal Information Protection Law of the People's Republic of China;</text>
+			<text class="fs14 mt12">(6) Other circumstances stipulated by laws and administrative regulations.</text>
+			<text class="fs16 fw7 mt12">4. How We Store and Protect Your Personal Information</text>
+			<text class="fs14 mt12 fw7">4.1 Information Storage Period</text>
+			<text class="fs14 mt12">We will only store your personal information for the period necessary to achieve the purposes described in this Privacy Policy. If you delete your account, voluntarily delete your personal information, or if the information exceeds the necessary storage period, we will delete or anonymize your personal information, unless otherwise required by relevant laws and regulations, or if a reasonable extension of the storage period is necessary for dispute resolution purposes. We primarily determine the storage period for personal information based on the following circumstances:</text>
+			<text class="fs14 mt12">(1) Requirements for tax and financial accounting records;</text>
+			<text class="fs14 mt12">(2) To provide you with products or services, and to respond to your rights requests (such as inquiries and complaints);</text>
+			<text class="fs14 mt12">(3) Needs for potential legal proceedings or arbitration;</text>
+			<text class="fs14 mt12">(4) Special agreements between you and us regarding the storage period of personal information;</text>
+			<text class="fs14 mt12">(5) Special provisions of laws and regulations regarding the storage period of personal information.</text>
+			<text class="fs14 mt12 fw7">4.2 Security Protection Measures</text>
+			<text class="fs14 mt12">We adopt industry-standard measures and technical means to store and protect your personal information to prevent it from being lost, misused, accessed or leaked without authorization, altered, or destroyed. For example, we use network security layer technology (SSL) for encrypted transmission, deploy encryption technologies to ensure data confidentiality, use trusted protection mechanisms to prevent data from malicious attacks, deploy access control mechanisms to ensure only authorized personnel can access personal information, and conduct security and privacy protection training courses to strengthen employees' awareness of the importance of protecting personal information. Although we are committed to protecting your personal information, we cannot guarantee its absolute security. Therefore, you should also take active measures to ensure the security of your personal information, such as changing your account password regularly and not disclosing your account password information to others.</text>
+			<text class="fs14 mt12 fw7">4.3 Security Incident Response Measures</text>
+			<text class="fs14 mt12">If a security incident such as a personal information leak, damage, or loss occurs, we will activate our emergency response plan to prevent the incident from expanding. After a security incident occurs, we will promptly inform you, in accordance with the requirements of laws and regulations, via push notifications, emails, phone calls, or other forms, of the basic situation of the incident, the response and remedial measures we have taken or will take, and our suggestions for your response. If it is difficult to notify users individually, we will issue warnings via public announcements or other means.</text>
+			<text class="fs16 fw7 mt12">5. How You Can Manage Your Personal Information</text>
+			<text class="fs14 mt12">5.1 How to Query, Change, or Request Deletion of Your Personal Information</text>
+			<text class="fs14 mt12">Except as otherwise provided by laws and regulations, you have the right to query your personal information. If you find any errors in your personal information, or if you need to change or verify such information, you can contact us to modify it via the contact methods specified in Section 10 of this Privacy Policy.</text>
+			<text class="fs14 mt12">In accordance with applicable laws and regulations, you can request that we delete the personal information we have collected from you under the following circumstances:</text>
+			<text class="fs14 mt12">(1) The purpose of processing the personal information has been achieved, is impossible to achieve, or is no longer necessary to achieve;</text>
+			<text class="fs14 mt12">(2) MOCO stops providing services, or the retention period has expired;</text>
+			<text class="fs14 mt12">(3) You have withdrawn your consent;</text>
+			<text class="fs14 mt12">(4) MOCO processes your personal information in violation of laws, administrative regulations, or agreements;</text>
+			<text class="fs14 mt12">(5) You delete your account.</text>
+			<text class="fs14 mt12 fw7">5.2 How to Obtain a Copy of Your Personal Information or Exercise Data Portability Rights</text>
+			<text class="fs14 mt12">You have the right to obtain a copy of the personal information we have collected about you, such as your basic personal profile and identity information. If conditions stipulated by relevant laws and regulations are met, you have the right to request that we transfer your personal information to a third party specified by you in accordance with the requirements of applicable laws and regulations.</text>
+			<text class="fs14 mt12 fw7">5.3 How to Withdraw Your Consent or Change the Scope of Authorization</text>
+			<text class="fs14 mt12">You can contact us to withdraw your authorization or change the scope of your authorization regarding your personal information. However, please understand that realizing each business function requires certain basic personal information. Once you withdraw your consent or authorization, we will no longer be able to provide the services corresponding to the withdrawn consent or authorization, nor will we process the corresponding personal information. Your decision to withdraw consent or authorization will not affect the processing of personal information previously conducted based on your authorization.</text>
+			<text class="fs14 mt12 fw7">5.4 How to Delete Your Account</text>
+			<text class="fs14 mt12">You can delete your account within the MOCO AI app, or by entering "Settings" after connecting the glasses to delete your account, or by contacting us to delete your registered account using the contact methods provided in Section 10 of this Privacy Policy. After your account is deleted, unless otherwise required by laws or regulations, we will stop providing relevant services to you and will delete or anonymize your personal information according to your request.</text>
+			<text class="fs14 mt12 fw7">5.5 How to Restrict or Refuse Our Processing of Your Personal Information</text>
+			<text class="fs14 mt12">You can request that we stop or restrict our processing of your personal information, unless our processing of your personal information is necessary to provide you with services or is required by applicable laws and regulations.</text>
+			<text class="fs14 mt12 fw7">5.6 How to Exercise Your Above Rights</text>
+			<text class="fs14 mt12">If you wish to exercise the aforementioned rights, please contact us using the contact methods specified in Section 10 of this Privacy Policy. Unless otherwise provided by laws or administrative regulations, we will respond to your rights request as soon as possible.</text>
+			<text class="fs16 fw7 mt12">6. How We Use Cookies and Similar Technologies</text>
+			<text class="fs14 mt12">We and our third-party service providers use technologies such as cookies, tags, and scripts. These technologies are used to analyze trends, administer the website, track users' movements around the site, and gather demographic information about our user base as a whole. We may receive individual and aggregated reports based on the use of these technologies by these companies. Log files: We collect certain information and store it in log files. This information may include Internet Protocol (IP) addresses, browser type, Internet Service Provider (ISP), referring/exit pages, operating system, date/time stamp, and clickstream data. We will not link this automatically-collected data to other information we collect about you.</text>
+			<text class="fs16 fw7 mt12">7. How We Transfer Your Personal Information Globally</text>
+			<text class="fs14 mt12">Personal information collected and generated by us within the territory of the People's Republic of China will be stored within the territory of the People's Republic of China. If our services change in the future and require your personal information to be transmitted to other countries or regions, we will inform you of the types of personal information to be exported, the purpose and method of the export, the name and contact information of the overseas recipient, and the methods and procedures by which you can exercise your rights against the recipient. We will fulfill corresponding compliance obligations and obtain your separate consent as required by laws and regulations, unless otherwise stipulated by law.</text>
+			<text class="fs16 fw7 mt12">8. Children's Privacy Protection</text>
+			<text class="fs14 mt12">Our products and services are exclusively provided to adults aged eighteen and above who possess full capacity for civil rights and civil conduct. Natural persons under the age of eighteen or lacking full capacity for civil rights and civil conduct should not use our products and services.</text>
+			<text class="fs14 mt12">However, we must remind you that in most scenarios of MOCO AI products and services, because "age" and "date of birth" are not required information, we cannot accurately identify your age if you do not provide this information. If we discover that we have collected personal information from a minor without obtaining the consent of their legal guardian, please contact us via the contact methods specified in Section 10 of this Privacy Policy, and we will handle the relevant personal information in accordance with the law after verifying your identity and the facts.</text>
+			<text class="fs16 fw7 mt12">9. How We Modify and Update This Privacy Policy</text>
+			<text class="fs14 mt12">This Privacy Policy takes effect from the effective date displayed below the title. We reserve the right to modify this Privacy Policy at any time. All modifications to this Privacy Policy will take effect immediately after the latest version is published on MOCO AI. Please be sure to regularly check this Privacy Policy to ensure you are aware of the latest version. When major changes occur to the terms of this Privacy Policy, we will notify you of the updated policy via push notifications, pop-up windows, or other appropriate forms required by laws and regulations when you log into the MOCO AI app. You can also check the effective date of this Privacy Policy to confirm whether any new modifications have been released since your last use of MOCO AI. However, if you do not agree with our modifications to this Privacy Policy, please stop using MOCO AI after such notices are published on MOCO AI.</text>
+			<text class="fs14 mt12">The path to view this Privacy Policy in MOCO AI is:</text>
+			<text class="fs14 mt12">Path 1: Open the MOCO AI app - Click "Me" - Click "About" - Click "Privacy Policy".</text>
+			<text class="fs16 fw7 mt12">10. How to Contact Us</text>
+			<text class="fs14 mt12">We take privacy protection very seriously and actively protect your rights during personal information processing activities. If you wish to exercise your aforementioned personal data subject rights, or if you have any questions or suggestions regarding this Privacy Policy/our privacy practices, you can contact us in the following ways:</text>
+			<text class="fs14 mt12">Responsible Department: [MOCO User Privacy Protection Group]</text>
+			<text class="fs14 mt12">Email: [support@mocoviso.com]</text>
+			<text class="fs14 mt12">Address: 5th Floor, South Building 2, No. 328 Wankang Road, Minhang District, Shanghai</text>
+			<text class="fs14 mt12">To ensure your account security, we may require you to provide a written request, and we may also ask you to provide relevant information to verify your identity before processing your request and/or complaint. Under normal circumstances, we will reply within fifteen (15) working days.</text>
+			<text class="fs14 mt12"></text>
+		</scroll-view>
+	</view>
+</template>
+
+<script>
+	export default {
+		data () {
+			return{
+				lang:true,
+			}
+		},
+		onLoad() {
+			if(this.$locale.value == 'en-US'){
+				this.lang = false;
+			}
+		}
+	}
+</script>
+
+<style>
+	.w1{
+		width: 132rpx;
+		border-top: 1rpx solid #000;
+		border-left: 1rpx solid #000;
+		padding: 10rpx 0;
+	}
+	.w2{
+		width: 180rpx;
+		border-top: 1rpx solid #000;
+		border-left: 1rpx solid #000;
+		padding: 10rpx 0;
+	}
+	.table{
+		border-bottom: 1rpx solid #000;
+		border-right: 1rpx solid #000;
+		margin: 24rpx auto 0;
+		width: 672rpx;
+	}
+</style>

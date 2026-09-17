@@ -1,24 +1,27 @@
-//
-//  ContentView.swift
-//  AIGlass
-//
-//  Created by 贺强 on 2026/6/28.
-//
-
 import SwiftUI
 
 struct ContentView: View {
+    @EnvironmentObject private var authSession: AuthSession
+    @ObservedObject private var languageManager = AppLanguageManager.shared
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        ZStack {
+            Group {
+                if authSession.isLoggedIn {
+                    MainTabView()
+                } else {
+                    LoginView()
+                        .id(languageManager.refreshID)
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: authSession.isLoggedIn)
+
         }
-        .padding()
     }
 }
 
 #Preview {
     ContentView()
+        .environmentObject(AuthSession())
+        .environmentObject(PairingCoordinator())
 }

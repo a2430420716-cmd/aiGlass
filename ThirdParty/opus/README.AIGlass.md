@@ -1,0 +1,1 @@
+libopus 1.5.2 (BSD). Decode-only sources for AI voice BLE frames → PCM → M4A (align Android AiVoiceM4aConverter). Symlinks: AIGlass/Vendor/OpusDecode/Sources/. Do not unity-build (breaks OPUS_CUSTOM header guards).

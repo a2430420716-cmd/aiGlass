@@ -1,0 +1,778 @@
+@preconcurrency import AVFoundation
+import Combine
+import Foundation
+
+struct ConversationTranslationMessage: Identifiable, Equatable {
+    enum Side {
+        case glasses
+        case phone
+    }
+
+    let id: UUID
+    let side: Side
+    let sourceLanguage: String
+    let targetLanguage: String
+    var sourceText: String
+    var translatedText: String
+    var speechData: Data?
+    var hasSpeech: Bool
+}
+
+/// 对话翻译控制器：对齐安卓 `ConversationTranslationActivity`。
+@MainActor
+final class ConversationTranslationController: ObservableObject {
+    enum RecordingSide {
+        case glasses
+        case phone
+    }
+
+    @Published var glassesLanguage = "中文"
+    @Published var phoneLanguage = "英文"
+    @Published private(set) var messages: [ConversationTranslationMessage] = []
+    @Published private(set) var glassesRecording = false
+    @Published private(set) var glassesConnecting = false
+    @Published private(set) var phoneRecording = false
+    @Published private(set) var waitingPhoneSocketReady = false
+    @Published private(set) var statusText = L10n.t("点击下方按钮开始录音", "Tap a button below to start recording")
+    @Published var alertMessage: String?
+
+    var glassesActive: Bool { glassesRecording || glassesConnecting }
+    var phoneActive: Bool { phoneRecording || waitingPhoneSocketReady }
+
+    private weak var ble: AstraA1BleManager?
+    private var manager: RealtimeTranslationManager?
+    private var token = ""
+    private var audioEngine: AVAudioEngine?
+    private var converter: AVAudioConverter?
+
+    private var activeSide: RecordingSide?
+    private var currentTurnSide: RecordingSide?
+    private var currentMessageID: UUID?
+    private var sourceSegments: [String] = []
+    private var targetSegments: [String] = []
+    private var latestTranscript = ""
+    private var latestTranslation = ""
+    private var lastBackendErrorMessage = ""
+
+    private let conversationID = UUID()
+    private var glassesStartTask: Task<Void, Never>?
+    private var phoneAutoStopTask: Task<Void, Never>?
+    private var processingStatusTask: Task<Void, Never>?
+
+    private let phoneRecordMaxNs: UInt64 = 60_000_000_000
+    private let glassesStartTimeoutNs: UInt64 = 3_000_000_000
+    private let processingFallbackNs: UInt64 = 8_000_000_000
+
+    func start(ble: AstraA1BleManager, token: String?) {
+        self.ble = ble
+        self.token = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // 对话翻译占用 trslatedat；暂停 AI 连续语音，避免抢同一麦克风链路。
+        if AIVoiceChatManager.shared.isEnabled {
+            _ = AIVoiceChatManager.shared.stop()
+        }
+        AIVoiceChatManager.shared.setVoiceChatCaptureEnabled(false)
+        ble.translationVoiceNotifyHandler = { [weak self] command, packet in
+            Task { @MainActor in
+                self?.handleGlassesNotify(command: command, packet: packet)
+            }
+        }
+        statusText = L10n.t("点击下方按钮开始录音", "Tap a button below to start recording")
+    }
+
+    func stop() {
+        persistConversation()
+        stopAllRecording(resetSocket: true)
+        ble?.translationVoiceNotifyHandler = nil
+        AIVoiceChatManager.shared.setVoiceChatCaptureEnabled(true)
+    }
+
+    func swapLanguages() {
+        guard !glassesActive, !phoneActive else { return }
+        (glassesLanguage, phoneLanguage) = (phoneLanguage, glassesLanguage)
+    }
+
+    func updateGlassesLanguage(_ language: String) {
+        guard !glassesActive, !phoneActive else { return }
+        glassesLanguage = language
+        if sameLanguage(glassesLanguage, phoneLanguage) {
+            phoneLanguage = TranslationLanguage.fallback(excluding: language)
+        }
+    }
+
+    func updatePhoneLanguage(_ language: String) {
+        guard !glassesActive, !phoneActive else { return }
+        phoneLanguage = language
+        if sameLanguage(glassesLanguage, phoneLanguage) {
+            glassesLanguage = TranslationLanguage.fallback(excluding: language)
+        }
+    }
+
+    func toggleGlassesRecording() {
+        // 连接中再点一次：取消开麦。
+        if glassesConnecting, !glassesRecording {
+            glassesConnecting = false
+            cancelGlassesStartTimeout()
+            _ = ble?.stopTranslateRecording()
+            manager?.markLocalRecordingStopped(reason: "conversation glasses start cancelled")
+            manager?.finish()
+            manager?.close()
+            activeSide = nil
+            statusText = L10n.t("点击下方按钮开始录音", "Tap a button below to start recording")
+            return
+        }
+        if glassesRecording {
+            let sent = ble?.stopTranslateRecording() ?? false
+            print("[ConversationTranslation] stop translate record sent=\(sent)")
+            manager?.markLocalRecordingStopped(reason: "conversation glasses manual stop")
+            manager?.finish()
+            glassesRecording = false
+            enterProcessingStatus(reason: "glasses manual stop")
+            return
+        }
+        if phoneActive {
+            stopPhoneRecording()
+        }
+        guard ble?.isReady == true else {
+            alertMessage = L10n.t("请先连接眼镜", "Please connect glasses first")
+            return
+        }
+        guard !token.isEmpty else {
+            alertMessage = L10n.t("未登录，无法使用对话翻译", "Not signed in, cannot use conversation translation")
+            return
+        }
+        activeSide = .glasses
+        beginTranslationTurn()
+        glassesConnecting = true
+        statusText = L10n.t("正在连接翻译服务…", "Connecting to translation service…")
+        connectManager(
+            source: glassesLanguage,
+            target: phoneLanguage
+        )
+    }
+
+    func togglePhoneRecording() {
+        if phoneActive {
+            stopPhoneRecording()
+            return
+        }
+        if glassesActive {
+            _ = ble?.stopTranslateRecording()
+            cancelGlassesStartTimeout()
+            manager?.markLocalRecordingStopped(reason: "conversation switch from glasses to phone")
+            manager?.finish()
+            glassesConnecting = false
+            glassesRecording = false
+        }
+        Task {
+            guard await requestMicrophonePermission() else {
+                alertMessage = L10n.t("请开启麦克风权限后重试", "Enable microphone access and try again")
+                statusText = L10n.t("请开启麦克风权限后重试", "Enable microphone access and try again")
+                return
+            }
+            startPhoneRecording()
+        }
+    }
+
+    func replay(_ message: ConversationTranslationMessage) {
+        guard let data = message.speechData, !data.isEmpty else { return }
+        let played: Bool
+        if message.side == .glasses {
+            played = manager?.replaySpeechOnPhone(data) ?? false
+        } else {
+            played = manager?.replaySpeechOnGlasses(data) ?? false
+        }
+        statusText = played ? L10n.t("正在播放译文语音…", "Playing translation audio…") : L10n.t("眼镜音频不可用", "Glasses audio unavailable")
+    }
+
+    // MARK: - Turn lifecycle
+
+    private func beginTranslationTurn() {
+        cancelProcessingStatusFallback()
+        manager?.resetSpeechPlaybackForTurn()
+        latestTranscript = ""
+        latestTranslation = ""
+        lastBackendErrorMessage = ""
+        currentMessageID = nil
+        sourceSegments.removeAll()
+        targetSegments.removeAll()
+        currentTurnSide = activeSide
+    }
+
+    private func connectManager(source: String, target: String) {
+        let next = RealtimeTranslationManager(callback: self)
+        manager?.close()
+        manager = next
+        next.setSpeechPlaybackEnabled(true)
+        next.setAutoPlayIncomingSpeech(false)
+        next.connect(
+            sourceLanguage: TranslationLanguage.code(forDisplayName: source),
+            targetLanguage: TranslationLanguage.code(forDisplayName: target),
+            token: token
+        )
+    }
+
+    private func startGlassesCommand() {
+        guard ble?.startTranslateRecording() == true else {
+            activeSide = nil
+            glassesConnecting = false
+            statusText = L10n.t("眼镜录音开启失败", "Failed to start glasses recording")
+            alertMessage = ble?.mediaActionAlertMessage ?? statusText
+            return
+        }
+        scheduleGlassesStartTimeout()
+        statusText = L10n.t("正在开启眼镜麦克风…", "Enabling glasses mic…")
+    }
+
+    private func startPhoneRecording() {
+        guard !token.isEmpty else {
+            alertMessage = L10n.t("未登录，无法使用对话翻译", "Not signed in, cannot use conversation translation")
+            return
+        }
+        activeSide = .phone
+        beginTranslationTurn()
+        waitingPhoneSocketReady = true
+        statusText = L10n.t("正在连接翻译服务…", "Connecting to translation service…")
+        // 手机侧：源/目标语言对调（安卓 connect(target, source)）。
+        connectManager(source: phoneLanguage, target: glassesLanguage)
+    }
+
+    private func beginPhoneAudioRecord() {
+        guard manager?.markLocalRecordingStarted() == true else {
+            waitingPhoneSocketReady = false
+            phoneRecording = false
+            statusText = L10n.t("正在连接翻译服务…", "Connecting to translation service…")
+            print("[ConversationTranslation] phone record start blocked by input gate")
+            return
+        }
+        waitingPhoneSocketReady = false
+        phoneRecording = true
+        statusText = L10n.t("正在录音…", "Recording…")
+        schedulePhoneAutoStop()
+        do {
+            try GlassesAudioRouteController.activate(.playAndRecord)
+            try AVAudioSession.sharedInstance().setPreferredSampleRate(16_000)
+            let engine = AVAudioEngine()
+            let input = engine.inputNode
+            let inputFormat = input.outputFormat(forBus: 0)
+            guard let targetFormat = AVAudioFormat(
+                commonFormat: .pcmFormatInt16,
+                sampleRate: 16_000,
+                channels: 1,
+                interleaved: true
+            ) else {
+                throw NSError(domain: "ConversationTranslation", code: 1)
+            }
+            converter = AVAudioConverter(from: inputFormat, to: targetFormat)
+            audioEngine = engine
+            input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+                self?.consumePhoneBuffer(buffer, targetFormat: targetFormat)
+            }
+            try engine.start()
+        } catch {
+            phoneRecording = false
+            manager?.markLocalRecordingStopped(reason: "phone audio start failed")
+            alertMessage = error.localizedDescription
+            statusText = error.localizedDescription
+        }
+    }
+
+    private func consumePhoneBuffer(_ buffer: AVAudioPCMBuffer, targetFormat: AVAudioFormat) {
+        guard phoneRecording, let converter, manager?.canSendAudio() == true else { return }
+        let capacity = AVAudioFrameCount(
+            Double(buffer.frameLength) * targetFormat.sampleRate / max(buffer.format.sampleRate, 1)
+        ) + 32
+        guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
+        var error: NSError?
+        var supplied = false
+        converter.convert(to: converted, error: &error) { _, status in
+            if supplied {
+                status.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
+            status.pointee = .haveData
+            return buffer
+        }
+        guard error == nil, converted.frameLength > 0, let samples = converted.int16ChannelData?[0] else { return }
+        let pcm = Data(bytes: samples, count: Int(converted.frameLength) * MemoryLayout<Int16>.size)
+        Task { @MainActor [weak self] in
+            guard let self, self.phoneRecording, self.manager?.canSendAudio() == true else { return }
+            _ = self.manager?.sendPCM(pcm)
+        }
+    }
+
+    private func stopPhoneRecording() {
+        guard phoneRecording || waitingPhoneSocketReady else { return }
+        phoneAutoStopTask?.cancel()
+        phoneAutoStopTask = nil
+        waitingPhoneSocketReady = false
+        phoneRecording = false
+        stopPhoneAudio()
+        manager?.markLocalRecordingStopped(reason: "conversation phone stop")
+        manager?.finish()
+        enterProcessingStatus(reason: "phone stop")
+    }
+
+    private func stopPhoneAudio() {
+        if let engine = audioEngine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
+        audioEngine = nil
+        converter = nil
+    }
+
+    private func stopAllRecording(resetSocket: Bool) {
+        glassesConnecting = false
+        waitingPhoneSocketReady = false
+        cancelProcessingStatusFallback()
+        cancelGlassesStartTimeout()
+        phoneAutoStopTask?.cancel()
+        phoneAutoStopTask = nil
+        if glassesRecording || activeSide == .glasses {
+            manager?.markLocalRecordingStopped(reason: "conversation stopAll glasses")
+            _ = ble?.stopTranslateRecording()
+        }
+        if phoneRecording {
+            manager?.markLocalRecordingStopped(reason: "conversation stopAll phone")
+            phoneRecording = false
+            stopPhoneAudio()
+        }
+        glassesRecording = false
+        if resetSocket {
+            manager?.close()
+            manager = nil
+        }
+        activeSide = nil
+    }
+
+    // MARK: - Glasses BLE
+
+    private func handleGlassesNotify(command: String, packet: Data) {
+        guard activeSide == .glasses else { return }
+        switch command {
+        case "trslatests":
+            guard let status = AstraA1BleProtocol.parseTranslateRecordStatus(packet) else { return }
+            print("[ConversationTranslation] translate status=\(status)")
+            switch status {
+            case 1:
+                cancelGlassesStartTimeout()
+                guard manager?.markLocalRecordingStarted() == true else {
+                    print("[ConversationTranslation] translate status=1 but input gate closed")
+                    _ = ble?.stopTranslateRecording()
+                    glassesConnecting = false
+                    glassesRecording = false
+                    return
+                }
+                glassesConnecting = false
+                glassesRecording = true
+                statusText = L10n.t("正在录音…", "Recording…")
+            case 0, 2:
+                cancelGlassesStartTimeout()
+                glassesConnecting = false
+                glassesRecording = false
+                manager?.markLocalRecordingStopped(reason: "conversation translate status=\(status)")
+                manager?.finish()
+                enterProcessingStatus(reason: "translate status=\(status)")
+            default:
+                break
+            }
+        case "trslatedat":
+            guard isGlassesStreamingActive(), manager?.canSendAudio() == true else { return }
+            let frames = AstraA1BleProtocol.parseTranslateRecordFrames(packet)
+            guard !frames.isEmpty else { return }
+            guard let pcm = try? AIVoiceM4aConverter.decodeOpusFramesToPCM(frames) else { return }
+            guard isGlassesStreamingActive(), manager?.canSendAudio() == true else { return }
+            _ = manager?.sendPCM(pcm)
+        default:
+            break
+        }
+    }
+
+    private func isGlassesStreamingActive() -> Bool {
+        activeSide == .glasses && glassesRecording
+    }
+
+    private func scheduleGlassesStartTimeout() {
+        cancelGlassesStartTimeout()
+        glassesStartTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: self?.glassesStartTimeoutNs ?? 3_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            guard self.glassesConnecting, !self.glassesRecording, self.activeSide == .glasses else { return }
+            print("[ConversationTranslation] translate start timeout")
+            _ = self.ble?.stopTranslateRecording()
+            self.manager?.markLocalRecordingStopped(reason: "conversation translate start timeout")
+            self.manager?.finish()
+            self.glassesConnecting = false
+            self.activeSide = nil
+            self.statusText = L10n.t("眼镜录音开启失败", "Failed to start glasses recording")
+        }
+    }
+
+    private func cancelGlassesStartTimeout() {
+        glassesStartTask?.cancel()
+        glassesStartTask = nil
+    }
+
+    private func schedulePhoneAutoStop() {
+        phoneAutoStopTask?.cancel()
+        phoneAutoStopTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: self?.phoneRecordMaxNs ?? 60_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            if self.phoneRecording || self.waitingPhoneSocketReady {
+                self.stopPhoneRecording()
+            }
+        }
+    }
+
+    // MARK: - Status / text
+
+    private func enterProcessingStatus(reason: String) {
+        statusText = L10n.t("正在处理翻译…", "Processing translation…")
+        scheduleProcessingStatusFallback(reason: reason)
+    }
+
+    private func scheduleProcessingStatusFallback(reason: String) {
+        cancelProcessingStatusFallback()
+        processingStatusTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: self?.processingFallbackNs ?? 8_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.settleProcessingStatus(reason: "fallback after \(reason)")
+        }
+    }
+
+    private func cancelProcessingStatusFallback() {
+        processingStatusTask?.cancel()
+        processingStatusTask = nil
+    }
+
+    private func settleProcessingStatus(reason: String) {
+        cancelProcessingStatusFallback()
+        if !lastBackendErrorMessage.isEmpty {
+            statusText = lastBackendErrorMessage
+            return
+        }
+        if glassesConnecting || glassesRecording || waitingPhoneSocketReady || phoneRecording {
+            return
+        }
+        let hasResult = !latestTranslation.isEmpty || !latestTranscript.isEmpty
+        statusText = hasResult ? L10n.t("翻译结果已更新", "Translation updated") : L10n.t("点击下方按钮开始录音", "Tap a button below to start recording")
+        print("[ConversationTranslation] processing settled reason=\(reason) hasResult=\(hasResult)")
+    }
+
+    private func appendSource(_ text: String) {
+        cancelProcessingStatusFallback()
+        let full = appendIncrementalText(
+            segments: &sourceSegments,
+            text: text,
+            language: expectedSourceLanguageCode()
+        )
+        guard !full.isEmpty else { return }
+        latestTranscript = full
+        upsertMessage(sourceText: full, translatedText: nil, speech: nil, hasSpeech: nil)
+        statusText = full
+    }
+
+    private func appendTranslation(_ text: String) {
+        cancelProcessingStatusFallback()
+        let full = appendIncrementalText(
+            segments: &targetSegments,
+            text: text,
+            language: expectedTargetLanguageCode()
+        )
+        guard !full.isEmpty else { return }
+        latestTranslation = full
+        upsertMessage(sourceText: nil, translatedText: full, speech: nil, hasSpeech: nil)
+        statusText = L10n.t("翻译结果已更新", "Translation updated")
+    }
+
+    private func expectedSourceLanguageCode() -> String {
+        TranslationLanguage.code(
+            forDisplayName: activeSide == .phone ? phoneLanguage : glassesLanguage
+        )
+    }
+
+    private func expectedTargetLanguageCode() -> String {
+        TranslationLanguage.code(
+            forDisplayName: activeSide == .phone ? glassesLanguage : phoneLanguage
+        )
+    }
+
+    private func upsertMessage(
+        sourceText: String?,
+        translatedText: String?,
+        speech: Data?,
+        hasSpeech: Bool?
+    ) {
+        guard let side = activeSide ?? currentTurnSide else { return }
+        if let id = currentMessageID, let index = messages.firstIndex(where: { $0.id == id }) {
+            if let sourceText { messages[index].sourceText = sourceText }
+            if let translatedText { messages[index].translatedText = translatedText }
+            if let speech {
+                if let existing = messages[index].speechData {
+                    messages[index].speechData = existing + speech
+                } else {
+                    messages[index].speechData = speech
+                }
+            }
+            if let hasSpeech { messages[index].hasSpeech = hasSpeech }
+            persistConversation()
+            return
+        }
+        let id = UUID()
+        currentMessageID = id
+        let source = side == .glasses ? glassesLanguage : phoneLanguage
+        let target = side == .glasses ? phoneLanguage : glassesLanguage
+        messages.append(
+            ConversationTranslationMessage(
+                id: id,
+                side: side == .glasses ? .glasses : .phone,
+                sourceLanguage: source,
+                targetLanguage: target,
+                sourceText: sourceText ?? (latestTranscript.isEmpty ? L10n.t("正在识别…", "Recognizing…") : latestTranscript),
+                translatedText: translatedText ?? "",
+                speechData: speech,
+                hasSpeech: hasSpeech ?? (speech != nil)
+            )
+        )
+        persistConversation()
+    }
+
+    private func persistConversation() {
+        let history = messages.compactMap { message -> ConversationTranslationHistoryMessage? in
+            let source = message.sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let translated = message.translatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !translated.isEmpty || (!source.isEmpty && source != L10n.t("正在识别…", "Recognizing…")) else { return nil }
+            return ConversationTranslationHistoryMessage(
+                id: message.id,
+                side: message.side == .glasses ? "glasses" : "phone",
+                sourceLanguage: message.sourceLanguage,
+                targetLanguage: message.targetLanguage,
+                sourceText: source == L10n.t("正在识别…", "Recognizing…") ? "" : source,
+                translatedText: translated
+            )
+        }
+        ConversationTranslationRecordStore.saveOrUpdate(
+            id: conversationID,
+            glassesLanguage: glassesLanguage,
+            phoneLanguage: phoneLanguage,
+            messages: history
+        )
+    }
+
+    // MARK: - Incremental text (align Android)
+
+    private func appendIncrementalText(
+        segments: inout [String],
+        text: String,
+        language: String
+    ) -> String {
+        let segment = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if segment.isEmpty { return segments.joined(separator: "\n") }
+        if !matchesLanguage(segment, language: language) {
+            return segments.joined(separator: "\n")
+        }
+        let normalizedSegment = normalizeForCompare(segment)
+        let current = segments.joined(separator: "\n")
+        let normalizedCurrent = normalizeForCompare(current)
+        if segments.contains(where: { normalizeForCompare($0) == normalizedSegment })
+            || normalizedCurrent.contains(normalizedSegment) {
+            return current
+        }
+        if !current.isEmpty, normalizedSegment.contains(normalizedCurrent) {
+            segments = [segment]
+            return segment
+        }
+        if let containedIndex = segments.firstIndex(where: {
+            let existing = normalizeForCompare($0)
+            return !existing.isEmpty && normalizedSegment.contains(existing)
+        }) {
+            segments[containedIndex] = segment
+            removeContainedSegments(&segments)
+            return segments.joined(separator: "\n")
+        }
+        if let last = segments.last {
+            let normalizedLast = normalizeForCompare(last)
+            if normalizedSegment.contains(normalizedLast) {
+                segments[segments.count - 1] = segment
+                return segments.joined(separator: "\n")
+            }
+            if normalizedLast.contains(normalizedSegment) {
+                return current
+            }
+            let overlap = findOverlapLength(normalizedLast, normalizedSegment)
+            if overlap >= 2 {
+                segments[segments.count - 1] = last + dropNormalizedPrefix(segment, count: overlap)
+                removeContainedSegments(&segments)
+                return segments.joined(separator: "\n")
+            }
+        }
+        segments.append(segment)
+        removeContainedSegments(&segments)
+        return segments.joined(separator: "\n")
+    }
+
+    private func removeContainedSegments(_ segments: inout [String]) {
+        let snapshot = segments
+        segments = snapshot.filter { value in
+            let normalized = normalizeForCompare(value)
+            guard !normalized.isEmpty else { return false }
+            return !snapshot.contains { other in
+                other != value
+                    && normalizeForCompare(other).count > normalized.count
+                    && normalizeForCompare(other).contains(normalized)
+            }
+        }
+    }
+
+    private func findOverlapLength(_ previous: String, _ next: String) -> Int {
+        let maxLen = min(previous.count, next.count)
+        guard maxLen >= 2 else { return 0 }
+        for length in stride(from: maxLen, through: 2, by: -1) {
+            if previous.suffix(length) == next.prefix(length) {
+                return length
+            }
+        }
+        return 0
+    }
+
+    private func dropNormalizedPrefix(_ text: String, count: Int) -> String {
+        var dropped = 0
+        var index = text.startIndex
+        while index < text.endIndex, dropped < count {
+            if !isIgnoredForCompare(text[index]) {
+                dropped += 1
+            }
+            index = text.index(after: index)
+        }
+        return String(text[index...])
+    }
+
+    private func normalizeForCompare(_ text: String) -> String {
+        text.lowercased().filter { !isIgnoredForCompare($0) }
+    }
+
+    private func isIgnoredForCompare(_ char: Character) -> Bool {
+        if char.isWhitespace { return true }
+        guard let value = char.unicodeScalars.first?.value else { return false }
+        return (0x0021...0x002F).contains(value)
+            || (0x003A...0x0040).contains(value)
+            || (0x005B...0x0060).contains(value)
+            || (0x007B...0x007E).contains(value)
+            || (0x3000...0x303F).contains(value)
+            || (0xFF00...0xFFEF).contains(value)
+    }
+
+    private func matchesLanguage(_ text: String, language: String) -> Bool {
+        let hasChinese = text.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }
+        let hasAsciiLetter = text.contains { ("A"..."Z").contains($0) || ("a"..."z").contains($0) }
+        switch language {
+        case "zh": return hasChinese || !hasAsciiLetter
+        case "en": return hasAsciiLetter || !hasChinese
+        default: return true
+        }
+    }
+
+    private func sameLanguage(_ lhs: String, _ rhs: String) -> Bool {
+        TranslationLanguage.code(forDisplayName: lhs)
+            == TranslationLanguage.code(forDisplayName: rhs)
+    }
+
+    private func requestMicrophonePermission() async -> Bool {
+        await withCheckedContinuation { continuation in
+            if #available(iOS 17.0, *) {
+                AVAudioApplication.requestRecordPermission { continuation.resume(returning: $0) }
+            } else {
+                AVAudioSession.sharedInstance().requestRecordPermission { continuation.resume(returning: $0) }
+            }
+        }
+    }
+}
+
+extension ConversationTranslationController: RealtimeTranslationManager.Callback {
+    nonisolated func onReady() {
+        Task { @MainActor in
+            statusText = L10n.t("翻译服务已就绪", "Translation service ready")
+            if activeSide == .glasses, !glassesRecording {
+                glassesConnecting = true
+                startGlassesCommand()
+            } else if activeSide == .phone, waitingPhoneSocketReady {
+                beginPhoneAudioRecord()
+            }
+        }
+    }
+
+    nonisolated func onTaskStarted() {
+        Task { @MainActor in statusText = L10n.t("翻译任务已开始", "Translation task started") }
+    }
+
+    nonisolated func onTranscript(_ text: String) {
+        Task { @MainActor in appendSource(text) }
+    }
+
+    nonisolated func onTranscriptCompleted(_ text: String) {
+        Task { @MainActor in
+            appendSource(text)
+            enterProcessingStatus(reason: "transcript completed")
+        }
+    }
+
+    nonisolated func onTranslation(_ text: String) {
+        Task { @MainActor in appendTranslation(text) }
+    }
+
+    nonisolated func onTranslationFinal(_ text: String) {
+        Task { @MainActor in appendTranslation(text) }
+    }
+
+    nonisolated func onTranslationCompleted() {
+        Task { @MainActor in settleProcessingStatus(reason: "translation completed") }
+    }
+
+    nonisolated func onSpeech(_ data: Data) {
+        Task { @MainActor in
+            cancelProcessingStatusFallback()
+            let side = activeSide ?? currentTurnSide
+            if side == .glasses {
+                manager?.playSpeechOnPhone(data)
+                statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
+            } else if side == .phone {
+                let routed = manager?.playSpeechOnGlasses(data) ?? false
+                statusText = routed ? L10n.t("正在播放译文语音…", "Playing translation audio…") : L10n.t("眼镜音频不可用", "Glasses audio unavailable")
+            }
+            upsertMessage(sourceText: nil, translatedText: nil, speech: data, hasSpeech: true)
+        }
+    }
+
+    nonisolated func onRecoverableError(_ message: String) {
+        Task { @MainActor in
+            statusText = message.isEmpty ? L10n.t("正在处理上一句翻译…", "Processing previous translation…") : message
+        }
+    }
+
+    nonisolated func onError(_ message: String) {
+        Task { @MainActor in
+            cancelProcessingStatusFallback()
+            lastBackendErrorMessage = message.isEmpty ? L10n.t("翻译服务异常", "Translation service error") : message
+            glassesConnecting = false
+            waitingPhoneSocketReady = false
+            stopAllRecording(resetSocket: false)
+            statusText = lastBackendErrorMessage
+            alertMessage = lastBackendErrorMessage
+        }
+    }
+
+    nonisolated func onClosed() {
+        Task { @MainActor in
+            if !lastBackendErrorMessage.isEmpty {
+                statusText = lastBackendErrorMessage
+                return
+            }
+            if statusText == L10n.t("正在处理翻译…", "Processing translation…") {
+                settleProcessingStatus(reason: "socket closed")
+            } else if !glassesRecording, !phoneRecording, latestTranslation.isEmpty, latestTranscript.isEmpty {
+                statusText = L10n.t("点击下方按钮开始录音", "Tap a button below to start recording")
+            }
+        }
+    }
+}

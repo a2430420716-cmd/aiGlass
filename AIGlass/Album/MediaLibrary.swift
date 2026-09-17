@@ -1,0 +1,264 @@
+import AVFoundation
+import Combine
+import Foundation
+import UIKit
+
+struct StoredMediaItem: Identifiable, Codable, Equatable {
+    let id: UUID
+    let fileName: String
+    let isVideo: Bool
+    let createdAt: Date
+    var isFavorite: Bool
+    let durationSeconds: Double?
+
+    var originalFileName: String { "\(id.uuidString)_\(fileName)" }
+    var thumbnailFileName: String { "\(id.uuidString)_thumb.jpg" }
+}
+
+@MainActor
+final class MediaLibrary: ObservableObject {
+    static let shared = MediaLibrary()
+
+    @Published private(set) var items: [StoredMediaItem] = []
+
+    private let manifestName = "manifest.json"
+    private let fileManager = FileManager.default
+
+    private var rootURL: URL {
+        let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return docs.appendingPathComponent("Album", isDirectory: true)
+    }
+
+    private var originalsURL: URL { rootURL.appendingPathComponent("originals", isDirectory: true) }
+    private var thumbnailsURL: URL { rootURL.appendingPathComponent("thumbnails", isDirectory: true) }
+    private var manifestURL: URL { rootURL.appendingPathComponent(manifestName) }
+
+    private init() {
+        ensureDirectories()
+        loadManifest()
+    }
+
+    func originalURL(for item: StoredMediaItem) -> URL {
+        originalsURL.appendingPathComponent(item.originalFileName)
+    }
+
+    func thumbnailURL(for item: StoredMediaItem) -> URL {
+        thumbnailsURL.appendingPathComponent(item.thumbnailFileName)
+    }
+
+    func sections(filter: AlbumFilter) -> [AlbumSection] {
+        let calendar = Calendar.current
+        let filtered = items.filter { item in
+            switch filter {
+            case .all: return true
+            case .photos: return !item.isVideo
+            case .videos: return item.isVideo
+            }
+        }
+
+        let todayLabel = L10n.t("今天", "Today")
+        let yesterdayLabel = L10n.t("昨天", "Yesterday")
+        let grouped = Dictionary(grouping: filtered) { item -> String in
+            if calendar.isDateInToday(item.createdAt) { return todayLabel }
+            if calendar.isDateInYesterday(item.createdAt) { return yesterdayLabel }
+            let formatter = DateFormatter()
+            if AppLanguageManager.shared.usesEnglish {
+                formatter.locale = Locale(identifier: "en_US")
+                formatter.dateFormat = "MMM d"
+            } else {
+                formatter.locale = Locale(identifier: "zh_CN")
+                formatter.dateFormat = "M月d日"
+            }
+            return formatter.string(from: item.createdAt)
+        }
+
+        return grouped.keys.sorted { lhs, rhs in
+            let order = [todayLabel: 0, yesterdayLabel: 1]
+            let l = order[lhs] ?? 2
+            let r = order[rhs] ?? 2
+            if l != r { return l < r }
+            return lhs > rhs
+        }.compactMap { title in
+            guard let list = grouped[title], !list.isEmpty else { return nil }
+            let sorted = list.sorted { $0.createdAt > $1.createdAt }
+            return AlbumSection(title: title, items: sorted)
+        }
+    }
+
+    @discardableResult
+    func importOriginal(data: Data, fileName: String) async throws -> StoredMediaItem {
+        ensureDirectories()
+        let id = UUID()
+        let isVideo = Self.isVideoFile(fileName)
+        let item = StoredMediaItem(
+            id: id,
+            fileName: fileName,
+            isVideo: isVideo,
+            createdAt: Date(),
+            isFavorite: false,
+            durationSeconds: nil
+        )
+
+        let originalURL = originalURL(for: item)
+        if isVideo {
+            let tempURL = originalsURL.appendingPathComponent("tmp_\(id.uuidString)_\(fileName)")
+            let stabilizedURL = originalsURL.appendingPathComponent("tmp_\(id.uuidString)_eis.mp4")
+            try data.write(to: tempURL, options: .atomic)
+            defer {
+                try? fileManager.removeItem(at: tempURL)
+                try? fileManager.removeItem(at: stabilizedURL)
+            }
+
+            let stabilized = await PixSmartVideoEIS.stabilizeVideo(
+                from: tempURL,
+                to: stabilizedURL
+            )
+            do {
+                if stabilized {
+                    // EIS 输出只有视频轨：从原文件补回音轨，再保持现有导入方向。
+                    try await MediaOrientationFixer.rotateVideoCounterClockwise90(
+                        from: stabilizedURL,
+                        audioFrom: tempURL,
+                        to: originalURL
+                    )
+                } else {
+                    try await MediaOrientationFixer.rotateVideoCounterClockwise90(
+                        from: tempURL,
+                        to: originalURL
+                    )
+                }
+            } catch {
+                // EIS/合成失败时再尝试原视频旋转；仍失败才原样保存，始终不阻断导入。
+                print("[MediaLibrary] processed video compose failed, fallback: \(error.localizedDescription)")
+                try? fileManager.removeItem(at: originalURL)
+                do {
+                    try await MediaOrientationFixer.rotateVideoCounterClockwise90(
+                        from: tempURL,
+                        to: originalURL
+                    )
+                } catch {
+                    print("[MediaLibrary] video rotate failed, saving original: \(error.localizedDescription)")
+                    try? fileManager.removeItem(at: originalURL)
+                    try data.write(to: originalURL, options: .atomic)
+                }
+            }
+        } else {
+            var photoData = try MediaOrientationFixer.rotateImageDataCounterClockwise90(data, fileName: fileName)
+            // 旋转后再做 PixSmart 纯图像 EIS 防抖；失败则保留旋转结果。
+            photoData = PixSmartEIS.stabilizePhotoData(photoData)
+            // EIS 后再按眼镜设置叠加图片水印。
+            photoData = PhotoWatermarkApplier.applyIfNeeded(photoData, capturedAt: Date())
+            try photoData.write(to: originalURL, options: .atomic)
+        }
+
+        var finalItem = item
+        if isVideo {
+            let duration = Self.videoDuration(url: originalURL)
+            finalItem = StoredMediaItem(
+                id: id,
+                fileName: fileName,
+                isVideo: true,
+                createdAt: Date(),
+                isFavorite: false,
+                durationSeconds: duration
+            )
+            try Self.generateVideoThumbnail(from: originalURL, to: thumbnailURL(for: finalItem))
+        } else if let rotatedData = try? Data(contentsOf: originalURL) {
+            try Self.generatePhotoThumbnail(from: rotatedData, to: thumbnailURL(for: item))
+        }
+
+        items.insert(finalItem, at: 0)
+        saveManifest()
+        return finalItem
+    }
+
+    func deleteItems(ids: Set<UUID>) {
+        items.removeAll { item in
+            guard ids.contains(item.id) else { return false }
+            try? fileManager.removeItem(at: originalURL(for: item))
+            try? fileManager.removeItem(at: thumbnailURL(for: item))
+            return true
+        }
+        saveManifest()
+    }
+
+    func toggleFavorite(id: UUID) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].isFavorite.toggle()
+        saveManifest()
+    }
+
+    private func ensureDirectories() {
+        try? fileManager.createDirectory(at: originalsURL, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(at: thumbnailsURL, withIntermediateDirectories: true)
+    }
+
+    private func loadManifest() {
+        guard let data = try? Data(contentsOf: manifestURL),
+              let decoded = try? JSONDecoder().decode([StoredMediaItem].self, from: data) else {
+            items = []
+            return
+        }
+        items = decoded.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private func saveManifest() {
+        guard let data = try? JSONEncoder().encode(items) else { return }
+        try? data.write(to: manifestURL, options: .atomic)
+    }
+
+    private static func isVideoFile(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return lower.hasSuffix(".mp4") || lower.hasSuffix(".mov")
+    }
+
+    private static func generatePhotoThumbnail(from data: Data, to url: URL) throws {
+        guard let image = UIImage(data: data) else { return }
+        let thumb = squareCroppedThumbnail(from: image, side: 300)
+        guard let jpeg = thumb.jpegData(compressionQuality: 0.85) else { return }
+        try jpeg.write(to: url, options: .atomic)
+    }
+
+    private static func generateVideoThumbnail(from videoURL: URL, to url: URL) throws {
+        let asset = AVURLAsset(url: videoURL)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 600, height: 600)
+        let time = CMTime(seconds: 0.1, preferredTimescale: 600)
+        let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
+        let image = UIImage(cgImage: cgImage)
+        let thumb = squareCroppedThumbnail(from: image, side: 300)
+        guard let jpeg = thumb.jpegData(compressionQuality: 0.85) else { return }
+        try jpeg.write(to: url, options: .atomic)
+    }
+
+    /// 居中裁剪为正方形缩略图，与 iOS 相册一致。
+    private static func squareCroppedThumbnail(from image: UIImage, side: CGFloat) -> UIImage {
+        let size = CGSize(width: side, height: side)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        return renderer.image { _ in
+            let scale = max(side / image.size.width, side / image.size.height)
+            let drawSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+            let origin = CGPoint(x: (side - drawSize.width) / 2, y: (side - drawSize.height) / 2)
+            image.draw(in: CGRect(origin: origin, size: drawSize))
+        }
+    }
+
+    private static func videoDuration(url: URL) -> Double? {
+        let asset = AVURLAsset(url: url)
+        let seconds = CMTimeGetSeconds(asset.duration)
+        return seconds.isFinite ? seconds : nil
+    }
+}
+
+extension StoredMediaItem {
+    var durationText: String? {
+        guard let durationSeconds else { return nil }
+        let total = Int(durationSeconds.rounded())
+        let minutes = total / 60
+        let seconds = total % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+}

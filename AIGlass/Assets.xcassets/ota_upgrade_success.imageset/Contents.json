@@ -1,0 +1,15 @@
+{
+  "images" : [
+    {
+      "filename" : "ota_upgrade_success.pdf",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  },
+  "properties" : {
+    "preserves-vector-representation" : true
+  }
+}

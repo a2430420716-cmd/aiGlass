@@ -1,0 +1,942 @@
+import Combine
+import CryptoKit
+import Foundation
+
+enum BluetoothOtaUpgradeState: Equatable {
+    case idle
+    case downloadingFirmware(percent: Int)
+    case gettingAlgorithmInfo
+    case downloadingAlgorithm
+    case openingWifi
+    case connectingWifi
+    case gettingOtaPath
+    case gettingDLLPath
+    case uploadingAlgorithm(percent: Int)
+    case installingAlgorithm(percent: Int)
+    case uploadingFirmware(percent: Int)
+    case closingWifi
+    case upgrading(percent: Int)
+    case completed
+    case failed(String)
+
+    var isActive: Bool {
+        switch self {
+        case .idle, .completed, .failed:
+            return false
+        default:
+            return true
+        }
+    }
+
+    @MainActor
+    var statusText: String {
+        statusText(kind: nil)
+    }
+
+    @MainActor
+    func statusText(kind: OtaUpgradeKind?) -> String {
+        let upgradingPrefix: String = {
+            switch kind {
+            case .firmware:
+                return L10n.t("正在升级固件", "Updating firmware")
+            case .bluetooth, .none:
+                return L10n.t("正在升级蓝牙固件", "Updating Bluetooth firmware")
+            }
+        }()
+
+        switch self {
+        case .idle:
+            return ""
+        case .downloadingFirmware(let percent):
+            return L10n.t("正在下载固件 \(percent)%", "Downloading firmware \(percent)%")
+        case .gettingAlgorithmInfo:
+            return L10n.t("正在查询算法文件信息...", "Checking algorithm files...")
+        case .downloadingAlgorithm:
+            return L10n.t("正在准备算法文件...", "Preparing algorithm files...")
+        case .openingWifi:
+            return L10n.t("正在打开眼镜热点...", "Turning on glasses hotspot...")
+        case .connectingWifi:
+            return L10n.t("正在连接眼镜 Wi-Fi...", "Connecting to glasses Wi-Fi...")
+        case .gettingOtaPath:
+            return L10n.t("正在获取升级路径...", "Getting update path...")
+        case .gettingDLLPath:
+            return L10n.t("正在获取算法文件上传路径...", "Getting algorithm upload path...")
+        case .uploadingAlgorithm(let percent):
+            return L10n.t("正在上传算法文件 \(percent)%", "Uploading algorithm files \(percent)%")
+        case .installingAlgorithm(let percent):
+            return L10n.t("正在安装算法文件 \(percent)%", "Installing algorithm files \(percent)%")
+        case .uploadingFirmware(let percent):
+            return L10n.t("正在上传固件 \(percent)%", "Uploading firmware \(percent)%")
+        case .closingWifi:
+            return L10n.t("正在关闭热点...", "Turning off hotspot...")
+        case .upgrading(let percent):
+            return "\(upgradingPrefix) \(percent)%"
+        case .completed:
+            switch kind {
+            case .firmware:
+                return L10n.t("固件升级完成，设备将自动重启", "Firmware update complete. Device will restart automatically")
+            case .bluetooth, .none:
+                return L10n.t("蓝牙固件升级完成，设备将自动重启", "Bluetooth firmware update complete. Device will restart automatically")
+            }
+        case .failed(let message):
+            return message
+        }
+    }
+}
+
+enum OtaUpgradeKind {
+    case bluetooth
+    case firmware
+
+    @MainActor
+    var pageTitle: String {
+        switch self {
+        case .bluetooth: L10n.t("眼镜蓝牙升级", "Glasses Bluetooth Update")
+        case .firmware: L10n.t("眼镜固件升级", "Glasses Firmware Update")
+        }
+    }
+
+    @MainActor
+    var currentVersionTitle: String {
+        switch self {
+        case .bluetooth: L10n.t("当前蓝牙版本", "Current Bluetooth Version")
+        case .firmware: L10n.t("当前固件版本", "Current Firmware Version")
+        }
+    }
+
+    @MainActor
+    var contentTitlePrefix: String {
+        switch self {
+        case .bluetooth: L10n.t("蓝牙版本", "Bluetooth Version")
+        case .firmware: L10n.t("固件版本", "Firmware Version")
+        }
+    }
+
+    @MainActor
+    var upgradingStatusPrefix: String {
+        switch self {
+        case .bluetooth: L10n.t("正在升级蓝牙固件", "Updating Bluetooth firmware")
+        case .firmware: L10n.t("正在升级固件", "Updating firmware")
+        }
+    }
+}
+
+extension BluetoothOtaUpgradeState {
+    /// 将各阶段进度映射为 0-100 的整体进度，供圆环展示。
+    var overallProgress: Int? {
+        switch self {
+        case .idle, .completed, .failed:
+            return nil
+        case .downloadingFirmware(let percent):
+            return min(34, max(1, percent * 34 / 100))
+        case .gettingAlgorithmInfo:
+            return 36
+        case .downloadingAlgorithm:
+            return 39
+        case .openingWifi:
+            return 42
+        case .connectingWifi:
+            return 48
+        case .gettingOtaPath:
+            return 62
+        case .gettingDLLPath:
+            return 51
+        case .uploadingAlgorithm(let percent):
+            return 52 + min(6, percent * 6 / 100)
+        case .installingAlgorithm(let percent):
+            return 59 + min(3, percent * 3 / 100)
+        case .uploadingFirmware(let percent):
+            return 64 + min(16, percent * 16 / 100)
+        case .closingWifi:
+            return 82
+        case .upgrading(let percent):
+            return 85 + min(15, percent * 15 / 100)
+        }
+    }
+
+    var isTerminal: Bool {
+        switch self {
+        case .completed, .failed:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+@MainActor
+final class BluetoothOtaUpgradeManager: ObservableObject {
+    @Published private(set) var state: BluetoothOtaUpgradeState = .idle
+    @Published private(set) var activeKind: OtaUpgradeKind?
+    @Published private(set) var activeTargetVersion: String?
+
+    private let logTag = "[DeviceOTA]"
+    private let bluetoothOtaLogTag = "[bluetooth_ota]"
+    private var upgradeTask: Task<Void, Never>?
+    private var connectedSSID: String?
+
+    var isUpgrading: Bool { state.isActive }
+
+    var currentStatusText: String {
+        state.statusText(kind: activeKind)
+    }
+
+    private func btLog(_ message: String, kind: OtaUpgradeKind) {
+        guard kind == .bluetooth else { return }
+        print("\(bluetoothOtaLogTag) \(message)")
+    }
+
+    func startBluetoothUpgrade(
+        serverInfo: DeviceOTAInfo,
+        authorization: String?,
+        ble: AstraA1BleManager,
+        importManager: MediaImportManager
+    ) {
+        print("\(bluetoothOtaLogTag) start requested version=\(serverInfo.version) url=\(serverInfo.downloadURL)")
+        startUpgrade(kind: .bluetooth, serverInfo: serverInfo, authorization: authorization, ble: ble, importManager: importManager)
+    }
+
+    func startFirmwareUpgrade(
+        serverInfo: DeviceOTAInfo,
+        authorization: String?,
+        ble: AstraA1BleManager,
+        importManager: MediaImportManager
+    ) {
+        startUpgrade(kind: .firmware, serverInfo: serverInfo, authorization: authorization, ble: ble, importManager: importManager)
+    }
+
+    private func startUpgrade(
+        kind: OtaUpgradeKind,
+        serverInfo: DeviceOTAInfo,
+        authorization: String?,
+        ble: AstraA1BleManager,
+        importManager: MediaImportManager
+    ) {
+        guard !isUpgrading, upgradeTask == nil else { return }
+        activeKind = kind
+        activeTargetVersion = serverInfo.version
+        upgradeTask = Task { [weak self] in
+            await self?.runUpgrade(
+                kind: kind,
+                serverInfo: serverInfo,
+                authorization: authorization,
+                ble: ble,
+                importManager: importManager
+            )
+            self?.upgradeTask = nil
+        }
+    }
+
+    func resetCompletedState() {
+        if case .completed = state { state = .idle }
+        if case .failed = state { state = .idle }
+        activeKind = nil
+        activeTargetVersion = nil
+    }
+
+    private func runUpgrade(
+        kind: OtaUpgradeKind,
+        serverInfo: DeviceOTAInfo,
+        authorization: String?,
+        ble: AstraA1BleManager,
+        importManager: MediaImportManager
+    ) async {
+        btLog(
+            "flow begin targetVersion=\(serverInfo.version) bleReady=\(ble.isReady) importing=\(importManager.isImporting) sn=\(ble.deviceSN ?? "nil") bleId=\(ble.deviceBluetoothIdentifier ?? "nil") ver28=\(ble.deviceVersion2800 ?? "nil")",
+            kind: kind
+        )
+
+        guard ble.isReady else {
+            btLog("abort: device not ready", kind: kind)
+            state = .failed(L10n.t("请先连接眼镜设备", "Please connect your glasses first"))
+            return
+        }
+        guard !importManager.isImporting else {
+            btLog("abort: media import in progress", kind: kind)
+            state = .failed(L10n.t("相册正在导入，请稍后再升级", "Album is importing. Please try again later"))
+            return
+        }
+        guard !AIRecordingImportManager.shared.isImporting else {
+            btLog("abort: recording import in progress", kind: kind)
+            state = .failed(L10n.t("录音正在导入，请稍后再升级", "Recording import is in progress. Please try again later"))
+            return
+        }
+
+        ble.beginFirmwareUpgradeFlow()
+        var fileName = "firmware.bin"
+        var localFileURL: URL?
+        var lastUpgradePercent = 0
+        defer {
+            ble.endFirmwareUpgradeFlow(reason: "ota-flow-finished")
+        }
+
+        do {
+            let prepared = try await prepareFirmwarePayload(kind: kind, serverInfo: serverInfo) { percent in
+                self.state = .downloadingFirmware(percent: percent)
+            }
+            let firmwareData = prepared.data
+            let md5 = prepared.md5
+            fileName = prepared.fileName
+            btLog(
+                "step1 ready source=\(prepared.source) file=\(fileName) bytes=\(firmwareData.count) md5=\(md5)",
+                kind: kind
+            )
+
+            let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("ota", isDirectory: true)
+            try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+            let cachedURL = cacheDir.appendingPathComponent(fileName)
+            try firmwareData.write(to: cachedURL, options: .atomic)
+            localFileURL = cachedURL
+            print("\(logTag) firmware cached \(fileName) bytes=\(firmwareData.count)")
+            btLog("step1 cached path=\(cachedURL.path)", kind: kind)
+
+            let algorithmUpdate: PreparedAlgorithmUpdate
+            if kind == .bluetooth {
+                state = .gettingAlgorithmInfo
+                btLog("DLL_FLOW step=getalgoinf start timeoutMs=10000 + server API start", kind: kind)
+                let serverAlgorithmInfoTask = Task { [weak self] in
+                    await self?.fetchAlgorithmFileInfo(authorization: authorization)
+                }
+                do {
+                    let deviceAlgorithmInfo = try await ble.queryAlgorithmInfo(timeout: 10)
+                    let serverInfo = await serverAlgorithmInfoTask.value
+                    btLog(
+                        "DLL_FLOW getalgoinf received deviceCount=\(deviceAlgorithmInfo.count) serverAvailable=\(serverInfo != nil)",
+                        kind: kind
+                    )
+                    if let serverInfo {
+                        state = .downloadingAlgorithm
+                        algorithmUpdate = await prepareAlgorithmUpdate(
+                            serverInfo: serverInfo,
+                            deviceInfo: deviceAlgorithmInfo,
+                            kind: kind
+                        )
+                    } else {
+                        algorithmUpdate = .empty
+                    }
+                } catch {
+                    // 对齐 Android skipDllAndContinueOta：getalgoinf 无回包、发送失败、
+                    // 截断或解析失败都只跳过可选 DLL，不阻断蓝牙固件升级。
+                    serverAlgorithmInfoTask.cancel()
+                    algorithmUpdate = .empty
+                    btLog(
+                        "DLL_FLOW optional DLL step failed, skip DLL and continue Bluetooth OTA: status=gettingAlgorithmInfo reason=\(error.localizedDescription)",
+                        kind: kind
+                    )
+                }
+            } else {
+                btLog("skip DLL pre-update for main firmware", kind: kind)
+                algorithmUpdate = .empty
+            }
+
+            state = .openingWifi
+            btLog("step2 toopenwifi (purpose=ota)", kind: kind)
+            DebugLogStore.logWiFi(
+                "\(kind == .firmware ? "眼镜固件升级" : "蓝牙固件升级")：开始 Wi-Fi 流程",
+                detail: "firmwareFile=\(fileName)\nfirmwareBytes=\(firmwareData.count)\nbleReady=\(ble.isReady)"
+            )
+            let wifi = try await resolveWifiCredential(ble: ble)
+            connectedSSID = wifi.ssid
+            btLog("step2 wifi config ok ssid=\(wifi.ssid)", kind: kind)
+            DebugLogStore.logWiFi(
+                "升级：热点配置就绪",
+                detail: "kind=\(kind)\nssid=\(wifi.ssid)\npasswordEmpty=\(wifi.password.isEmpty)\nhttp=\(wifi.httpAddress)",
+                direction: .received
+            )
+
+            state = .connectingWifi
+            btLog("step3 join hotspot ssid=\(wifi.ssid)", kind: kind)
+            try await DeviceWifiManager.connect(
+                ssid: wifi.ssid,
+                password: wifi.password,
+                probeBaseURL: wifi.httpAddress
+            )
+            btLog("step3 hotspot connected", kind: kind)
+            DebugLogStore.logWiFi(
+                "升级：热点连接成功",
+                detail: "kind=\(kind)\nssid=\(wifi.ssid)\nhttp=\(wifi.httpAddress)",
+                direction: .received
+            )
+
+            if kind == .bluetooth, algorithmUpdate.needsInstall {
+                do {
+                    state = .gettingDLLPath
+                    btLog(
+                        "dll step2 getworkpat type=4 files=\(algorithmUpdate.files.count) localJson=\(algorithmUpdate.localJSON != nil)",
+                        kind: kind
+                    )
+                    let receivedDLLPath = try await ble.getDLLWorkPath()
+                    let dllBaseURL = Self.resolveDeviceWorkPath(
+                        receivedDLLPath,
+                        fallbackDirectory: "dll_upload",
+                        deviceHTTPBaseURL: wifi.httpAddress
+                    )
+                    btLog("dll step2 path=\(dllBaseURL)", kind: kind)
+                    try await uploadAlgorithmUpdate(algorithmUpdate, baseURL: dllBaseURL, kind: kind)
+
+                    state = .installingAlgorithm(percent: 0)
+                    btLog("dll step4 dllupload0 count=\(algorithmUpdate.files.count)", kind: kind)
+                    let result = try await ble.waitForDLLInstall(
+                        items: algorithmUpdate.files.map(\.uploadItem),
+                        timeout: 120
+                    ) { [weak self] percent in
+                        Task { @MainActor in
+                            self?.state = .installingAlgorithm(percent: percent)
+                            self?.btLog("dll install progress=\(percent)%", kind: kind)
+                        }
+                    }
+                    guard result.status == 1 else {
+                        throw BluetoothOtaUpgradeError.message(
+                            L10n.t(
+                                "算法文件安装失败，status=\(result.status)，failId=\(result.failID)",
+                                "Algorithm install failed, status=\(result.status), failId=\(result.failID)"
+                            )
+                        )
+                    }
+                    btLog("dll step5 install success done=\(result.doneCount)", kind: kind)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    // 对齐 Android skipDllAndContinueOta：DLL 路径、上传、安装命令、
+                    // 安装超时或设备明确返回失败，都跳过可选 DLL，继续蓝牙 OTA。
+                    let failedDLLStage = String(describing: state)
+                    btLog(
+                        "DLL_FLOW optional DLL step failed, skip DLL and continue Bluetooth OTA: status=\(failedDLLStage) reason=\(error.localizedDescription)",
+                        kind: kind
+                    )
+                }
+            }
+
+            state = .gettingOtaPath
+            btLog("step4 getworkpat OTA path", kind: kind)
+            let receivedOtaPath = try await ble.getOtaWorkPath()
+            let otaBaseURL = Self.resolveDeviceWorkPath(
+                receivedOtaPath,
+                fallbackDirectory: "fw_upload",
+                deviceHTTPBaseURL: wifi.httpAddress
+            )
+            print("\(logTag) ota path=\(otaBaseURL)")
+            btLog("step4 ota path=\(otaBaseURL)", kind: kind)
+
+            state = .uploadingFirmware(percent: 0)
+            btLog("step5 upload start file=\(fileName) bytes=\(firmwareData.count) md5=\(md5)", kind: kind)
+            try await GlassesHTTPClient.uploadFirmware(
+                otaBaseURL: otaBaseURL,
+                fileName: fileName,
+                body: firmwareData
+            ) { percent in
+                Task { @MainActor in
+                    self.state = .uploadingFirmware(percent: percent)
+                }
+            }
+            btLog("step5 upload done", kind: kind)
+
+            state = .closingWifi
+            btLog("step6 closewifi0 + disconnect hotspot", kind: kind)
+            try? await ble.closeWifi(timeout: 2)
+            disconnectHotspot()
+            btLog("step6 hotspot closed", kind: kind)
+            DebugLogStore.logWiFi(
+                "升级：Wi-Fi 传输结束",
+                detail: "kind=\(kind)\nfile=\(fileName)\nbytes=\(firmwareData.count)"
+            )
+
+            state = .upgrading(percent: 0)
+            btLog("step7 \(kind == .firmware ? "otaupload1" : "otaupload0") start file=\(fileName)", kind: kind)
+            // 先挂进度回调再发 otaupload，避免首包进度丢失。
+            try await ble.waitForOtaUpgradeCompletion { [weak self] percent in
+                lastUpgradePercent = percent
+                Task { @MainActor in
+                    self?.state = .upgrading(percent: percent)
+                    if percent == 0 || percent == 100 || percent % 5 == 0 {
+                        self?.btLog("step7 upgrade progress=\(percent)%", kind: kind)
+                    }
+                }
+            } sendUpgradeCommand: {
+                switch kind {
+                case .bluetooth:
+                    try ble.startBluetoothOtaUpgrade(fileName: fileName)
+                case .firmware:
+                    try ble.startFirmwareOtaUpgrade(fileName: fileName)
+                }
+            }
+
+            // Android 收到 100% 后保留完成态 2 秒，再结束升级流程。
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            state = .completed
+            print("\(logTag) \(kind) upgrade completed file=\(fileName)")
+            btLog(
+                "step8 completed file=\(fileName) md5=\(md5) targetVersion=\(serverInfo.version) querying ver28",
+                kind: kind
+            )
+            ble.queryUpgradeDeviceInfo()
+        } catch let error as AstraA1BleManager.ImportBLEError {
+            let shouldCloseWifi = Self.shouldCloseDeviceWifiOnFailure(state)
+            let failedStage = String(describing: state)
+            state = .failed(error.localizedDescription)
+            print("\(logTag) upgrade failed: \(error.localizedDescription)")
+            btLog("failed: \(error.localizedDescription) lastProgress=\(lastUpgradePercent)%", kind: kind)
+            DebugLogStore.logWiFi(
+                "升级：Wi-Fi 流程失败",
+                detail: "kind=\(kind)\nstage=\(failedStage)\nssid=\(connectedSSID ?? "nil")\nerror=\(error.localizedDescription)",
+                direction: .received
+            )
+            if shouldCloseWifi {
+                try? await ble.closeWifi(timeout: 2)
+            }
+            disconnectHotspot()
+        } catch {
+            let shouldCloseWifi = Self.shouldCloseDeviceWifiOnFailure(state)
+            let failedStage = String(describing: state)
+            state = .failed(error.localizedDescription)
+            print("\(logTag) upgrade failed: \(error.localizedDescription)")
+            btLog("failed: \(error.localizedDescription) lastProgress=\(lastUpgradePercent)%", kind: kind)
+            DebugLogStore.logWiFi(
+                "升级：Wi-Fi 流程失败",
+                detail: "kind=\(kind)\nstage=\(failedStage)\nssid=\(connectedSSID ?? "nil")\nerror=\(error.localizedDescription)",
+                direction: .received
+            )
+            if shouldCloseWifi {
+                try? await ble.closeWifi(timeout: 2)
+            }
+            disconnectHotspot()
+        }
+
+        if let localFileURL {
+            try? FileManager.default.removeItem(at: localFileURL)
+            btLog("cleanup local cache \(localFileURL.lastPathComponent)", kind: kind)
+        }
+        btLog("flow end state=\(String(describing: state))", kind: kind)
+    }
+
+    // MARK: - Bluetooth OTA algorithm DLL pre-update
+
+    /// 对齐 Android shouldCloseWifiOnFailure：下载/getalgoinf 失败时不额外发 closewifi。
+    private static func shouldCloseDeviceWifiOnFailure(_ state: BluetoothOtaUpgradeState) -> Bool {
+        switch state {
+        case .openingWifi, .connectingWifi, .gettingOtaPath, .uploadingFirmware,
+             .gettingDLLPath, .uploadingAlgorithm, .installingAlgorithm:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private struct AlgorithmFileInfo: Decodable {
+        let manifestURL: String?
+        let translationURL: String?
+        let noiseReductionURL: String?
+        let wakeupURL: String?
+
+        enum CodingKeys: String, CodingKey {
+            case manifestURL = "algo_manifest_json"
+            case translationURL = "pil_algo_ifly_glasses_fanyi_dll"
+            case noiseReductionURL = "pil_algo_ifly_glasses_nr_dll"
+            case wakeupURL = "pil_algo_ifly_glasses_wakeup_dll"
+        }
+
+        func url(for key: String) -> String? {
+            switch key {
+            case "fanyi": return translationURL
+            case "nr": return noiseReductionURL
+            case "wakeup": return wakeupURL
+            default: return nil
+            }
+        }
+    }
+
+    private struct AlgorithmManifestEnvelope: Decodable {
+        let algo: [AlgorithmManifestDTO]?
+    }
+
+    private struct AlgorithmManifestDTO: Decodable {
+        let id: Int?
+        let key: String?
+        let name: String?
+        let build: UInt64?
+        let size: UInt64?
+        let md5: String?
+    }
+
+    private struct AlgorithmManifestEntry {
+        let id: UInt8
+        let key: String
+        let fileName: String
+        let build: UInt32
+        let size: Int
+        let md5: String
+        let downloadURL: String?
+    }
+
+    private struct PreparedAlgorithmFile {
+        let entry: AlgorithmManifestEntry
+        let data: Data
+        let md5Data: Data
+
+        var uploadItem: AstraA1BleProtocol.DLLUploadItem {
+            AstraA1BleProtocol.DLLUploadItem(
+                id: entry.id,
+                build: entry.build,
+                md5: md5Data,
+                fileName: entry.fileName
+            )
+        }
+    }
+
+    private struct PreparedAlgorithmUpdate {
+        let files: [PreparedAlgorithmFile]
+        let localJSON: Data?
+
+        static let empty = PreparedAlgorithmUpdate(files: [], localJSON: nil)
+        var needsInstall: Bool { !files.isEmpty || localJSON != nil }
+    }
+
+    /// Android HttpClient GET：接口失败不阻断 OTA，只跳过本轮 DLL 更新。
+    private func fetchAlgorithmFileInfo(authorization: String?) async -> AlgorithmFileInfo? {
+        do {
+            let data = try await APIClient.getRaw(
+                path: "algorithm_file/get_algorithm_file",
+                authorization: authorization
+            )
+            let response = try JSONDecoder().decode(APIResponse<AlgorithmFileInfo>.self, from: data)
+            print("\(bluetoothOtaLogTag) DLL_FLOW algorithm API success")
+            return response.result
+        } catch {
+            print("\(bluetoothOtaLogTag) DLL_FLOW algorithm API failed, continue OTA: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// 任一 manifest/DLL 下载或校验失败：对齐 Android，清空待安装文件并继续原 OTA。
+    private func prepareAlgorithmUpdate(
+        serverInfo: AlgorithmFileInfo,
+        deviceInfo: [AstraA1BleProtocol.DeviceAlgorithmInfo],
+        kind: OtaUpgradeKind
+    ) async -> PreparedAlgorithmUpdate {
+        do {
+            guard let rawManifestURL = serverInfo.manifestURL,
+                  let manifestURL = URL(string: rawManifestURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                btLog("DLL_FLOW manifest URL missing, skip DLL", kind: kind)
+                return .empty
+            }
+
+            let manifestData = try await Self.downloadAlgorithmData(from: manifestURL)
+            let decoded = try JSONDecoder().decode(AlgorithmManifestEnvelope.self, from: manifestData)
+            let entries = (decoded.algo ?? []).compactMap { dto -> AlgorithmManifestEntry? in
+                guard let rawID = dto.id, (0...Int(UInt8.max)).contains(rawID),
+                      let key = dto.key?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty,
+                      let fileName = dto.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !fileName.isEmpty, fileName == (fileName as NSString).lastPathComponent,
+                      let rawBuild = dto.build, rawBuild <= UInt64(UInt32.max),
+                      let rawSize = dto.size, rawSize <= UInt64(Int.max),
+                      let md5 = dto.md5?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                      md5.count == 32 else { return nil }
+                let rawURL = serverInfo.url(for: key)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                return AlgorithmManifestEntry(
+                    id: UInt8(rawID),
+                    key: key,
+                    fileName: fileName,
+                    build: UInt32(rawBuild),
+                    size: Int(rawSize),
+                    md5: md5,
+                    downloadURL: rawURL?.isEmpty == false ? rawURL : nil
+                )
+            }.sorted { $0.id < $1.id }
+
+            guard !entries.isEmpty else {
+                btLog("DLL_FLOW manifest empty, skip DLL", kind: kind)
+                return .empty
+            }
+
+            let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("algorithm_files", isDirectory: true)
+            try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+            try manifestData.write(
+                to: cacheDirectory.appendingPathComponent("algo_manifest.json"),
+                options: .atomic
+            )
+
+            // Android HashMap.put：异常重复 id 时以最后一条为准，不应触发 Swift Dictionary 重键崩溃。
+            var deviceByID: [UInt8: AstraA1BleProtocol.DeviceAlgorithmInfo] = [:]
+            for item in deviceInfo {
+                deviceByID[item.id] = item
+            }
+            let needsLocalJSON = deviceInfo.isEmpty || !deviceInfo.contains(where: \.jsonValid)
+            let localJSON = needsLocalJSON ? Self.makeLocalAlgorithmJSON(entries: entries) : nil
+            if let localJSON {
+                try localJSON.write(
+                    to: cacheDirectory.appendingPathComponent("algo_local.json"),
+                    options: .atomic
+                )
+            }
+
+            var files: [PreparedAlgorithmFile] = []
+            for entry in entries {
+                let local = deviceByID[entry.id]
+                let needsUpdate = local == nil || local?.fileExists == false || entry.build > (local?.build ?? 0)
+                btLog(
+                    "DLL_FLOW compare key=\(entry.key) id=\(entry.id) pkgBuild=\(entry.build) devBuild=\(local?.build ?? 0) fileExists=\(local?.fileExists ?? false) jsonValid=\(local?.jsonValid ?? false) needUpdate=\(needsUpdate)",
+                    kind: kind
+                )
+                guard needsUpdate else { continue }
+                guard let downloadURL = entry.downloadURL,
+                      let url = URL(string: downloadURL) else {
+                    btLog("DLL_FLOW algorithm URL missing, skip key=\(entry.key)", kind: kind)
+                    continue
+                }
+                let data = try await Self.downloadAlgorithmData(from: url)
+                if entry.size > 0, data.count != entry.size {
+                    throw BluetoothOtaUpgradeError.message("algorithm size mismatch: \(entry.fileName)")
+                }
+                let actualMD5 = Self.md5Hex(data)
+                guard actualMD5.caseInsensitiveCompare(entry.md5) == .orderedSame,
+                      let md5Data = Self.dataFromMD5Hex(entry.md5) else {
+                    throw BluetoothOtaUpgradeError.message("algorithm md5 mismatch: \(entry.fileName)")
+                }
+                try data.write(
+                    to: cacheDirectory.appendingPathComponent(entry.fileName),
+                    options: .atomic
+                )
+                files.append(PreparedAlgorithmFile(entry: entry, data: data, md5Data: md5Data))
+                btLog("DLL_FLOW download ready id=\(entry.id) file=\(entry.fileName) bytes=\(data.count)", kind: kind)
+            }
+
+            btLog("DLL_FLOW prepared files=\(files.count) localJson=\(localJSON != nil)", kind: kind)
+            return PreparedAlgorithmUpdate(files: files, localJSON: localJSON)
+        } catch {
+            btLog("DLL_FLOW prepare failed, clear DLL and continue OTA: \(error.localizedDescription)", kind: kind)
+            return .empty
+        }
+    }
+
+    private func uploadAlgorithmUpdate(
+        _ update: PreparedAlgorithmUpdate,
+        baseURL: String,
+        kind: OtaUpgradeKind
+    ) async throws {
+        let totalFiles = update.files.count + (update.localJSON == nil ? 0 : 1)
+        guard totalFiles > 0 else { return }
+        var completedFiles = 0
+
+        for file in update.files {
+            let completedBefore = completedFiles
+            let manager = self
+            state = .uploadingAlgorithm(percent: completedBefore * 100 / totalFiles)
+            btLog("DLL_FLOW upload start id=\(file.entry.id) file=\(file.entry.fileName)", kind: kind)
+            try await GlassesHTTPClient.uploadFirmware(
+                otaBaseURL: baseURL,
+                fileName: file.entry.fileName,
+                body: file.data
+            ) { filePercent in
+                let overall = min(100, (completedBefore * 100 + filePercent) / totalFiles)
+                Task { @MainActor in manager.state = .uploadingAlgorithm(percent: overall) }
+            }
+            completedFiles += 1
+        }
+
+        if let localJSON = update.localJSON {
+            let completedBefore = completedFiles
+            let manager = self
+            state = .uploadingAlgorithm(percent: completedBefore * 100 / totalFiles)
+            btLog("DLL_FLOW upload algo_local.json", kind: kind)
+            try await GlassesHTTPClient.uploadFirmware(
+                otaBaseURL: baseURL,
+                fileName: "algo_local.json",
+                body: localJSON
+            ) { filePercent in
+                let overall = min(100, (completedBefore * 100 + filePercent) / totalFiles)
+                Task { @MainActor in manager.state = .uploadingAlgorithm(percent: overall) }
+            }
+        }
+        state = .uploadingAlgorithm(percent: 100)
+    }
+
+    private static func downloadAlgorithmData(from url: URL) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 120
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        AppRequestHeaders.apply(to: &request)
+        DebugLogStore.logHTTPSent(
+            method: "GET",
+            url: url.absoluteString,
+            body: "algorithm file download",
+            headers: request.allHTTPHeaderFields
+        )
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode),
+                  !data.isEmpty else {
+                throw BluetoothOtaUpgradeError.message("algorithm download failed")
+            }
+            DebugLogStore.logHTTPReceived(
+                method: "GET",
+                url: url.absoluteString,
+                statusCode: http.statusCode,
+                body: "<algorithm file \(data.count) bytes>",
+                headers: DebugLogStore.headerFields(from: http)
+            )
+            return data
+        } catch {
+            DebugLogStore.logHTTPReceived(
+                method: "GET",
+                url: url.absoluteString,
+                statusCode: nil,
+                body: nil,
+                error: error.localizedDescription
+            )
+            throw error
+        }
+    }
+
+    private static func makeLocalAlgorithmJSON(entries: [AlgorithmManifestEntry]) -> Data {
+        func value(id: UInt8, key: String) -> AlgorithmManifestEntry? {
+            entries.first(where: { $0.id == id }) ?? entries.first(where: { $0.key == key })
+        }
+        let fanyi = value(id: 0, key: "fanyi")
+        let nr = value(id: 1, key: "nr")
+        let wakeup = value(id: 2, key: "wakeup")
+        let text = "{\n"
+            + "  \"fanyi\":{\"build\":\(fanyi?.build ?? 0),\"md5\":\"\(fanyi?.md5 ?? "")\"},\n"
+            + "  \"nr\":{\"build\":\(nr?.build ?? 0),\"md5\":\"\(nr?.md5 ?? "")\"},\n"
+            + "  \"wakeup\":{\"build\":\(wakeup?.build ?? 0),\"md5\":\"\(wakeup?.md5 ?? "")\"}\n"
+            + "}\n"
+        return Data(text.utf8)
+    }
+
+    private static func dataFromMD5Hex(_ text: String) -> Data? {
+        let chars = Array(text.lowercased())
+        guard chars.count == 32 else { return nil }
+        var result = Data(capacity: 16)
+        for index in stride(from: 0, to: chars.count, by: 2) {
+            guard let value = UInt8(String(chars[index...index + 1]), radix: 16) else { return nil }
+            result.append(value)
+        }
+        return result
+    }
+
+    /// Android 用当前眼镜热点网关替换 getworkpat 返回 host，并对空/坏路径回退固定目录。
+    private static func resolveDeviceWorkPath(
+        _ received: String,
+        fallbackDirectory: String,
+        deviceHTTPBaseURL: String
+    ) -> String {
+        func parsedURL(_ raw: String) -> URL? {
+            let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
+            guard !clean.isEmpty, clean.lowercased() != "http://", clean.lowercased() != "https://" else {
+                return nil
+            }
+            let normalized = clean.hasPrefix("http://") || clean.hasPrefix("https://")
+                ? clean
+                : "http://" + clean
+            guard let url = URL(string: normalized), url.host?.isEmpty == false else { return nil }
+            return url
+        }
+
+        let gateway = parsedURL(deviceHTTPBaseURL) ?? URL(string: "http://192.168.0.1/")!
+        if let original = parsedURL(received),
+           var components = URLComponents(url: original, resolvingAgainstBaseURL: false) {
+            components.scheme = gateway.scheme ?? "http"
+            components.host = gateway.host
+            components.port = gateway.port
+            if let resolved = components.url?.absoluteString { return resolved }
+        }
+
+        var components = URLComponents()
+        components.scheme = gateway.scheme ?? "http"
+        components.host = gateway.host ?? "192.168.0.1"
+        components.port = gateway.port
+        components.path = "/\(fallbackDirectory)/"
+        return components.url?.absoluteString ?? "http://192.168.0.1/\(fallbackDirectory)/"
+    }
+
+    private struct PreparedFirmware {
+        let data: Data
+        let md5: String
+        let fileName: String
+        let source: String
+    }
+
+    private func prepareFirmwarePayload(
+        kind: OtaUpgradeKind,
+        serverInfo: DeviceOTAInfo,
+        onProgress: @MainActor @escaping (Int) -> Void
+    ) async throws -> PreparedFirmware {
+        let downloadURL = serverInfo.downloadURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !downloadURL.isEmpty, let remoteURL = URL(string: downloadURL) else {
+            throw BluetoothOtaUpgradeError.message(L10n.t("固件下载地址无效", "Invalid firmware download URL"))
+        }
+        let name = Self.firmwareFileName(from: remoteURL)
+        onProgress(0)
+        print("\(logTag) download start url=\(downloadURL)")
+        btLog("step1 download start url=\(downloadURL) file=\(name)", kind: kind)
+        let data = try await Task.detached(priority: .userInitiated) {
+            try await FirmwareDownloadClient.download(from: remoteURL) { percent in
+                Task { @MainActor in
+                    onProgress(percent)
+                }
+            }
+        }.value
+        guard !data.isEmpty else {
+            throw BluetoothOtaUpgradeError.message(L10n.t("固件文件为空", "Firmware file is empty"))
+        }
+        let md5 = Self.md5Hex(data)
+        print("\(logTag) firmware downloaded \(name) bytes=\(data.count)")
+        btLog("step1 download done bytes=\(data.count) md5=\(md5)", kind: kind)
+        return PreparedFirmware(
+            data: data,
+            md5: md5,
+            fileName: name,
+            source: "url:\(downloadURL)"
+        )
+    }
+
+    private static func md5Hex(_ data: Data) -> String {
+        Insecure.MD5.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private struct ResolvedWifi {
+        let ssid: String
+        let password: String
+        let httpAddress: String
+    }
+
+    /// 每次：toopenwifi → 本次 wificonfig（不走缓存）。
+    private func resolveWifiCredential(ble: AstraA1BleManager) async throws -> ResolvedWifi {
+        let config = try await ble.openWifiAndWaitConfig(purpose: .ota)
+        guard let ssid = config.ssid?.trimmingCharacters(in: .whitespacesAndNewlines), !ssid.isEmpty else {
+            throw BluetoothOtaUpgradeError.message(L10n.t("未从眼镜获取到 Wi-Fi 名称", "Failed to get Wi-Fi name from glasses"))
+        }
+        let http = config.httpAddress?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return ResolvedWifi(
+            ssid: ssid,
+            password: config.password?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            httpAddress: http.isEmpty ? "http://192.168.0.1/" : http
+        )
+    }
+
+    private func disconnectHotspot() {
+        if let ssid = connectedSSID {
+            DeviceWifiManager.disconnect(from: ssid)
+            connectedSSID = nil
+        }
+    }
+
+    private static func firmwareFileName(from url: URL) -> String {
+        let name = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "firmware.bin" : name
+    }
+}
+
+private enum BluetoothOtaUpgradeError: LocalizedError {
+    case message(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .message(let text):
+            return text
+        }
+    }
+}

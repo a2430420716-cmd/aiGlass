@@ -6,8 +6,39 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		2C2DEE33D8E70E71E730753E /* Pods_AIGlass.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 279F8536771D41CEDFDED592 /* Pods_AIGlass.framework */; };
+		A1P1X5M4RT001F001E15004 /* libpixsmart_vs_pv.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A1P1X5M4RT001F001E15001 /* libpixsmart_vs_pv.framework */; platformFilter = ios; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A1P1X5M4RT001F001E15011 /* VideoStabilizeProcessor.m in Sources */ = {isa = PBXBuildFile; fileRef = A1P1X5M4RT001F001E15021 /* VideoStabilizeProcessor.m */; };
+		A1P1X5M4RT001F001E15012 /* VideoStabilizeProcessorGL.m in Sources */ = {isa = PBXBuildFile; fileRef = A1P1X5M4RT001F001E15022 /* VideoStabilizeProcessorGL.m */; };
+		A1P1X5M4RT001F001E15013 /* EisData.m in Sources */ = {isa = PBXBuildFile; fileRef = A1P1X5M4RT001F001E15023 /* EisData.m */; };
+		A1P1X5M4RT001F001E15014 /* CMTimeDualQueue.m in Sources */ = {isa = PBXBuildFile; fileRef = A1P1X5M4RT001F001E15024 /* CMTimeDualQueue.m */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A1P1X5M4RT001F001E15003 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				A1P1X5M4RT001F001E15004 /* libpixsmart_vs_pv.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		279F8536771D41CEDFDED592 /* Pods_AIGlass.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_AIGlass.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		5875066F2FF121D100E16599 /* AIGlass.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AIGlass.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7F104F08A6AE1E52122FB891 /* Pods-AIGlass.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-AIGlass.release.xcconfig"; path = "Target Support Files/Pods-AIGlass/Pods-AIGlass.release.xcconfig"; sourceTree = "<group>"; };
+		90547ED62C4EDAB84B44CC43 /* Pods-AIGlass.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-AIGlass.debug.xcconfig"; path = "Target Support Files/Pods-AIGlass/Pods-AIGlass.debug.xcconfig"; sourceTree = "<group>"; };
+		A1P1X5M4RT001F001E15001 /* libpixsmart_vs_pv.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = libpixsmart_vs_pv.framework; path = IOS/framework/libpixsmart_vs_pv.framework; sourceTree = "<group>"; };
+		A1P1X5M4RT001F001E15021 /* VideoStabilizeProcessor.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = VideoStabilizeProcessor.m; path = IOS/SXS_VideoStabilizePvDemo/videostabilization/VideoStabilizeProcessor.m; sourceTree = "<group>"; };
+		A1P1X5M4RT001F001E15022 /* VideoStabilizeProcessorGL.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = VideoStabilizeProcessorGL.m; path = IOS/SXS_VideoStabilizePvDemo/videostabilization/VideoStabilizeProcessorGL.m; sourceTree = "<group>"; };
+		A1P1X5M4RT001F001E15023 /* EisData.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = EisData.m; path = IOS/SXS_VideoStabilizePvDemo/videostabilization/EisData.m; sourceTree = "<group>"; };
+		A1P1X5M4RT001F001E15024 /* CMTimeDualQueue.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = CMTimeDualQueue.m; path = IOS/SXS_VideoStabilizePvDemo/videostabilization/CMTimeDualQueue.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -23,6 +54,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2C2DEE33D8E70E71E730753E /* Pods_AIGlass.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -33,7 +65,14 @@
 			isa = PBXGroup;
 			children = (
 				587506712FF121D100E16599 /* AIGlass */,
+				A1P1X5M4RT001F001E15001 /* libpixsmart_vs_pv.framework */,
+				A1P1X5M4RT001F001E15021 /* VideoStabilizeProcessor.m */,
+				A1P1X5M4RT001F001E15022 /* VideoStabilizeProcessorGL.m */,
+				A1P1X5M4RT001F001E15023 /* EisData.m */,
+				A1P1X5M4RT001F001E15024 /* CMTimeDualQueue.m */,
 				587506702FF121D100E16599 /* Products */,
+				792603B5D4312B0B4DAB72F8 /* Pods */,
+				839079C52160ACD6795160E4 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -45,6 +84,23 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		792603B5D4312B0B4DAB72F8 /* Pods */ = {
+			isa = PBXGroup;
+			children = (
+				90547ED62C4EDAB84B44CC43 /* Pods-AIGlass.debug.xcconfig */,
+				7F104F08A6AE1E52122FB891 /* Pods-AIGlass.release.xcconfig */,
+			);
+			path = Pods;
+			sourceTree = "<group>";
+		};
+		839079C52160ACD6795160E4 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				279F8536771D41CEDFDED592 /* Pods_AIGlass.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -52,9 +108,11 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 5875067A2FF121D200E16599 /* Build configuration list for PBXNativeTarget "AIGlass" */;
 			buildPhases = (
+				86139502AF2C9A913633C335 /* [CP] Check Pods Manifest.lock */,
 				5875066B2FF121D100E16599 /* Sources */,
 				5875066C2FF121D100E16599 /* Frameworks */,
 				5875066D2FF121D100E16599 /* Resources */,
+				A1P1X5M4RT001F001E15003 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -64,8 +122,6 @@
 				587506712FF121D100E16599 /* AIGlass */,
 			);
 			name = AIGlass;
-			packageProductDependencies = (
-			);
 			productName = AIGlass;
 			productReference = 5875066F2FF121D100E16599 /* AIGlass.app */;
 			productType = "com.apple.product-type.application";
@@ -114,11 +170,40 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		86139502AF2C9A913633C335 /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-AIGlass-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		5875066B2FF121D100E16599 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A1P1X5M4RT001F001E15011 /* VideoStabilizeProcessor.m in Sources */,
+				A1P1X5M4RT001F001E15012 /* VideoStabilizeProcessorGL.m in Sources */,
+				A1P1X5M4RT001F001E15013 /* EisData.m in Sources */,
+				A1P1X5M4RT001F001E15014 /* CMTimeDualQueue.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -177,7 +262,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -234,7 +319,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -246,63 +331,185 @@
 		};
 		5875067B2FF121D200E16599 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 90547ED62C4EDAB84B44CC43 /* Pods-AIGlass.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CODE_SIGN_ENTITLEMENTS = AIGlass/AIGlass.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 124;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = G8X6YGC2WL;
 				ENABLE_PREVIEWS = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/IOS/framework",
+				);
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"HAVE_CONFIG_H=1",
+					"OPUS_BUILD=1",
+					"USE_ALLOCA=1",
+					"HAVE_LRINT=1",
+					"HAVE_LRINTF=1",
+					"VAR_ARRAYS=1",
+					"FLOATING_POINT=1",
+					"ENABLE_FLOAT_API=1",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/IOS/framework",
+					"$(PROJECT_DIR)/ThirdParty/opus",
+					"$(PROJECT_DIR)/ThirdParty/opus/include",
+					"$(PROJECT_DIR)/ThirdParty/opus/src",
+					"$(PROJECT_DIR)/ThirdParty/opus/celt",
+					"$(PROJECT_DIR)/ThirdParty/opus/silk",
+					"$(PROJECT_DIR)/ThirdParty/opus/silk/float",
+					"$(PROJECT_DIR)/AIGlass/Vendor/OpusDecode",
+				);
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "MOCO AI";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "需要使用蓝牙连接 MOCO AI 眼镜设备";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "需要使用蓝牙连接 MOCO AI 眼镜设备";
+				INFOPLIST_KEY_NSCameraUsageDescription = "需要访问相机以拍摄头像、反馈图片和视频";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "需要连接眼镜 Wi-Fi 热点以导入照片和视频";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "需要访问麦克风以进行同声传译录音和录制反馈视频";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "开启自动保存后，需要将眼镜导入的照片和视频添加到手机相册";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "需要访问相册以选择头像和反馈图片、视频";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.Cyt.AIGlass;
+				MARKETING_VERSION = 1.1.6;
+				OTHER_CFLAGS = (
+					"$(inherited)",
+					"-Wno-shorten-64-to-32",
+					"-Wno-comma",
+					"-Wno-unused-function",
+					"-Wno-unused-variable",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"-framework",
+					libpixsmart_vs_pv,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = uni.app.UNI03B27DD;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = pxApp;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "AIGlass/AIGlass-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
 		5875067C2FF121D200E16599 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 7F104F08A6AE1E52122FB891 /* Pods-AIGlass.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CODE_SIGN_ENTITLEMENTS = AIGlass/AIGlass.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 124;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = G8X6YGC2WL;
 				ENABLE_PREVIEWS = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/IOS/framework",
+				);
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"HAVE_CONFIG_H=1",
+					"OPUS_BUILD=1",
+					"USE_ALLOCA=1",
+					"HAVE_LRINT=1",
+					"HAVE_LRINTF=1",
+					"VAR_ARRAYS=1",
+					"FLOATING_POINT=1",
+					"ENABLE_FLOAT_API=1",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/IOS/framework",
+					"$(PROJECT_DIR)/ThirdParty/opus",
+					"$(PROJECT_DIR)/ThirdParty/opus/include",
+					"$(PROJECT_DIR)/ThirdParty/opus/src",
+					"$(PROJECT_DIR)/ThirdParty/opus/celt",
+					"$(PROJECT_DIR)/ThirdParty/opus/silk",
+					"$(PROJECT_DIR)/ThirdParty/opus/silk/float",
+					"$(PROJECT_DIR)/AIGlass/Vendor/OpusDecode",
+				);
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "MOCO AI";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "需要使用蓝牙连接 MOCO AI 眼镜设备";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "需要使用蓝牙连接 MOCO AI 眼镜设备";
+				INFOPLIST_KEY_NSCameraUsageDescription = "需要访问相机以拍摄头像、反馈图片和视频";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "需要连接眼镜 Wi-Fi 热点以导入照片和视频";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "需要访问麦克风以进行同声传译录音和录制反馈视频";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "开启自动保存后，需要将眼镜导入的照片和视频添加到手机相册";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "需要访问相册以选择头像和反馈图片、视频";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.Cyt.AIGlass;
+				MARKETING_VERSION = 1.1.6;
+				OTHER_CFLAGS = (
+					"$(inherited)",
+					"-Wno-shorten-64-to-32",
+					"-Wno-comma",
+					"-Wno-unused-function",
+					"-Wno-unused-variable",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"-framework",
+					libpixsmart_vs_pv,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = uni.app.UNI03B27DD;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = pxApp;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "AIGlass/AIGlass-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
