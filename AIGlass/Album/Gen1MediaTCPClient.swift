@@ -8,7 +8,7 @@ nonisolated struct Gen1MediaTCPTestConfiguration: Sendable {
     var readIdleTimeout: TimeInterval = 15
     var writeTimeout: TimeInterval = 15
     var fileListTimeout: TimeInterval = 30
-    var downloadTimeout: TimeInterval = 30 * 60
+    var downloadTimeout: TimeInterval = AlbumTransferPolicy.fileTimeout
     var heartbeatInterval: TimeInterval = 2
 }
 #endif
@@ -22,7 +22,7 @@ actor Gen1MediaTCPClient {
         var read: TimeInterval = 15
         var write: TimeInterval = 15
         var list: TimeInterval = 30
-        var download: TimeInterval = 30 * 60
+        var download: TimeInterval = AlbumTransferPolicy.fileTimeout
         var heartbeat: TimeInterval = 2
     }
     private struct WriteRequest {
@@ -50,6 +50,7 @@ actor Gen1MediaTCPClient {
     private var heartbeatTask: Task<Void, Never>?
     private var operationID: UUID?
     private var operationTimer: Task<Void, Never>?
+    private var fileTransferActive = false
     private var pendingWrites: [WriteRequest] = []
     private var activeWrite: WriteRequest?
     private var writeTimer: Task<Void, Never>?
@@ -121,7 +122,7 @@ actor Gen1MediaTCPClient {
     func downloadFile(named name: String, to destination: URL) async throws -> Int64 {
         let nameBytes = try Gen1MediaTCPProtocol.validateFileName(name)
         guard destination.isFileURL else { throw Gen1MediaTCPError.invalidDestination }
-        return try await performOperation(timeout: timing.download, reason: "文件传输") {
+        return try await performOperation(timeout: timing.download, reason: "文件传输", isFileTransfer: true) {
             let file = try Gen1MediaTCPFileSink(destination: destination)
             do {
                 try await self.send(.sendFile, payload: nameBytes)
@@ -162,18 +163,33 @@ actor Gen1MediaTCPClient {
 
     func close() async { abort(CancellationError()) }
 
-    private func performOperation<T>(timeout: TimeInterval, reason: String, _ operation: () async throws -> T) async throws -> T {
+    private func performOperation<T>(
+        timeout: TimeInterval, reason: String, isFileTransfer: Bool = false,
+        _ operation: () async throws -> T
+    ) async throws -> T {
         try Task.checkCancellation()
         guard state == .ready else { throw terminalError ?? Gen1MediaTCPError.notConnected }
         guard operationID == nil else { throw Gen1MediaTCPError.operationInProgress }
         let id = UUID()
         operationID = id
+        fileTransferActive = isFileTransfer
+        // The file deadline covers request, response and concurrent heartbeats.
+        // A heartbeat already being sent must not retain its shorter idle deadline.
+        if isFileTransfer {
+            writeTimer?.cancel()
+            writeTimer = nil
+        }
         operationTimer = deadline(after: timeout, reason: reason)
         defer {
             if operationID == id {
                 operationID = nil
                 operationTimer?.cancel()
                 operationTimer = nil
+                fileTransferActive = false
+                // Restore the control-write deadline if a heartbeat outlives this file.
+                if isFileTransfer, state == .ready, activeWrite != nil {
+                    writeTimer = deadline(after: timing.write, reason: "数据发送")
+                }
             }
         }
         do {
@@ -240,7 +256,9 @@ actor Gen1MediaTCPClient {
         guard activeWrite == nil, !pendingWrites.isEmpty, let connection, state == .ready else { return }
         let request = pendingWrites.removeFirst()
         activeWrite = request
-        writeTimer = deadline(after: timing.write, reason: "数据发送")
+        if !fileTransferActive {
+            writeTimer = deadline(after: timing.write, reason: "数据发送")
+        }
         connection.send(content: request.data, completion: .contentProcessed { [weak self] error in
             Task { await self?.writeCompleted(id: request.id, error: error) }
         })
@@ -289,7 +307,9 @@ actor Gen1MediaTCPClient {
         return try await withCheckedThrowingContinuation { continuation in
             let request = ReadRequest(id: UUID(), maximumLength: maximumLength, continuation: continuation)
             pendingRead = request
-            readTimer = deadline(after: timing.read, reason: "数据接收")
+            if !fileTransferActive {
+                readTimer = deadline(after: timing.read, reason: "数据接收")
+            }
             receive(request)
         }
     }

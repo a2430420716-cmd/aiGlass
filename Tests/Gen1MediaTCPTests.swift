@@ -118,6 +118,7 @@ enum Gen1MediaTCPTests {
         try await successfulBatch()
         try await rejectedDownloads()
         try await idleAndOperationTimeouts()
+        try await fileTransferTimeouts()
         try await cancellationPreservesPartial()
         try await existingFilesNeverOverwritten()
         try await destinationPublicationRace()
@@ -228,6 +229,59 @@ enum Gen1MediaTCPTests {
                 try check(reason == (heartbeatReplies ? "文件列表" : "数据接收"), "idle and overall deadlines distinguish heartbeat-only traffic")
             }
             await client.close()
+        }
+    }
+
+    static func fileTransferTimeouts() async throws {
+        let content = Data(repeating: 0x73, count: 127)
+        let server = LoopbackPeer { command, payload in
+            guard command == 1 else { return .none }
+            // Pauses exceed the control-read deadline but fit the file budget.
+            return .fragmented(response(1, payload + content, external: payload.count),
+                               sizes: [18, payload.count, 127, 2], interval: 0.15)
+        }
+        let port = try await server.start()
+        var config = configuration()
+        config.readIdleTimeout = 0.05
+        let client = Gen1MediaTCPClient(host: "127.0.0.1", port: port, testConfiguration: config)
+        let root = try directory()
+        defer { server.stop(); try? FileManager.default.removeItem(at: root) }
+        try await client.connect()
+        for name in ["slow.jpg", "slow.mp4"] {
+            let destination = root.appendingPathComponent(name)
+            let count = try await client.downloadFile(named: name, to: destination)
+            try check(count == Int64(content.count) && (try Data(contentsOf: destination)) == content,
+                      "slow photo/video uses file budget, not control idle timeout")
+        }
+        do {
+            _ = try await client.fileList()
+            throw Failure(description: "control read retained file timeout")
+        } catch Gen1MediaTCPError.timeout(let reason) {
+            try check(reason == "数据接收", "control deadline restored after file download")
+        }
+        await client.close()
+
+        for trickle in [false, true] {
+            let peer = LoopbackPeer { command, payload in
+                guard command == 1, trickle else { return .none }
+                // Receiving some data must not extend the per-file total deadline.
+                return .fragmented(response(1, payload + content, external: payload.count),
+                                   sizes: [1], interval: 0.01)
+            }
+            let peerPort = try await peer.start()
+            config.downloadTimeout = 0.25
+            let bounded = Gen1MediaTCPClient(host: "127.0.0.1", port: peerPort, testConfiguration: config)
+            defer { peer.stop() }
+            try await bounded.connect()
+            let destination = root.appendingPathComponent("bounded-\(trickle).mp4")
+            do {
+                _ = try await bounded.downloadFile(named: destination.lastPathComponent, to: destination)
+                throw Failure(description: "file without complete response exceeded total deadline")
+            } catch Gen1MediaTCPError.timeout(let reason) {
+                try check(reason == "文件传输", "file deadline handles both silence and slow continuous data")
+            }
+            try check(!FileManager.default.fileExists(atPath: destination.path), "timed-out file not published")
+            await bounded.close()
         }
     }
 

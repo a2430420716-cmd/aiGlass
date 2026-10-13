@@ -53,9 +53,14 @@ enum GlassesHTTPClient {
         return text == "error: 301" || text.hasPrefix("error: 301")
     }
 
-    static func fetchData(baseURL: String, fileName: String) async throws -> Data {
+    static func fetchData(
+        baseURL: String, fileName: String, timeout: TimeInterval = 120,
+        connectTimeout: TimeInterval = 10
+    ) async throws -> Data {
         let encoded = fileName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileName
-        let (status, headerText, body) = try await rawGet(baseURL: baseURL, path: encoded, timeout: 120)
+        let (status, headerText, body) = try await rawGet(
+            baseURL: baseURL, path: encoded, timeout: timeout, connectTimeout: connectTimeout
+        )
         print("\(logTag) download \(fileName) status=\(status) bytes=\(body.count)")
         print("\(logTag) ---- response headers ----\n\(headerText)\n\(logTag) --------------------------")
         guard (200...299).contains(status) else {
@@ -133,7 +138,9 @@ enum GlassesHTTPClient {
 
     // MARK: - Raw HTTP over TCP
 
-    private static func rawGet(baseURL: String, path: String, timeout: TimeInterval) async throws -> (status: Int, headerText: String, body: Data) {
+    private static func rawGet(
+        baseURL: String, path: String, timeout: TimeInterval, connectTimeout: TimeInterval = 10
+    ) async throws -> (status: Int, headerText: String, body: Data) {
         guard let url = URL(string: baseURL), let host = url.host else {
             throw GlassesHTTPError.invalidURL
         }
@@ -161,7 +168,8 @@ enum GlassesHTTPClient {
                 host: host,
                 port: port,
                 path: requestPath,
-                timeout: timeout
+                timeout: timeout,
+                connectTimeout: connectTimeout
             )
         } catch {
             DebugLogStore.logHTTPReceived(
@@ -388,7 +396,10 @@ nonisolated private enum RawHTTPConnection {
         )
     }
 
-    static func get(host: String, port: UInt16, path: String, timeout: TimeInterval) async throws -> Data {
+    static func get(
+        host: String, port: UInt16, path: String, timeout: TimeInterval,
+        connectTimeout: TimeInterval
+    ) async throws -> Data {
         let cancellation = HTTPTaskCancellation()
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
@@ -408,6 +419,9 @@ nonisolated private enum RawHTTPConnection {
                 let finish: @Sendable (Result<Data, Error>) -> Void = { result in
                     guard !requestState.finished else { return }
                     requestState.finished = true
+                    // Delayed deadline closures may live for the full transfer budget.
+                    // The result owns its Data; do not retain another file buffer here.
+                    requestState.received = Data()
                     let cancelled = cancellation.complete()
                     connection.stateUpdateHandler = nil
                     connection.pathUpdateHandler = nil

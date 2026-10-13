@@ -690,6 +690,7 @@ final class MediaImportManager: ObservableObject {
                 state = .downloading(current: index + 1, total: listedNames.count, fileName: name)
                 let entry = try inbox.prepare(targetID: targetID, fileName: name, accountID: identity.accountID)
                 do {
+                    diagnostics.log("一代：开始传输原始文件", detail: "file=\(name) fileTimeout=\(AlbumTransferPolicy.fileTimeout)s; read_and_write_use_file_deadline", direction: .sent)
                     let bytes = try await transport.downloadFile(named: name, to: inbox.fileURL(for: entry))
                     remainingFileCount = max(0, (remainingFileCount ?? 0) - 1)
                     diagnostics.log("一代：原始文件已完整落盘", detail: "file=\(name) bytes=\(bytes) original=\(inbox.fileURL(for: entry).path)")
@@ -865,7 +866,11 @@ final class MediaImportManager: ObservableObject {
         for attempt in 1...3 {
             try await requireAvailableDevice(ble)
             do {
-                return try await GlassesHTTPClient.fetchData(baseURL: baseURL, fileName: fileName)
+                return try await GlassesHTTPClient.fetchData(
+                    baseURL: baseURL, fileName: fileName,
+                    timeout: AlbumTransferPolicy.fileTimeout,
+                    connectTimeout: AlbumTransferPolicy.fileTimeout
+                )
             } catch GlassesHTTPError.emptyBody {
                 // 眼镜返回 Content-Length: 0，文件本身为空，重试无意义
                 throw GlassesHTTPError.emptyBody
