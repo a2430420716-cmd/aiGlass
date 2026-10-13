@@ -43,6 +43,13 @@
 	<array>
 		<string>_http._tcp</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>用于读取手机当前连接的 Wi-Fi 名称，自动填写眼镜联网配置，减少手动输入。</string>
+	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
+	<dict>
+		<key>WiFiSSIDAutofill</key>
+		<string>允许临时使用精确位置权限，以读取当前 Wi-Fi 名称并自动填写眼镜联网配置。</string>
+	</dict>
 	<key>UIAppFonts</key>
 	<array>
 		<string>NotoSansSC-Variable.ttf</string>

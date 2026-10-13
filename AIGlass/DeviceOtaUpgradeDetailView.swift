@@ -17,6 +17,8 @@ struct DeviceOtaUpgradeDetailView: View {
     @State private var entryGeneration: DeviceGeneration
     @State private var gen1WifiSSID = ""
     @State private var gen1WifiPassword = ""
+    @State private var hasEditedGen1WifiSSID = false
+    @StateObject private var wifiSSIDReader = CurrentWifiSSIDReader()
 
     init(kind: OtaUpgradeKind, offer: DeviceFirmwareUpdateCoordinator.UpdateOffer, ble: AstraA1BleManager) {
         self.kind = kind
@@ -126,13 +128,20 @@ struct DeviceOtaUpgradeDetailView: View {
             ble.ensureConnected(reason: "otaDetail")
             if isOfferDeviceAvailable { ble.refreshDeviceVersionsAndStorage() }
             loadFileSizeIfNeeded()
+            autofillWifiSSIDIfNeeded()
         }
         .onChangeCompat(of: isOfferDeviceAvailable) { available in
             if available {
                 ble.refreshDeviceVersionsAndStorage()
             }
         }
-        .onDisappear { gen1WifiPassword = "" }
+        .onChangeCompat(of: isUpgradingForThisPage) { upgrading in
+            if upgrading { wifiSSIDReader.cancel() }
+        }
+        .onDisappear {
+            wifiSSIDReader.cancel()
+            gen1WifiPassword = ""
+        }
         .alert(L10n.t("无法升级", "Unable to Update"), isPresented: Binding(
             get: { batteryAlertMessage != nil },
             set: { if !$0 { batteryAlertMessage = nil } }
@@ -280,7 +289,14 @@ struct DeviceOtaUpgradeDetailView: View {
                 .font(AppTheme.notoSansSC(size: 13, weight: .regular))
                 .foregroundStyle(AppTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
-            TextField(L10n.t("Wi-Fi 名称（SSID）", "Wi-Fi Name (SSID)"), text: $gen1WifiSSID)
+            TextField(L10n.t("Wi-Fi 名称（SSID）", "Wi-Fi Name (SSID)"), text: Binding(
+                get: { gen1WifiSSID },
+                set: { value in
+                    hasEditedGen1WifiSSID = true
+                    gen1WifiSSID = value
+                    wifiSSIDReader.cancel()
+                }
+            ))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
@@ -306,6 +322,18 @@ struct DeviceOtaUpgradeDetailView: View {
         }
         .buttonStyle(.plain)
         .disabled(!isOfferDeviceAvailable)
+    }
+
+    private func autofillWifiSSIDIfNeeded() {
+        guard needsGen1Wifi, !isUpgradingForThisPage,
+              !(otaManager.state.isTerminal && isStateForCurrentOffer),
+              !hasEditedGen1WifiSSID, gen1WifiSSID.isEmpty else { return }
+        wifiSSIDReader.start { ssid in
+            guard needsGen1Wifi, !isUpgradingForThisPage,
+                  !hasEditedGen1WifiSSID, gen1WifiSSID.isEmpty,
+                  let ssid else { return }
+            gen1WifiSSID = ssid
+        }
     }
 
     private func resultView(imageName: String, title: String, subtitle: String, isSystemImage: Bool = false) -> some View {

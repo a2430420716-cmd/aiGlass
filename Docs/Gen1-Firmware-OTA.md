@@ -9,6 +9,14 @@ Updated 2026-09-29 against Android `OtaUpgradeManager.java`, `Gen1Payloads`, and
 This branch runs only for confirmed Gen1 G5K61/L1 main-firmware updates. It does not use the album AP commands (`0x37`/`0x38`), TCP 8556, Gen2 HTTP upload, or Jieli Bluetooth OTA.
 
 1. The detail page collects a router SSID and password. Open networks allow an empty password; UTF-8 SSIDs are supported. Trim the SSID, preserve password bytes, and enforce Android's 127-byte per-field limit.
+   Since 2026-10-14, opening this form requests when-in-use location authorization
+   (temporary precise authorization when required) and uses `NEHotspotNetwork.fetchCurrent`
+   to prefill an untouched, empty SSID field. No location samples are requested.
+   Denial, an unavailable SSID or a read timeout leaves manual entry usable. Editing
+   the SSID, leaving the form or starting OTA invalidates pending callbacks. Passwords
+   remain manual; the existing 2.4 GHz requirement remains visible. Other OTA pages
+   do not request location authorization. Permission decisions and read outcomes are
+   recorded in Wi-Fi debug logs without the SSID or password contents.
 2. Claim the current account and bound peripheral, excluding capture, recording, AP import and another OTA. A logout authorization epoch prevents a logout/login cycle from resuming an old update.
 3. Query battery with empty `0x05`, waiting up to 3 seconds. Match Android's `max(fresh reading, pre-query cached reading)`; ignore values outside 0...100. Require at least 80%. A timeout may use valid cached battery; unknown battery fails rather than bypassing the gate.
 4. Send `0x06` with UTF-8 `SSID/password`. Wait up to 30 seconds per attempt; two attempts maximum. Empty replies do not finish the wait. Only reply byte `0x01` succeeds; a non-success reply can trigger the second attempt immediately. A failed send ends provisioning immediately. Logs record the active timeout. Final failure queries empty `0x17` for up to 3 seconds of diagnostics and never sends `0x09`.
