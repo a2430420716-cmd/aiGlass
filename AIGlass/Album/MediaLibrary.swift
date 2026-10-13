@@ -23,6 +23,7 @@ final class MediaLibrary: ObservableObject {
 
     private let manifestName = "manifest.json"
     private let fileManager = FileManager.default
+    private var gen1ImportTasks: [UUID: (fileName: String, task: Task<StoredMediaItem, Swift.Error>)] = [:]
 
     private var rootURL: URL {
         let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -32,6 +33,9 @@ final class MediaLibrary: ObservableObject {
     private var originalsURL: URL { rootURL.appendingPathComponent("originals", isDirectory: true) }
     private var thumbnailsURL: URL { rootURL.appendingPathComponent("thumbnails", isDirectory: true) }
     private var manifestURL: URL { rootURL.appendingPathComponent(manifestName) }
+    private var gen1Archive: Gen1MediaStaging {
+        Gen1MediaStaging(rootURL: rootURL.appendingPathComponent("gen1-originals", isDirectory: true))
+    }
 
     private init() {
         ensureDirectories()
@@ -44,6 +48,11 @@ final class MediaLibrary: ObservableObject {
 
     func thumbnailURL(for item: StoredMediaItem) -> URL {
         thumbnailsURL.appendingPathComponent(item.thumbnailFileName)
+    }
+
+    /// Unmodified Gen1 source, separate from the rotated file used by the album UI.
+    func preservedGen1OriginalURL(for item: StoredMediaItem) -> URL? {
+        gen1Archive.preservedOriginalURL(itemID: item.id)
     }
 
     func sections(filter: AlbumFilter) -> [AlbumSection] {
@@ -170,6 +179,145 @@ final class MediaLibrary: ObservableObject {
         items.insert(finalItem, at: 0)
         saveManifest()
         return finalItem
+    }
+
+    /// The coordinator supplies a fully downloaded file at a unique, stable inbox
+    /// path. Retries reuse its album ID, including after a crash or Photos failure.
+    @discardableResult
+    func importGen1Original(fileURL: URL, fileName: String) async throws -> StoredMediaItem {
+        try Task.checkCancellation()
+        let id = Gen1MediaStaging.sourceID(for: fileURL)
+        if let existing = gen1ImportTasks[id] {
+            guard existing.fileName == fileName else { throw Gen1MediaStaging.Failure.sourceChanged }
+            return try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                return try await existing.task.value
+            } onCancel: {
+                existing.task.cancel()
+            }
+        }
+        let task = Task { @MainActor in
+            try await self.performGen1Import(fileURL: fileURL, fileName: fileName)
+        }
+        gen1ImportTasks[id] = (fileName, task)
+        defer { gen1ImportTasks[id] = nil }
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func performGen1Import(fileURL: URL, fileName: String) async throws -> StoredMediaItem {
+        try Task.checkCancellation()
+        let archive = gen1Archive
+        // Large source copies and hashes must not block the UI. Nothing below may
+        // remove this verified source, even if decoding or manifest writes fail.
+        let archiveTask = Task.detached(priority: .utility) {
+            try archive.preserve(fileURL: fileURL, fileName: fileName)
+        }
+        let receipt = try await withTaskCancellationHandler {
+            try await archiveTask.value
+        } onCancel: {
+            archiveTask.cancel()
+        }
+        try Task.checkCancellation()
+        let source = archive.originalURL(for: receipt)
+        try fileManager.createDirectory(at: originalsURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: thumbnailsURL, withIntermediateDirectories: true)
+
+        if let existing = items.first(where: { $0.id == receipt.id }),
+           Self.hasNonemptyFile(originalURL(for: existing)),
+           Self.hasNonemptyFile(thumbnailURL(for: existing)) {
+            // A previous successful commit must still be readable on disk before
+            // treating a retry as successful (and allowing inbox cleanup).
+            try commitGen1Item(existing)
+            return existing
+        }
+
+        let isVideo = Self.isVideoFile(fileName) || fileName.lowercased().hasSuffix(".avi")
+        let displayName = isVideo ? (fileName as NSString).deletingPathExtension + ".mp4" : fileName
+        let previous = items.first { $0.id == receipt.id }
+        var item = StoredMediaItem(
+            id: receipt.id, fileName: displayName, isVideo: isVideo,
+            createdAt: receipt.createdAt, isFavorite: previous?.isFavorite ?? false, durationSeconds: nil
+        )
+        let output = originalURL(for: item)
+        let temporary = originalsURL.appendingPathComponent("gen1_\(receipt.id.uuidString)_processing.\(isVideo ? "mp4" : "jpg")")
+        let stabilizedURL = originalsURL.appendingPathComponent("gen1_\(receipt.id.uuidString)_eis.mp4")
+        let temporaryThumbnail = thumbnailsURL.appendingPathComponent("gen1_\(receipt.id.uuidString)_processing.jpg")
+        // These are disposable derivatives only; the verified archive is never a cleanup target.
+        try? fileManager.removeItem(at: temporary)
+        try? fileManager.removeItem(at: temporaryThumbnail)
+        defer {
+            try? fileManager.removeItem(at: temporary)
+            try? fileManager.removeItem(at: stabilizedURL)
+            try? fileManager.removeItem(at: temporaryThumbnail)
+        }
+
+        if isVideo {
+            let processing = try await Gen1VideoImportPipeline.process(
+                source: source, stabilizedURL: stabilizedURL, output: temporary,
+                stabilize: { input, output in
+                    await PixSmartVideoEIS.stabilizeGen1Video(from: input, to: output)
+                },
+                rotateWithAudio: { video, audio, output in
+                    try await Gen1MediaOrientation.rotateVideoClockwise90(from: video, audioFrom: audio, to: output)
+                },
+                diagnostic: { detail in
+                    DebugLogStore.logWiFi("一代：视频防抖回退原件", detail: "file=\(fileName) \(detail)")
+                }
+            )
+            DebugLogStore.logWiFi("一代：视频导入处理完成", detail: "file=\(fileName) stabilized=\(processing == .stabilized) rotation=clockwise90 originalPreserved=true")
+            item = StoredMediaItem(
+                id: receipt.id, fileName: displayName, isVideo: true,
+                createdAt: receipt.createdAt, isFavorite: previous?.isFavorite ?? false,
+                durationSeconds: Self.videoDuration(url: temporary)
+            )
+            try Self.generateVideoThumbnail(from: temporary, to: temporaryThumbnail)
+        } else {
+            let data = try Data(contentsOf: source, options: .mappedIfSafe)
+            let rotated = try Gen1MediaOrientation.rotatePhotoClockwise90(data, fileName: fileName)
+            try rotated.write(to: temporary, options: .atomic)
+            try Self.generatePhotoThumbnail(from: rotated, to: temporaryThumbnail)
+        }
+        guard Self.hasNonemptyFile(temporary), Self.hasNonemptyFile(temporaryThumbnail) else {
+            throw MediaOrientationFixer.Error.encodeFailed
+        }
+        try Task.checkCancellation()
+        try installGen1Derivative(from: temporary, to: output)
+        try installGen1Derivative(from: temporaryThumbnail, to: thumbnailURL(for: item))
+        try commitGen1Item(item)
+        print("[MediaLibrary] Gen1 original preserved; clockwise rotation applied")
+        return item
+    }
+
+    private func installGen1Derivative(from source: URL, to destination: URL) throws {
+        if fileManager.fileExists(atPath: destination.path) {
+            _ = try fileManager.replaceItemAt(destination, withItemAt: source)
+        } else {
+            try fileManager.moveItem(at: source, to: destination)
+        }
+    }
+
+    private func commitGen1Item(_ item: StoredMediaItem) throws {
+        var persisted: [StoredMediaItem] = []
+        if fileManager.fileExists(atPath: manifestURL.path) {
+            // Do not silently overwrite a corrupt manifest that loadManifest could
+            // not read. Failure leaves the source and generated derivatives intact.
+            persisted = try JSONDecoder().decode([StoredMediaItem].self, from: Data(contentsOf: manifestURL))
+        }
+        let memoryIDs = Set(items.map(\.id))
+        let combined = items + persisted.filter { !memoryIDs.contains($0.id) }
+        let updated = ([item] + combined.filter { $0.id != item.id }).sorted { $0.createdAt > $1.createdAt }
+        try Gen1MediaStaging.writeManifest(JSONEncoder().encode(updated), to: manifestURL)
+        items = updated
+    }
+
+    private static func hasNonemptyFile(_ url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]) else { return false }
+        return values.isRegularFile == true && (values.fileSize ?? 0) > 0
     }
 
     func deleteItems(ids: Set<UUID>) {

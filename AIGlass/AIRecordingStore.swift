@@ -52,6 +52,8 @@ final class AIRecordingStore: ObservableObject {
             reload(userId: normalized)
             return
         }
+        // Finalize into the original account before switching its recording index.
+        Gen1AiRecordingManager.shared.stop()
         currentUserId = normalized
         reload(userId: normalized)
     }

@@ -167,6 +167,10 @@ struct HomeView: View {
         pairingCoordinator.astraA1BleManager
     }
 
+    private func showsCapability(_ capability: KeyPath<DeviceCapabilities, Bool>) -> Bool {
+        ble.deviceGeneration == .unknown || ble.deviceCapabilities[keyPath: capability]
+    }
+
     private var selectedSoundMode: SoundEffectMode {
         SoundEffectMode(rawValue: ble.soundEffectMode) ?? .standard
     }
@@ -197,7 +201,8 @@ struct HomeView: View {
            !model.isEmpty {
             return model
         }
-        return pairingCoordinator.selectedAPIModelName ?? "G5T71"
+        return pairingCoordinator.selectedAPIModelName
+            ?? (ble.deviceGeneration == .gen1G5K61 ? "G5K61" : "G5T71")
     }
 
     var body: some View {
@@ -457,25 +462,19 @@ struct HomeView: View {
     }
 
     private var currentMediaSettingsDeviceKey: String? {
-        let cards = homeDeviceCards
-        if cards.indices.contains(selectedDeviceIndex),
-           let serial = cards[selectedDeviceIndex].serialNumber?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !serial.isEmpty {
-            return serial
-        }
-        if let bluetoothID = ble.deviceBluetoothIdentifier?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !bluetoothID.isEmpty {
-            return bluetoothID
-        }
-        return ble.deviceSN
+        guard ble.isDeviceAvailable,
+              let card = homeDeviceCards.first(where: {
+                  !$0.isFindDevice && ble.matchesCurrentDevice(
+                      serialNumber: $0.serialNumber, hardwareSN: $0.hardwareSN
+                  )
+              }) else { return nil }
+        return card.serialNumber ?? ble.deviceBluetoothIdentifier
     }
 
     /// 首页入口：切到 AI Tab → 插 loading → 发 imgreccap0 → 收图后进聊天列表。
     private func startSmartImageRecognition() {
-        guard ble.isReady else {
-            mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
+        guard ble.isDeviceAvailable else {
+            mediaActionAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
             return
         }
         guard !ble.isBatteryTooLowForMedia else {
@@ -513,14 +512,16 @@ struct HomeView: View {
             .fileImporting,
             .aiVisionOperating,
             .firmwareUpgrading,
+            .networkOperating,
+            .shuttingDown,
             .unknown
         ]
         return busyStatuses.contains { $0.busyMessage == message }
     }
 
     private func openNewbieGuide() {
-        guard ble.isReady else {
-            mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
+        guard ble.isDeviceAvailable else {
+            mediaActionAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
             return
         }
         guard !navigateToNewbieGuide else { return }
@@ -530,8 +531,13 @@ struct HomeView: View {
     }
 
     private func openAIRecording() {
-        guard ble.isReady else {
-            mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
+        // 与 Android 首页一致：一代设备按键录音单独处理，暂不开放手动录音入口。
+        guard ble.deviceGeneration != .gen1G5K61 else {
+            showMediaActionToast(L10n.t("一代设备录音功能暂未开放", "Recording is not available for Gen 1 devices yet"))
+            return
+        }
+        guard ble.isDeviceAvailable else {
+            mediaActionAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
             return
         }
         guard !navigateToAIRecording else { return }
@@ -541,8 +547,8 @@ struct HomeView: View {
     }
 
     private func openAITranslation() {
-        guard ble.isReady else {
-            mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
+        guard ble.isDeviceAvailable else {
+            mediaActionAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
             return
         }
         guard !navigateToAITranslation else { return }
@@ -552,8 +558,8 @@ struct HomeView: View {
     }
 
     private func openOperationGuide() {
-        guard ble.isReady else {
-            mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
+        guard ble.isDeviceAvailable else {
+            mediaActionAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
             return
         }
         guard !navigateToOperationGuide else { return }
@@ -571,8 +577,8 @@ struct HomeView: View {
     }
 
     private func openSoundEffectMode() {
-        guard ble.isReady else {
-            mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
+        guard ble.isDeviceAvailable else {
+            mediaActionAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
             return
         }
         _ = ble.querySoundEffectMode()
@@ -715,9 +721,9 @@ struct HomeView: View {
                 VolumeSlider(
                     value: Binding(
                         get: { systemVolume.volume },
-                        set: { systemVolume.setVolume($0) }
+                        set: { if ble.isDeviceAvailable { systemVolume.setVolume($0) } }
                     ),
-                    isEnabled: ble.isReady,
+                    isEnabled: ble.isDeviceAvailable,
                     onEditingChanged: { isDragging in
                         systemVolume.setUserDragging(isDragging)
                     }
@@ -731,141 +737,155 @@ struct HomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius))
         .shadow(color: AppTheme.cardShadow, radius: 10, y: 4)
         .frame(maxWidth: .infinity)
-        .opacity(ble.isReady ? 1 : 0.45)
-        .allowsHitTesting(ble.isReady)
+        .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+        .allowsHitTesting(ble.isDeviceAvailable)
     }
 
     private var actionGrid: some View {
         VStack(spacing: HomeLayout.actionCardSpacing) {
             HStack(spacing: HomeLayout.actionCardSpacing) {
-                Button {
-                    takePhoto()
-                } label: {
-                    MediaActionCardView(
-                        title: photoButtonTitle,
-                        iconName: "android_home_photo"
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(!ble.isReady)
-                .opacity(ble.isReady ? 1 : 0.45)
-
-                Button {
-                    toggleVideoRecording()
-                } label: {
-                    MediaActionCardView(
-                        title: videoButtonTitle,
-                        iconName: "android_home_video"
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(!ble.isReady || ble.isVideoStopping || ble.videoCompleted)
-                .opacity(ble.isReady ? 1 : 0.45)
-            }
-
-            HStack(spacing: HomeLayout.actionCardSpacing) {
-                Button {
-                    openAIRecording()
-                } label: {
-                    FeatureActionCardView(
-                        title: L10n.t("AI录音", "AI Recording"),
-                        subtitle: L10n.t("随时记录，AI转写总结", "Record anytime, AI transcription & summary"),
-                        iconName: "android_home_recording"
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(!ble.isReady)
-                .opacity(ble.isReady ? 1 : 0.45)
-                .background {
-                    NavigationLink(
-                        isActive: $navigateToAIRecording,
-                        destination: {
-                            AIRecordingListView()
-                        },
-                        label: { EmptyView() }
-                    )
-                    .hidden()
+                if showsCapability(\.photo) {
+                    Button {
+                        takePhoto()
+                    } label: {
+                        MediaActionCardView(
+                            title: photoButtonTitle,
+                            iconName: "android_home_photo"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!ble.isDeviceAvailable)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
                 }
 
-                Button {
-                    openAITranslation()
-                } label: {
-                    FeatureActionCardView(
-                        title: L10n.t("AI翻译", "AI Translation"),
-                        subtitle: L10n.t("支持多种语言，让对话交流更顺畅自然", "Multi-language support for smoother conversations"),
-                        iconName: "android_home_translation"
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(!ble.isReady)
-                .opacity(ble.isReady ? 1 : 0.45)
-                .background {
-                    NavigationLink(
-                        isActive: $navigateToAITranslation,
-                        destination: {
-                            AITranslationHomeView()
-                        },
-                        label: { EmptyView() }
-                    )
-                    .hidden()
+                if showsCapability(\.video) {
+                    Button {
+                        toggleVideoRecording()
+                    } label: {
+                        MediaActionCardView(
+                            title: videoButtonTitle,
+                            iconName: "android_home_video"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!ble.isDeviceAvailable || ble.isVideoStopping || ble.videoCompleted)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
                 }
             }
 
             HStack(spacing: HomeLayout.actionCardSpacing) {
-                Button {
-                    startSmartImageRecognition()
-                } label: {
-                    FeatureActionCardView(
-                        title: L10n.t("智能图像识别", "Smart Image Recognition"),
-                        subtitle: L10n.t("第一人称视觉助手，识别眼前万物，并解说信息", "First-person vision assistant that recognizes and explains what you see"),
-                        iconName: "android_home_recognition"
-                    )
+                if showsCapability(\.aiRecording) {
+                    Button {
+                        openAIRecording()
+                    } label: {
+                        FeatureActionCardView(
+                            title: L10n.t("AI录音", "AI Recording"),
+                            subtitle: L10n.t("随时记录，AI转写总结", "Record anytime, AI transcription & summary"),
+                            iconName: "android_home_recording"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!ble.isDeviceAvailable)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+                    .background {
+                        NavigationLink(
+                            isActive: $navigateToAIRecording,
+                            destination: {
+                                AIRecordingListView()
+                            },
+                            label: { EmptyView() }
+                        )
+                        .hidden()
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(!ble.isReady)
-                .opacity(ble.isReady ? 1 : 0.45)
 
-                Button {
-                    openSoundEffectMode()
-                } label: {
-                    FeatureActionCardView(
-                        title: selectedSoundMode.cardTitle,
-                        subtitle: L10n.t("音效模式", "Sound Mode"),
-                        iconName: selectedSoundMode.cardIconName
-                    )
+                if showsCapability(\.translation) {
+                    Button {
+                        openAITranslation()
+                    } label: {
+                        FeatureActionCardView(
+                            title: L10n.t("AI翻译", "AI Translation"),
+                            subtitle: L10n.t("支持多种语言，让对话交流更顺畅自然", "Multi-language support for smoother conversations"),
+                            iconName: "android_home_translation"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!ble.isDeviceAvailable)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+                    .background {
+                        NavigationLink(
+                            isActive: $navigateToAITranslation,
+                            destination: {
+                                AITranslationHomeView()
+                            },
+                            label: { EmptyView() }
+                        )
+                        .hidden()
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(!ble.isReady)
-                .opacity(ble.isReady ? 1 : 0.45)
             }
 
             HStack(spacing: HomeLayout.actionCardSpacing) {
-                Button {
-                    openNewbieGuide()
-                } label: {
-                    GuideActionCardView(
-                        title: L10n.t("新手引导", "Newbie Guide"),
-                        subtitle: L10n.t("快速掌握基础操作", "Learn the basics quickly"),
-                        iconName: "android_home_newbie"
-                    )
+                if showsCapability(\.aiImageRecognition) {
+                    Button {
+                        startSmartImageRecognition()
+                    } label: {
+                        FeatureActionCardView(
+                            title: L10n.t("智能图像识别", "Smart Image Recognition"),
+                            subtitle: L10n.t("第一人称视觉助手，识别眼前万物，并解说信息", "First-person vision assistant that recognizes and explains what you see"),
+                            iconName: "android_home_recognition"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!ble.isDeviceAvailable)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
                 }
-                .buttonStyle(.plain)
-                .disabled(!ble.isReady)
-                .opacity(ble.isReady ? 1 : 0.45)
-                .background {
-                    NavigationLink(
-                        isActive: $navigateToNewbieGuide,
-                        destination: {
-                            NewbieGuideView(
-                                ble: ble,
-                                modelName: currentGuideModelName,
-                                token: authSession.token,
-                                onClose: { navigateToNewbieGuide = false }
-                            )
-                        },
-                        label: { EmptyView() }
-                    )
-                    .hidden()
+
+                if showsCapability(\.eq) {
+                    Button {
+                        openSoundEffectMode()
+                    } label: {
+                        FeatureActionCardView(
+                            title: selectedSoundMode.cardTitle,
+                            subtitle: L10n.t("音效模式", "Sound Mode"),
+                            iconName: selectedSoundMode.cardIconName
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!ble.isDeviceAvailable)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+                }
+            }
+
+            HStack(spacing: HomeLayout.actionCardSpacing) {
+                if showsCapability(\.tutorial) {
+                    Button {
+                        openNewbieGuide()
+                    } label: {
+                        GuideActionCardView(
+                            title: L10n.t("新手引导", "Newbie Guide"),
+                            subtitle: L10n.t("快速掌握基础操作", "Learn the basics quickly"),
+                            iconName: "android_home_newbie"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!ble.isDeviceAvailable)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+                    .background {
+                        NavigationLink(
+                            isActive: $navigateToNewbieGuide,
+                            destination: {
+                                NewbieGuideView(
+                                    ble: ble,
+                                    modelName: currentGuideModelName,
+                                    token: authSession.token,
+                                    onClose: { navigateToNewbieGuide = false }
+                                )
+                            },
+                            label: { EmptyView() }
+                        )
+                        .hidden()
+                    }
                 }
 
                 Button {
@@ -878,8 +898,8 @@ struct HomeView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(!ble.isReady)
-                .opacity(ble.isReady ? 1 : 0.45)
+                .disabled(!ble.isDeviceAvailable)
+                .opacity(ble.isDeviceAvailable ? 1 : 0.45)
                 .background {
                     NavigationLink(
                         isActive: $navigateToOperationGuide,
@@ -959,16 +979,9 @@ private struct DeviceCarouselSection: View {
     }
 
     private var devices: [DeviceCardData] {
-        let bleReady = ble.isReady
-        let realCards = cards.filter { !$0.isFindDevice }
-        return cards.map { card in
+        cards.map { card in
             guard !card.isFindDevice else { return card }
-            var connected = bleReady && matchesLiveBLEDevice(card)
-            // 仅账号绑一台时：GATT 已就绪但 SN/UUID 字段尚未对齐，仍标已连接。
-            // 多设备绝不走此兜底，避免串卡。
-            if !connected, bleReady, realCards.count == 1 {
-                connected = true
-            }
+            let connected = ble.isDeviceAvailable && matchesLiveBLEDevice(card)
             return card.withConnection(
                 isConnected: connected,
                 batteryPercent: connected ? ble.deviceBatteryPercent : nil,
@@ -977,45 +990,11 @@ private struct DeviceCarouselSection: View {
         }
     }
 
-    /// 仅按 BLE UUID / 已保存外设 ID / 硬件 SN 精确匹配，禁止靠型号名模糊对上其它眼镜。
+    /// The home card and operation gate share the same current-peripheral identity check.
     private func matchesLiveBLEDevice(_ card: DeviceCardData) -> Bool {
-        let cardSerial = card.serialNumber?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let cardSN = card.hardwareSN?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        if let bleID = ble.deviceBluetoothIdentifier?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !bleID.isEmpty {
-            if !cardSerial.isEmpty,
-               cardSerial.caseInsensitiveCompare(bleID) == .orderedSame {
-                return true
-            }
-        }
-
-        // 本地已保存外设 UUID（与 iOS 绑定 serial_number 同键）；getdevinfo 未回时也能对上。
-        if let savedID = ble.savedPeripheralUUIDString?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !savedID.isEmpty,
-           !cardSerial.isEmpty,
-           cardSerial.caseInsensitiveCompare(savedID) == .orderedSame {
-            return true
-        }
-
-        if let liveSN = ble.deviceSN?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !liveSN.isEmpty {
-            if !cardSN.isEmpty,
-               cardSN.caseInsensitiveCompare(liveSN) == .orderedSame {
-                return true
-            }
-            // 旧数据可能把硬件 SN 写进 serial_number。
-            if !cardSerial.isEmpty,
-               cardSerial.caseInsensitiveCompare(liveSN) == .orderedSame {
-                return true
-            }
-        }
-
-        return false
+        !card.isFindDevice && ble.matchesCurrentDevice(
+            serialNumber: card.serialNumber, hardwareSN: card.hardwareSN
+        )
     }
 
     var body: some View {

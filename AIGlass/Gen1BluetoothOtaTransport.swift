@@ -1,0 +1,385 @@
+import CoreBluetooth
+import Foundation
+import JL_AdvParse
+import JL_HashPair
+import JL_OTALib
+
+/// First-generation RCSP OTA uses AE00, separate from the glasses' AE3A control channel.
+/// The ordinary BLE manager must suspend its reconnect loop until this transport finishes.
+@MainActor
+final class Gen1BluetoothOtaTransport: NSObject {
+    private let sdk = JL_OTAManager.getOTAManager()
+    private let authentication = JLHashHandler()
+    private var central: CBCentralManager!
+    private var peripheral: CBPeripheral?
+    private var activeService: CBService?
+    private var writeCharacteristic: CBCharacteristic?
+    private var notifyCharacteristic: CBCharacteristic?
+    private var connectionEpoch = UUID()
+    private var pendingWrites: [Data] = []
+    private var writeInFlight = false
+    private var authenticated = false
+    private var firmware = Data()
+    private var targetIdentifier: UUID?
+    private var reconnectMAC: String?
+    private var reconnectRequested = false
+    private var didStartImage = false
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var watchdog: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
+    private var cancelGraceTask: Task<Void, Never>?
+    private var finishingResult: Result<Void, Error>?
+    private var onProgress: ((Int) -> Void)?
+
+    override init() {
+        super.init()
+        sdk.delegate = self
+        authentication.delegate = self
+        central = CBCentralManager(delegate: self, queue: .main)
+    }
+
+    func upgrade(data: Data, peripheralIdentifier: UUID, onProgress: @escaping (Int) -> Void) async throws {
+        guard continuation == nil, !data.isEmpty else {
+            throw TransportError.message("Invalid or already active first-generation Bluetooth update")
+        }
+        firmware = data
+        targetIdentifier = peripheralIdentifier
+        self.onProgress = onProgress
+        sdk.delegate = self
+        authentication.delegate = self
+        sdk.resetOTAManager()
+        sdk.bleOnly = true
+        didStartImage = false
+        finishingResult = nil
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                armTimeout(seconds: 40, message: "连接一代蓝牙升级服务超时，请保持眼镜开机并重试")
+                if central.state == .poweredOn { connectTarget() }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.finish(.failure(CancellationError())) }
+        }
+    }
+
+    private func connectTarget() {
+        guard continuation != nil, finishingResult == nil else { return }
+        if reconnectMAC == nil, let targetIdentifier,
+           let device = central.retrievePeripherals(withIdentifiers: [targetIdentifier]).first {
+            peripheral = device
+            central.connect(device)
+        } else {
+            central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        }
+    }
+
+    private func armTimeout(seconds: UInt64, message: String) {
+        watchdog?.cancel()
+        watchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.finish(.failure(TransportError.message(message)))
+        }
+    }
+
+    private func finish(_ result: Result<Void, Error>) {
+        guard continuation != nil, finishingResult == nil else { return }
+        finishingResult = result
+        connectionEpoch = UUID()
+        watchdog?.cancel()
+        watchdog = nil
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        central.stopScan()
+        authentication.stopAuthPair()
+        if case .failure = result, authenticated,
+           peripheral?.state == .connected, writeCharacteristic != nil {
+            // Retain any in-flight RCSP frame's remaining chunks so the following cancel
+            // frame stays parseable. Keep delegate, notifications, and continuation alive
+            // until its acknowledgement or the bounded teardown deadline.
+            cancelGraceTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard !Task.isCancelled else { return }
+                self?.tearDown()
+            }
+            sdk.cmdOTACancelResult { [weak self] _, _, _ in
+                Task { @MainActor in self?.tearDown() }
+            }
+            return
+        }
+        tearDown()
+    }
+
+    private func tearDown() {
+        guard let continuation, let result = finishingResult else { return }
+        self.continuation = nil
+        cancelGraceTask?.cancel()
+        cancelGraceTask = nil
+        sdk.delegate = nil
+        sdk.noteEntityDisconnected()
+        sdk.resetOTAManager()
+        if let peripheral { central.cancelPeripheralConnection(peripheral) }
+        peripheral = nil
+        activeService = nil
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+        pendingWrites.removeAll()
+        writeInFlight = false
+        authenticated = false
+        firmware = Data()
+        onProgress = nil
+        continuation.resume(with: result)
+    }
+
+    private func enqueue(_ data: Data) {
+        guard continuation != nil, let peripheral, let characteristic = writeCharacteristic else { return }
+        let type: CBCharacteristicWriteType = characteristic.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+        let size = max(1, peripheral.maximumWriteValueLength(for: type))
+        for offset in stride(from: 0, to: data.count, by: size) {
+            pendingWrites.append(data.subdata(in: offset..<min(offset + size, data.count)))
+        }
+        drainWrites()
+    }
+
+    private func drainWrites() {
+        guard let peripheral, let characteristic = writeCharacteristic, !writeInFlight else { return }
+        if characteristic.properties.contains(.writeWithoutResponse) {
+            while !pendingWrites.isEmpty, peripheral.canSendWriteWithoutResponse {
+                peripheral.writeValue(pendingWrites.removeFirst(), for: characteristic, type: .withoutResponse)
+            }
+        } else if !pendingWrites.isEmpty {
+            writeInFlight = true
+            peripheral.writeValue(pendingWrites.removeFirst(), for: characteristic, type: .withResponse)
+        }
+    }
+
+    private func scheduleReconnect(mac: String? = nil) {
+        guard continuation != nil, finishingResult == nil else { return }
+        reconnectMAC = mac
+        if mac == nil, let identifier = UUID(uuidString: sdk.mBLE_UUID) { targetIdentifier = identifier }
+        reconnectRequested = true
+        connectionEpoch = UUID()
+        didStartImage = false
+        authenticated = false
+        pendingWrites.removeAll()
+        writeInFlight = false
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+        activeService = nil
+        if let peripheral { central.cancelPeripheralConnection(peripheral) }
+        armTimeout(seconds: 90, message: "一代蓝牙升级重连超时，请重新连接眼镜后检查版本")
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            self?.connectTarget()
+        }
+    }
+
+    private enum TransportError: LocalizedError {
+        case message(String)
+        var errorDescription: String? { if case .message(let value) = self { return value }; return nil }
+    }
+
+    private func isActivePeripheral(_ candidate: CBPeripheral) -> Bool {
+        continuation != nil && peripheral === candidate
+    }
+}
+
+extension Gen1BluetoothOtaTransport: @preconcurrency CBCentralManagerDelegate {
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        guard continuation != nil else { return }
+        if central.state == .poweredOn {
+            connectTarget()
+        } else if central.state != .unknown && central.state != .resetting {
+            finish(.failure(TransportError.message("蓝牙不可用，无法升级一代眼镜")))
+        }
+    }
+
+    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        guard continuation != nil, finishingResult == nil else { return }
+        let matches: Bool
+        if let reconnectMAC {
+            guard let data = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data else { return }
+            matches = JLAdvParse.otaBleMacAddress(reconnectMAC, isEqualToCBAdvDataManufacturerData: data)
+        } else {
+            matches = peripheral.identifier == targetIdentifier
+        }
+        guard matches else { return }
+        central.stopScan()
+        self.peripheral = peripheral
+        central.connect(peripheral)
+    }
+
+    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        guard isActivePeripheral(peripheral), finishingResult == nil else { central.cancelPeripheralConnection(peripheral); return }
+        self.peripheral = peripheral
+        connectionEpoch = UUID()
+        targetIdentifier = peripheral.identifier
+        reconnectRequested = false
+        peripheral.delegate = self
+        peripheral.discoverServices([CBUUID(string: "AE00")])
+    }
+
+    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        guard isActivePeripheral(peripheral) else { return }
+        finish(.failure(error ?? TransportError.message("一代蓝牙升级服务连接失败")))
+    }
+
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        guard isActivePeripheral(peripheral) else { return }
+        if finishingResult != nil { tearDown(); return }
+        connectionEpoch = UUID()
+        authenticated = false
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+        activeService = nil
+        pendingWrites.removeAll()
+        writeInFlight = false
+        sdk.noteEntityDisconnected()
+        // Allow an already queued SDK reconnect/reboot result to arrive. Never restart
+        // an interrupted transfer solely because the radio disconnected.
+        if !reconnectRequested {
+            armTimeout(seconds: 8, message: "一代蓝牙升级连接中断，请重新连接眼镜后检查版本")
+        }
+    }
+}
+
+extension Gen1BluetoothOtaTransport: @preconcurrency CBPeripheralDelegate {
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard isActivePeripheral(peripheral), peripheral.state == .connected, finishingResult == nil else { return }
+        if let error { finish(.failure(error)); return }
+        guard let service = peripheral.services?.first(where: { $0.uuid == CBUUID(string: "AE00") }) else {
+            finish(.failure(TransportError.message("眼镜未提供一代 AE00 蓝牙升级服务")))
+            return
+        }
+        activeService = service
+        peripheral.discoverCharacteristics([CBUUID(string: "AE01"), CBUUID(string: "AE02")], for: service)
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard isActivePeripheral(peripheral), activeService === service,
+              peripheral.state == .connected, finishingResult == nil else { return }
+        if let error { finish(.failure(error)); return }
+        guard let write = service.characteristics?.first(where: { $0.uuid == CBUUID(string: "AE01") }),
+              let notify = service.characteristics?.first(where: { $0.uuid == CBUUID(string: "AE02") }),
+              write.properties.contains(.write) || write.properties.contains(.writeWithoutResponse) else {
+            finish(.failure(TransportError.message("一代蓝牙升级特征不完整")))
+            return
+        }
+        writeCharacteristic = write
+        notifyCharacteristic = notify
+        peripheral.setNotifyValue(true, for: notify)
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        guard isActivePeripheral(peripheral), notifyCharacteristic === characteristic,
+              peripheral.state == .connected, finishingResult == nil else { return }
+        if let error { finish(.failure(error)); return }
+        guard characteristic.isNotifying else {
+            finish(.failure(TransportError.message("无法订阅一代蓝牙升级通知")))
+            return
+        }
+        sdk.mBLE_UUID = peripheral.identifier.uuidString
+        sdk.mBLE_NAME = peripheral.name ?? ""
+        sdk.noteEntityConnected()
+        authenticated = false
+        authentication.hashResetPair()
+        let epoch = connectionEpoch
+        authentication.bluetoothPairingKey(nil) { [weak self] success in
+            Task { @MainActor in
+                guard let self, self.isActivePeripheral(peripheral), self.connectionEpoch == epoch,
+                      self.finishingResult == nil else { return }
+                guard success else {
+                    self.finish(.failure(TransportError.message("一代蓝牙升级设备认证失败")))
+                    return
+                }
+                self.authenticated = true
+                self.sdk.cmdTargetFeature()
+            }
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard isActivePeripheral(peripheral), notifyCharacteristic === characteristic,
+              peripheral.state == .connected else { return }
+        if let error { finish(.failure(error)); return }
+        guard let data = characteristic.value else { return }
+        if authenticated { sdk.cmdOtaDataReceive(data) }
+        else { authentication.inputPairData(data) }
+    }
+
+    func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        guard isActivePeripheral(peripheral), peripheral.state == .connected else { return }
+        drainWrites()
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard isActivePeripheral(peripheral), writeCharacteristic === characteristic,
+              peripheral.state == .connected else { return }
+        if let error { finish(.failure(error)); return }
+        writeInFlight = false
+        drainWrites()
+    }
+}
+
+extension Gen1BluetoothOtaTransport: JLHashHandlerDelegate, JL_OTAManagerDelegate {
+    nonisolated func hash(onPairOutputData data: Data) {
+        Task { @MainActor [weak self] in self?.enqueue(data) }
+    }
+    nonisolated func otaDataSend(_ data: Data) {
+        Task { @MainActor [weak self] in self?.enqueue(data) }
+    }
+
+    nonisolated func otaFeatureResult(_ manager: JL_OTAManager) {
+        Task { @MainActor [weak self] in self?.startImageWhenReady() }
+    }
+
+    private func startImageWhenReady() {
+        guard continuation != nil, finishingResult == nil, !didStartImage, authenticated,
+              peripheral?.state == .connected, writeCharacteristic != nil else { return }
+        didStartImage = true
+        armTimeout(seconds: 180, message: "一代蓝牙固件传输超时")
+        sdk.cmdOTAData(firmware)
+    }
+
+    nonisolated func otaCancel() {
+        Task { @MainActor [weak self] in self?.finish(.failure(CancellationError())) }
+    }
+
+    nonisolated func otaUpgradeResult(_ result: JL_OTAResult, progress: Float) {
+        Task { @MainActor [weak self] in self?.handleUpgradeResult(result, progress: progress) }
+    }
+
+    private func handleUpgradeResult(_ result: JL_OTAResult, progress: Float) {
+        guard continuation != nil, finishingResult == nil else { return }
+        switch result {
+        case .success, .reboot:
+            // Both are terminal events in the vendor's full OTA sample. The caller
+            // reconnects the normal service and verifies the fresh firmware version.
+            onProgress?(100)
+            finish(.success(()))
+        case .upgrading:
+            guard progress.isFinite else { return }
+            let percent = min(100, max(0, Int((progress * 100).rounded())))
+            onProgress?(percent)
+            armTimeout(seconds: 180, message: "一代蓝牙升级进度超时，请重新连接眼镜后检查版本")
+        case .reconnect, .reconnectUpdateSource:
+            scheduleReconnect()
+        case .reconnectWithMacAddr:
+            scheduleReconnect(mac: sdk.bleAddr)
+        case .preparing, .prepared:
+            armTimeout(seconds: 180, message: "一代蓝牙升级设备响应超时")
+        case .disconnect:
+            if !reconnectRequested {
+                armTimeout(seconds: 8, message: "一代蓝牙升级连接中断，请重新连接眼镜后检查版本")
+            }
+        case .lowPower:
+            finish(.failure(TransportError.message("眼镜电量不足，请充电后再升级")))
+        case .cancel:
+            finish(.failure(CancellationError()))
+        default:
+            finish(.failure(TransportError.message(String(format: "一代蓝牙升级失败（RCSP 0x%02X）", result.rawValue))))
+        }
+    }
+}

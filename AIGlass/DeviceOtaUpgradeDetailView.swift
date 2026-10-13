@@ -14,11 +14,19 @@ struct DeviceOtaUpgradeDetailView: View {
 
     @State private var fileSizeText: String?
     @State private var batteryAlertMessage: String?
+    @State private var entryGeneration: DeviceGeneration
+    @State private var gen1WifiSSID = ""
+    @State private var gen1WifiPassword = ""
 
     init(kind: OtaUpgradeKind, offer: DeviceFirmwareUpdateCoordinator.UpdateOffer, ble: AstraA1BleManager) {
         self.kind = kind
         self.offer = offer
         _ble = ObservedObject(wrappedValue: ble)
+        _entryGeneration = State(initialValue: ble.deviceGeneration)
+    }
+
+    private var needsGen1Wifi: Bool {
+        entryGeneration == .gen1G5K61 && kind == .firmware
     }
 
     private var contentLines: [String] {
@@ -30,6 +38,12 @@ struct DeviceOtaUpgradeDetailView: View {
 
     private var isUpgradingForThisPage: Bool {
         otaManager.isUpgrading && isStateForCurrentOffer
+    }
+
+    private var isOfferDeviceAvailable: Bool {
+        ble.isDeviceAvailable
+            && ble.deviceGeneration == entryGeneration
+            && ble.matchesCurrentDevice(serialNumber: offer.serialNumber, hardwareSN: offer.serialNumber)
     }
 
     private var isStateForCurrentOffer: Bool {
@@ -74,6 +88,9 @@ struct DeviceOtaUpgradeDetailView: View {
                         currentVersionCard
                         centerSection
                         contentSection
+                        if needsGen1Wifi, !isUpgradingForThisPage {
+                            gen1WifiSection
+                        }
                         warningSection
                     }
                     .padding(.horizontal, 20)
@@ -93,14 +110,15 @@ struct DeviceOtaUpgradeDetailView: View {
         .suppressTabBarOnAppear()
         .onAppear {
             ble.ensureConnected(reason: "otaDetail")
-            ble.refreshDeviceVersionsAndStorage()
+            if isOfferDeviceAvailable { ble.refreshDeviceVersionsAndStorage() }
             loadFileSizeIfNeeded()
         }
-        .onChangeCompat(of: ble.isReady) { ready in
-            if ready {
+        .onChangeCompat(of: isOfferDeviceAvailable) { available in
+            if available {
                 ble.refreshDeviceVersionsAndStorage()
             }
         }
+        .onDisappear { gen1WifiPassword = "" }
         .alert(L10n.t("无法升级", "Unable to Update"), isPresented: Binding(
             get: { batteryAlertMessage != nil },
             set: { if !$0 { batteryAlertMessage = nil } }
@@ -155,8 +173,12 @@ struct DeviceOtaUpgradeDetailView: View {
     @ViewBuilder
     private var centerSection: some View {
         VStack(spacing: 16) {
-            if isUpgradingForThisPage, let progress = otaManager.state.overallProgress {
+            if isUpgradingForThisPage, let progress = otaManager.overallProgress {
                 OtaCircularProgressView(progress: progress)
+                Text(otaManager.currentStatusText)
+                    .font(AppTheme.notoSansSC(size: 13, weight: .regular))
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .multilineTextAlignment(.center)
             } else {
                 Image("android_upgrade")
                     .resizable()
@@ -198,6 +220,12 @@ struct DeviceOtaUpgradeDetailView: View {
 
     private var warningSection: some View {
         VStack(spacing: 12) {
+            if needsGen1Wifi {
+                Text(L10n.t("每次升级都会重新为眼镜配置可上网的 2.4 GHz Wi-Fi。升级期间请保持眼镜供电，完成后将自动重连并核对版本。", "Each update configures the glasses for a 2.4 GHz Wi-Fi network with internet access. Keep the glasses powered throughout the update. The app will reconnect and verify the version afterward."))
+                    .font(AppTheme.notoSansSC(size: 13, weight: .regular))
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .multilineTextAlignment(.center)
+            }
             Text(attributedBatteryWarning)
                 .font(AppTheme.notoSansSC(size: 13, weight: .regular))
                 .multilineTextAlignment(.center)
@@ -221,10 +249,35 @@ struct DeviceOtaUpgradeDetailView: View {
             ? L10n.t("OTA升级需要眼镜保持 Wi-Fi 连接和", "OTA update requires Wi-Fi and ")
             : L10n.t("OTA升级需要", "OTA update requires ")
         var text = AttributedString(prefix)
-        var highlight = AttributedString(L10n.t("眼镜电量>15%", "glasses battery >15%"))
+        var highlight = AttributedString(needsGen1Wifi
+            ? L10n.t("眼镜电量≥80%", "glasses battery ≥80%")
+            : L10n.t("眼镜电量>15%", "glasses battery >15%"))
         highlight.foregroundColor = .red
         text.append(highlight)
         return text
+    }
+
+    private var gen1WifiSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n.t("为眼镜连接 Wi-Fi", "Connect Glasses to Wi-Fi"))
+                .font(AppTheme.notoSansSC(size: 15, weight: .bold))
+                .foregroundStyle(AppTheme.primaryText)
+            Text(L10n.t("请输入可上网的 2.4 GHz Wi-Fi 名称与密码。开放网络可不填密码。", "Enter the name and password of a 2.4 GHz Wi-Fi network with internet access. Leave the password empty for an open network."))
+                .font(AppTheme.notoSansSC(size: 13, weight: .regular))
+                .foregroundStyle(AppTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField(L10n.t("Wi-Fi 名称（SSID）", "Wi-Fi Name (SSID)"), text: $gen1WifiSSID)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textFieldStyle(.roundedBorder)
+            SecureField(L10n.t("Wi-Fi 密码", "Wi-Fi Password"), text: $gen1WifiPassword)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textFieldStyle(.roundedBorder)
+        }
+        .padding(16)
+        .background(AppTheme.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     private var upgradeButton: some View {
@@ -238,6 +291,7 @@ struct DeviceOtaUpgradeDetailView: View {
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+        .disabled(!isOfferDeviceAvailable)
     }
 
     private func resultView(imageName: String, title: String, subtitle: String) -> some View {
@@ -266,14 +320,36 @@ struct DeviceOtaUpgradeDetailView: View {
 
     private func startUpgrade() {
         guard !otaManager.isUpgrading else { return }
-        guard let battery = ble.deviceBatteryPercent else {
-            batteryAlertMessage = L10n.t("正在读取眼镜电量，请稍后再试。", "Reading glasses battery. Please try again later.")
+        guard isOfferDeviceAvailable else {
+            batteryAlertMessage = L10n.t("请先连接对应的已绑定眼镜", "Please connect the bound glasses for this update first")
             return
         }
-        let lowBatteryThreshold = 15
-        guard battery > lowBatteryThreshold else {
-            batteryAlertMessage = L10n.t("眼镜电量不足（当前\(battery)%），请充电至 15% 以上再升级。", "Battery too low (\(battery)%). Charge to above 15% before updating.")
+        guard !ble.deviceVersionQueryFailed else {
+            batteryAlertMessage = L10n.t("未读取到完整版本信息，请返回并重新连接眼镜后重试。", "Complete version information was not received. Go back, reconnect your glasses, and try again.")
             return
+        }
+        // Gen1 main firmware queries 0x05 before enforcing its 80% gate. A stale
+        // cached low value must not prevent that fresh query from being sent.
+        if !needsGen1Wifi {
+            guard let battery = ble.deviceBatteryPercent else {
+                batteryAlertMessage = L10n.t("正在读取眼镜电量，请稍后再试。", "Reading glasses battery. Please try again later.")
+                return
+            }
+            guard battery > 15 else {
+                batteryAlertMessage = L10n.t("眼镜电量不足（当前\(battery)%），请充电至 15% 以上再升级。", "Battery too low (\(battery)%). Charge to above 15% before updating.")
+                return
+            }
+        }
+
+        var gen1Wifi: Gen1FirmwareWifiCredentials?
+        if needsGen1Wifi {
+            do {
+                _ = try Gen1FirmwareUpdateProtocol.wifiPayload(ssid: gen1WifiSSID, password: gen1WifiPassword)
+                gen1Wifi = Gen1FirmwareWifiCredentials(ssid: gen1WifiSSID, password: gen1WifiPassword)
+            } catch {
+                batteryAlertMessage = error.localizedDescription
+                return
+            }
         }
 
         switch kind {
@@ -291,8 +367,10 @@ struct DeviceOtaUpgradeDetailView: View {
                 authorization: authSession.token,
                 ble: ble,
                 otaManager: otaManager,
-                importManager: importManager
+                importManager: importManager,
+                gen1Wifi: gen1Wifi
             )
+            gen1WifiPassword = ""
         }
     }
 
@@ -331,6 +409,9 @@ struct DeviceOtaUpgradeDetailView: View {
         }
         if let live = liveCurrentVersion?.trimmingCharacters(in: .whitespacesAndNewlines), !live.isEmpty {
             return displayVersion(live)
+        }
+        if ble.deviceVersionQueryFailed {
+            return L10n.t("读取失败", "Read failed")
         }
         return displayVersion(offer.currentVersion)
     }

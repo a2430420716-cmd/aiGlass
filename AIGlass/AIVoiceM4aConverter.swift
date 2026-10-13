@@ -24,6 +24,27 @@ enum AIVoiceM4aConverter {
     private static let channels = 1
     private static let opusFrameSamples = 320 // 20ms @ 16kHz，对齐 Android
 
+    /// Opus prediction state must survive BLE notification boundaries within one stream.
+    final class StreamingOpusDecoder {
+        private var decoder: AIGlassOpusDecoder?
+
+        func decode(_ frame: Data) throws -> Data {
+            guard !frame.isEmpty else { return Data() }
+            if decoder == nil {
+                do {
+                    decoder = try AIGlassOpusDecoder(sampleRate: Int32(sampleRate), channels: Int32(channels))
+                } catch {
+                    throw ConverterError.decoderUnavailable
+                }
+            }
+            guard let decoder else { throw ConverterError.decoderUnavailable }
+            return try decoder.decodeFrame(frame)
+        }
+
+        func reset() { decoder = nil }
+        func close() { decoder = nil }
+    }
+
     static func convertOpusFramesToM4A(_ frames: [Data]) throws -> Data {
         guard !frames.isEmpty else { throw ConverterError.emptyFrames }
         let sampleLens = frames.prefix(12).map(\.count)

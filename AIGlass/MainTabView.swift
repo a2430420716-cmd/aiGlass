@@ -101,8 +101,8 @@ struct MainTabView: View {
             recordingStore.updateCurrentUser(authSession.phoneNumber)
             bindAIVisionTransfer()
             bindAIVoiceChat()
-            let ready = pairingCoordinator.astraA1BleManager.isReady
-            updateAudioConnectionState(ready)
+            let available = pairingCoordinator.astraA1BleManager.isDeviceAvailable
+            updateAudioConnectionState(available)
             scheduleFirmwareUpdateRefresh()
         }
         .onChangeCompat(of: languageManager.refreshID) { _ in
@@ -113,6 +113,9 @@ struct MainTabView: View {
             pairingCoordinator.path.removeAll()
         }
         .onChangeCompat(of: authSession.phoneNumber) { phone in
+            if Gen1AiRecordingManager.shared.isRecording {
+                _ = pairingCoordinator.astraA1BleManager.stopAIRecord()
+            }
             recordingStore.updateCurrentUser(phone)
         }
         .onChangeCompat(of: authSession.userInfo?.bluetoothBySerialNumber.count ?? 0) { _ in
@@ -121,9 +124,9 @@ struct MainTabView: View {
         .onChangeCompat(of: authSession.userInfo?.firmwareBySerialNumber.count ?? 0) { _ in
             scheduleFirmwareUpdateRefresh()
         }
-        .onChangeCompat(of: pairingCoordinator.astraA1BleManager.isReady) { ready in
-            updateAudioConnectionState(ready)
-            if !ready {
+        .onChangeCompat(of: pairingCoordinator.astraA1BleManager.isDeviceAvailable) { available in
+            updateAudioConnectionState(available)
+            if !available {
                 aiVoiceChat.resetAfterDisconnect()
             }
             // 升级补查交给 DeviceFirmwareUpdateCoordinator，避免与初连 getdevinfo 叠发。

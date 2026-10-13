@@ -133,6 +133,50 @@ final class DebugLogStore: ObservableObject {
         }
     }
 
+    /// Callback evidence captured before framing, including headerless continuations
+    /// and ATT errors. The connection owner applies its raw diagnostic budget.
+    nonisolated static func logBLERawReceived(
+        data: Data?,
+        peripheralID: String,
+        characteristicID: String,
+        context: String,
+        error: String? = nil,
+        capturedAt: Date
+    ) {
+        let formatted = BLENotificationDiagnostics.format(
+            data: data,
+            peripheralID: peripheralID,
+            characteristicID: characteristicID,
+            context: context,
+            error: error
+        )
+        Task { @MainActor in
+            shared.append(
+                channel: .ble,
+                direction: .received,
+                title: formatted.title,
+                detail: formatted.detail,
+                date: capturedAt
+            )
+        }
+    }
+
+    nonisolated static func logBLEEvent(
+        _ title: String,
+        detail: String = "",
+        capturedAt: Date = Date()
+    ) {
+        Task { @MainActor in
+            shared.append(
+                channel: .ble,
+                direction: .event,
+                title: title,
+                detail: detail,
+                date: capturedAt
+            )
+        }
+    }
+
     // MARK: - Connect lifecycle
 
     /// 自动连接 / 重连相关事件。`direction` 默认 `.event`；App 发起可用 `.sent`，系统回调可用 `.received`。
@@ -153,7 +197,7 @@ final class DebugLogStore: ObservableObject {
 
     // MARK: - Wi-Fi lifecycle
 
-    /// 眼镜 Wi-Fi 完整流程。禁止在 detail 中写热点密码明文。
+    /// 眼镜 Wi-Fi 配网诊断，包含用于比对设备与系统配置的热点口令。
     nonisolated static func logWiFi(
         _ title: String,
         detail: String = "",
@@ -209,6 +253,7 @@ final class DebugLogStore: ObservableObject {
         var lines: [String] = [
             "=== AIGlass \(channelName) 调试日志 ===",
             "App版本: \(AppBundleInfo.shortVersion) (\(AppBundleInfo.buildNumber))",
+            "系统版本: \(ProcessInfo.processInfo.operatingSystemVersionString)",
             "导出时间: \(stampFormatter.string(from: Date()))",
             "条数: \(entries.count)",
             ""
@@ -247,10 +292,10 @@ final class DebugLogStore: ObservableObject {
 
     // MARK: - Private
 
-    private func append(channel: Channel, direction: Direction, title: String, detail: String) {
+    private func append(channel: Channel, direction: Direction, title: String, detail: String, date: Date = Date()) {
         let entry = Entry(
             id: UUID(),
-            date: Date(),
+            date: date,
             channel: channel,
             direction: direction,
             title: title,

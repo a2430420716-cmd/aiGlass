@@ -408,7 +408,7 @@ enum AstraA1BleProtocol {
         return AIVisionDataPacket(seq: seq, total: total, flags: flags, payload: payload)
     }
 
-    /// 设备运行状态（协议常量 0〜6；App 本地 UNKNOWN=255）。
+    /// 统一运行状态：二代协议 0〜6，一代适配补充 7〜8；App 本地 UNKNOWN=255。
     enum DeviceRuntimeStatus: UInt8 {
         case standby = 0
         case photoTaking = 1
@@ -417,6 +417,8 @@ enum AstraA1BleProtocol {
         case fileImporting = 4
         case aiVisionOperating = 5
         case firmwareUpgrading = 6
+        case networkOperating = 7
+        case shuttingDown = 8
         case unknown = 0xFF
 
         var name: String {
@@ -428,6 +430,8 @@ enum AstraA1BleProtocol {
             case .fileImporting: return "FILE_IMPORTING"
             case .aiVisionOperating: return "AI_VISION_OPERATING"
             case .firmwareUpgrading: return "FIRMWARE_UPGRADING"
+            case .networkOperating: return "NETWORK_OPERATING"
+            case .shuttingDown: return "SHUTTING_DOWN"
             case .unknown: return "UNKNOWN"
             }
         }
@@ -465,6 +469,16 @@ enum AstraA1BleProtocol {
                 return L10n.t(
                     "设备正在升级，请勿执行其他操作",
                     "The device is updating firmware. Try again later."
+                )
+            case .networkOperating:
+                return L10n.t(
+                    "设备正在进行网络操作，请稍后再试",
+                    "The device is performing a network operation. Try again later."
+                )
+            case .shuttingDown:
+                return L10n.t(
+                    "设备正在关机，请稍后再试",
+                    "The device is shutting down. Try again later."
                 )
             case .unknown:
                 return L10n.t(
@@ -515,10 +529,7 @@ enum AstraA1BleProtocol {
         if let known = DeviceRuntimeStatus(rawValue: data[12]), known != .unknown {
             return known
         }
-        // 0~6 以外的值不当成合法运行状态。
-        if data[12] <= 6 {
-            return DeviceRuntimeStatus(rawValue: data[12])
-        }
+        // 未知或未定义的值不覆盖最近一次有效运行状态。
         return nil
     }
 
@@ -637,6 +648,11 @@ enum AstraA1BleProtocol {
     /// closewifi：关闭 Wi-Fi 与 WebServer；最新固件要求携带 1 字节 0。
     static func buildCloseWifiCommand() -> Data {
         buildPacket(command: "closewifi", payload: Data([0x00]))
+    }
+
+    /// otacancel0：退出设备 OTA 状态；与 Android 一致，不携带载荷。
+    static func buildOtaCancelCommand() -> Data {
+        buildPacket(command: "otacancel0")
     }
 
     /// otaupload0：启动蓝牙固件 OTA。fileName 须与已上传到 fw_upload 的文件名一致。

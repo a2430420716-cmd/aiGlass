@@ -51,10 +51,12 @@ struct AIRecordingListView: View {
     }
 
     private var pendingImportCount: Int {
-        max(ble.pendingRecordingImportFileCount, recordingImport.leftoverDeviceFileCount)
+        guard ble.deviceGeneration != .gen1G5K61 else { return 0 }
+        return max(ble.pendingRecordingImportFileCount, recordingImport.leftoverDeviceFileCount)
     }
 
     private var showImportCard: Bool {
+        guard ble.deviceGeneration != .gen1G5K61 else { return false }
         if pendingImportCount > 0 { return true }
         if recordingImport.isImporting { return true }
         switch recordingImport.state {
@@ -150,8 +152,12 @@ struct AIRecordingListView: View {
             recordingStore.updateCurrentUser(authSession.phoneNumber)
             syncRecordingUIFromBLE()
             // 删除失败残留优先恢复；再查 hasnewfile（设备常只回媒体 type=0，录音残留靠本地记）。
-            recordingImport.restoreLeftoverPendingIfNeeded(ble: ble)
-            ble.refreshPendingImportFiles()
+            if ble.isDeviceAvailable {
+                if ble.deviceGeneration != .gen1G5K61 {
+                    recordingImport.restoreLeftoverPendingIfNeeded(ble: ble)
+                }
+                ble.refreshPendingImportFiles()
+            }
         }
         .onDisappear {
             if ble.isAIRecording || isRecordingUI {
@@ -412,6 +418,8 @@ struct AIRecordingListView: View {
                         .background(Color(red: 0.25, green: 0.25, blue: 0.25))
                         .clipShape(Capsule())
                 }
+                .disabled(recordingImport.isImporting || !ble.isDeviceAvailable)
+                .opacity(ble.isDeviceAvailable ? 1 : 0.45)
             }
 
         }
@@ -442,8 +450,8 @@ struct AIRecordingListView: View {
     }
 
     private func startImport() {
-        guard ble.isReady else {
-            alertMessage = L10n.t("请先连接眼镜设备", "Please connect glasses first")
+        guard ble.isDeviceAvailable else {
+            alertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
             return
         }
         recordingImport.resetStatus()
@@ -628,7 +636,8 @@ struct AIRecordingListView: View {
                 .background(Color(red: 0.20, green: 0.20, blue: 0.20))
                 .clipShape(Capsule())
         }
-        .disabled(recordingImport.isImporting)
+        .disabled(recordingImport.isImporting || !ble.isDeviceAvailable)
+        .opacity(ble.isDeviceAvailable ? 1 : 0.45)
     }
 
     private var recordingStatusBar: some View {
@@ -689,8 +698,8 @@ struct AIRecordingListView: View {
     }
 
     private func startRecording() {
-        guard ble.isReady else {
-            alertMessage = L10n.t("设备未连接", "Device not connected")
+        guard ble.isDeviceAvailable else {
+            alertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
             return
         }
         guard !recordingImport.isImporting else {

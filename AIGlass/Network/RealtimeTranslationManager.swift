@@ -4,6 +4,7 @@ import Foundation
 /// 对齐安卓 `RealtimeTranslationManager`：拉取 ws_url → WebSocket → 发 PCM / 收文本与语音。
 @MainActor
 final class RealtimeTranslationManager: NSObject {
+    @MainActor
     protocol Callback: AnyObject {
         func onReady()
         func onTaskStarted()
@@ -35,21 +36,19 @@ final class RealtimeTranslationManager: NSObject {
     private var ready = false
     private var initSent = false
     private var speechPlaybackEnabled = true
-    /// 对话翻译关闭自动播，由页面按方向路由；同声传译保持自动播。
+    /// 两个翻译页面自行选择播放路由，关闭默认自动播放避免重复播放。
     private var autoPlayIncomingSpeech = true
+    private var phoneMicrophoneCaptureEnabled = false
     private var currentSourceLanguage = ""
     private var currentTargetLanguage = ""
     private var currentVoice = "Tina"
     private var currentWsURL = ""
     private var receiveLoopRunning = false
+    private var connectionAttempt = TranslationConnectionAttempt()
+    private var connectionTask: Task<Void, Never>?
 
     /// 对齐安卓输入门控：只有本地录制开启且未收尾时才允许发 PCM。
-    private var audioInputAllowed = false
-    private var inputClosing = false
-    private var localRecordingActive = false
-    private var backendTurnProcessing = false
-    private var lastRecordToggleAt: Date = .distantPast
-    private let minRecordToggleInterval: TimeInterval = 0.3
+    private var inputState = TranslationAudioInputState()
 
     private var audioEngine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
@@ -74,7 +73,10 @@ final class RealtimeTranslationManager: NSObject {
         currentSourceLanguage = sourceLanguage
         currentTargetLanguage = targetLanguage
         currentVoice = voice
-        Task { await fetchAndOpen(token: token) }
+        let attempt = connectionAttempt.begin()
+        connectionTask = Task { [weak self] in
+            await self?.fetchAndOpen(token: token, attempt: attempt)
+        }
     }
 
     func updateLanguage(sourceLanguage: String, targetLanguage: String) {
@@ -89,7 +91,7 @@ final class RealtimeTranslationManager: NSObject {
     }
 
     func canSendAudio() -> Bool {
-        opened && ready && audioInputAllowed && !inputClosing && !backendTurnProcessing
+        inputState.canSendAudio(opened: opened, ready: ready)
     }
 
     @discardableResult
@@ -122,27 +124,23 @@ final class RealtimeTranslationManager: NSObject {
 
     @discardableResult
     func markLocalRecordingStarted() -> Bool {
-        let now = Date()
-        if now.timeIntervalSince(lastRecordToggleAt) < minRecordToggleInterval {
-            print("[RealtimeTranslation] record start suppressed by debounce")
-            return false
-        }
-        lastRecordToggleAt = now
-        localRecordingActive = true
-        backendTurnProcessing = false
-        inputClosing = false
-        audioInputAllowed = opened && ready
-        print("[RealtimeTranslation] record input opened allowed=\(audioInputAllowed)")
-        return audioInputAllowed
+        let allowed = inputState.start(opened: opened, ready: ready, now: Date())
+        print("[RealtimeTranslation] record input opened allowed=\(allowed)")
+        return allowed
     }
 
     func markLocalRecordingStopped(reason: String) {
-        lastRecordToggleAt = Date()
-        localRecordingActive = false
-        backendTurnProcessing = false
-        audioInputAllowed = false
-        inputClosing = true
+        // Callers close the recording gate before finish(). Flush the final <100ms first.
+        flushPendingPCM()
+        inputState.stop(now: Date())
         print("[RealtimeTranslation] record input closed reason=\(reason)")
+    }
+
+    private func flushPendingPCM() {
+        guard canSendAudio(), !pendingPCM.isEmpty else { return }
+        let chunk = pendingPCM
+        pendingPCM.removeAll(keepingCapacity: true)
+        _ = sendPCMChunk(chunk)
     }
 
     func setSpeechPlaybackEnabled(_ enabled: Bool) {
@@ -158,6 +156,10 @@ final class RealtimeTranslationManager: NSObject {
             stopPlayback()
         }
         print("[RealtimeTranslation] autoPlayIncomingSpeech=\(enabled)")
+    }
+
+    func setPhoneMicrophoneCaptureEnabled(_ enabled: Bool) {
+        phoneMicrophoneCaptureEnabled = enabled
     }
 
     func resetSpeechPlaybackForTurn() {
@@ -202,11 +204,7 @@ final class RealtimeTranslationManager: NSObject {
     }
 
     func finish() {
-        if canSendAudio(), !pendingPCM.isEmpty {
-            let chunk = pendingPCM
-            pendingPCM.removeAll(keepingCapacity: true)
-            sendPCMChunk(chunk)
-        }
+        flushPendingPCM()
         pendingPCM.removeAll(keepingCapacity: true)
         turnBusyRecoveryTask?.cancel()
         turnBusyRecoveryTask = nil
@@ -219,6 +217,9 @@ final class RealtimeTranslationManager: NSObject {
     }
 
     func close() {
+        connectionAttempt.cancel()
+        connectionTask?.cancel()
+        connectionTask = nil
         receiveLoopRunning = false
         turnBusyRecoveryTask?.cancel()
         turnBusyRecoveryTask = nil
@@ -236,12 +237,13 @@ final class RealtimeTranslationManager: NSObject {
 
     // MARK: - Connect
 
-    private func fetchAndOpen(token: String) async {
+    private func fetchAndOpen(token: String, attempt: UInt64) async {
         do {
             let data = try await APIClient.getRaw(
                 path: "translate/ws_url",
                 authorization: token
             )
+            guard connectionAttempt.isCurrent(attempt), !Task.isCancelled else { return }
             let raw = String(data: data, encoding: .utf8) ?? ""
             print("[RealtimeTranslation] ws_url response: \(raw)")
             guard let wsURLString = Self.parseWsURL(from: data),
@@ -251,6 +253,7 @@ final class RealtimeTranslationManager: NSObject {
             }
             openWebSocket(wsURL)
         } catch {
+            guard connectionAttempt.isCurrent(attempt), !Task.isCancelled else { return }
             callback?.onError(error.localizedDescription)
         }
     }
@@ -287,13 +290,18 @@ final class RealtimeTranslationManager: NSObject {
 
     private func receiveNext() {
         guard receiveLoopRunning, let task = webSocketTask else { return }
+        let attempt = connectionAttempt.current
         task.receive { [weak self] result in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.receiveLoopRunning,
+                      self.connectionAttempt.isCurrent(attempt),
+                      self.webSocketTask === task else { return }
                 switch result {
                 case .failure(let error):
+                    self.receiveLoopRunning = false
                     self.opened = false
                     self.ready = false
+                    self.inputState.close()
                     self.stopPlayback()
                     print("[RealtimeTranslation] websocket failed: \(error.localizedDescription)")
                     self.callback?.onError(error.localizedDescription)
@@ -333,9 +341,9 @@ final class RealtimeTranslationManager: NSObject {
             turnBusyRecoveryTask?.cancel()
             turnBusyRecoveryTask = nil
             ready = true
-            inputClosing = false
-            // ready 不自动开输入；等 markLocalRecordingStarted。
-            audioInputAllowed = false
+            // A repeated ready resumes the current recording; it must not mute its PCM.
+            // A locally stopped turn stays closed even if a late ready arrives.
+            inputState.serviceReady()
             callback?.onReady()
         case "task_started":
             callback?.onTaskStarted()
@@ -367,9 +375,7 @@ final class RealtimeTranslationManager: NSObject {
             let message = stringValue(json["message"]).ifBlank(text)
             // 「上一轮仍在处理」只是节流提示：暂停发包等下一个 ready，不要断开会话。
             if type == "error", Self.isTurnBusyMessage(message) {
-                backendTurnProcessing = true
-                audioInputAllowed = false
-                inputClosing = false
+                inputState.beginBackendProcessing()
                 pendingPCM.removeAll(keepingCapacity: true)
                 scheduleTurnBusyRecovery()
                 print("[RealtimeTranslation] turn busy, pause sending: \(message)")
@@ -410,25 +416,17 @@ final class RealtimeTranslationManager: NSObject {
     }
 
     private func markBackendTurnFinished(reason: String) {
-        backendTurnProcessing = false
-        inputClosing = false
-        audioInputAllowed = localRecordingActive && opened && ready
+        inputState.backendTurnFinished()
         print("[RealtimeTranslation] backend turn finished reason=\(reason) canSend=\(canSendAudio())")
     }
 
     private func markInputClosing(reason: String) {
-        audioInputAllowed = false
-        inputClosing = true
-        backendTurnProcessing = false
+        inputState.stop(now: Date())
         print("[RealtimeTranslation] audio input closing reason=\(reason)")
     }
 
     private func resetInputGate() {
-        audioInputAllowed = false
-        inputClosing = false
-        localRecordingActive = false
-        backendTurnProcessing = false
-        lastRecordToggleAt = .distantPast
+        inputState.close()
     }
 
     /// 服务端 turn 节流提示，例如
@@ -445,11 +443,7 @@ final class RealtimeTranslationManager: NSObject {
         turnBusyRecoveryTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: self?.turnBusyRecoveryNs ?? 2_500_000_000)
             guard let self, !Task.isCancelled, opened else { return }
-            backendTurnProcessing = false
-            if localRecordingActive, ready {
-                audioInputAllowed = true
-                inputClosing = false
-            }
+            inputState.backendTurnFinished()
             print("[RealtimeTranslation] turn busy recovery: canSend=\(canSendAudio())")
         }
     }
@@ -536,9 +530,18 @@ final class RealtimeTranslationManager: NSObject {
                 )
                 try session.overrideOutputAudioPort(.speaker)
             case .glasses:
-                try GlassesAudioRouteController.activate(.playback)
+                try GlassesAudioRouteController.activate(phoneMicrophoneCaptureEnabled ? .playAndRecord : .playback)
+                if phoneMicrophoneCaptureEnabled,
+                   let microphone = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+                    try session.setPreferredInput(microphone)
+                }
             case .default:
-                if GlassesAudioRouteController.glassesConnected {
+                if phoneMicrophoneCaptureEnabled {
+                    try GlassesAudioRouteController.activate(.playAndRecord)
+                    if let microphone = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+                        try session.setPreferredInput(microphone)
+                    }
+                } else if GlassesAudioRouteController.glassesConnected {
                     try GlassesAudioRouteController.activate(.playback)
                 } else {
                     try session.setCategory(.playback, mode: .default, options: [])

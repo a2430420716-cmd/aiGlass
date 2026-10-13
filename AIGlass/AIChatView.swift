@@ -187,44 +187,16 @@ struct AIChatView: View {
 
     private var connectedSettingsDevice: DeviceCardData? {
         let ble = pairingCoordinator.astraA1BleManager
-        let liveID = nonEmpty(ble.deviceBluetoothIdentifier) ?? nonEmpty(ble.savedPeripheralUUIDString)
-        let liveSN = nonEmpty(ble.deviceSN)
-        let devices = authSession.userInfo?.device ?? []
-
-        if let liveID,
-           let match = devices.first(where: {
-               $0.serialNumber.caseInsensitiveCompare(liveID) == .orderedSame
-           }) {
-            return DeviceCardData(device: match)
-        }
-        if let liveSN,
-           let match = devices.first(where: {
-               $0.hardwareSN?.caseInsensitiveCompare(liveSN) == .orderedSame
-                   || $0.serialNumber.caseInsensitiveCompare(liveSN) == .orderedSame
-           }) {
-            return DeviceCardData(device: match)
-        }
-        if devices.count == 1, let only = devices.first {
-            return DeviceCardData(device: only)
-        }
-        guard let liveID else { return nil }
-        return DeviceCardData(
-            id: "live-\(liveID)",
-            name: ble.deviceName,
-            modelName: ble.deviceModel,
-            serialNumber: liveID,
-            hardwareSN: liveSN,
-            batteryPercent: ble.deviceBatteryPercent,
-            imageName: "glass2",
-            isFindDevice: false,
-            isCharging: ble.deviceIsCharging,
-            isConnected: true
-        )
+        guard ble.isDeviceAvailable,
+              let device = authSession.userInfo?.device.first(where: {
+                  ble.matchesCurrentDevice(serialNumber: $0.serialNumber, hardwareSN: $0.hardwareSN)
+              }) else { return nil }
+        return DeviceCardData(device: device)
     }
 
     private func openSettings() {
-        guard pairingCoordinator.astraA1BleManager.isReady else {
-            settingsAlertMessage = L10n.t("设备未连接", "Device not connected")
+        guard pairingCoordinator.astraA1BleManager.isDeviceAvailable else {
+            settingsAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
             return
         }
         guard connectedSettingsDevice != nil else {
@@ -234,12 +206,6 @@ struct AIChatView: View {
         navigateToSettings = true
     }
 
-    private func nonEmpty(_ value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-            return nil
-        }
-        return value
-    }
 
     @ViewBuilder
     private func messageRow(_ item: AIChatItem) -> some View {

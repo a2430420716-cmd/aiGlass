@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 import NetworkExtension
 
@@ -14,7 +13,7 @@ enum DeviceWifiError: LocalizedError {
         case .joinFailed(let detail):
             return L10n.t("连接眼镜 Wi-Fi 失败：\(detail)", "Failed to join glasses Wi-Fi: \(detail)")
         case .unreachable:
-            return L10n.t("无法访问眼镜文件服务，请确认已加入热点", "Cannot reach glasses file service. Confirm you joined the hotspot")
+            return L10n.t("未能连接眼镜热点，请确认眼镜热点已开启", "Could not connect to glasses Wi-Fi. Confirm the glasses hotspot is enabled")
         }
     }
 }
@@ -22,38 +21,48 @@ enum DeviceWifiError: LocalizedError {
 enum DeviceWifiManager {
     private static let logTag = "[DeviceWifi]"
 
-    /// 加入热点后，等待关联 + 服务可达的最长时间。
-    private static let readyTimeout: TimeInterval = 12
+    /// 系统接受热点配置后，等待目标热点身份和有效 IPv4 的最长时间。
+    private static let readyTimeout: TimeInterval = 30
+    private static let readinessPollInterval: TimeInterval = 1
 
-    /// 加入眼镜热点：apply 前先清掉旧配置，apply 后轮询到 HTTP 服务真正可达才返回。
-    /// 对齐安卓 `DeviceWifiManager.verifyWifiConnection` 的「连上不等于可用」判定。
+    /// 加入眼镜热点：apply 前清掉旧配置，apply 后每秒检查目标热点身份及有效 IPv4。
+    /// 对齐安卓的分阶段流程；返回只表示热点网络就绪，HTTP 服务由后续业务请求确认。
     /// 失败直接抛出，由相册/录音/OTA 终止本次任务；不在公共层静默重试。
-    /// - Parameter probeBaseURL: 眼镜 HTTP 服务地址，用于探测热点是否真正就绪。
+    /// - Parameter probeBaseURL: 后续眼镜 HTTP 服务地址，仅供关联诊断日志。
     static func connect(
         ssid: String,
         password: String,
-        probeBaseURL: String = "http://192.168.0.1/"
+        probeBaseURL: String = "http://192.168.0.1/",
+        diagnosticContext: String = "unspecified",
+        diagnosticID: String = UUID().uuidString,
+        deviceEvidence: (@MainActor () -> String)? = nil
     ) async throws {
         let probeEndpoint = ProbeEndpoint(baseURL: probeBaseURL)
+        let diagnostics = WifiDiagnosticSession(
+            targetSSID: ssid, context: diagnosticContext, id: diagnosticID, deviceEvidence: deviceEvidence
+        )
+        defer { diagnostics.stop() }
+        diagnostics.recordSnapshot(phase: "before-apply", force: true)
         print("\(logTag) join ssid=\(ssid)")
-        DebugLogStore.logWiFi(
+        diagnostics.log(
             "开始加入眼镜热点",
-            detail: "targetSSID=\(ssid)\npasswordEmpty=\(password.isEmpty)\nprobe=\(probeEndpoint.host):\(probeEndpoint.port)\nreadyTimeout=\(Int(readyTimeout))s",
+            detail: "targetSSID=\(ssid)\npassword=\(password.debugDescription)\npasswordUTF8Bytes=\(password.utf8.count)\npasswordEmpty=\(password.isEmpty)\nserviceEndpoint=\(probeEndpoint.host):\(probeEndpoint.port)\nreadyTimeout=\(Int(readyTimeout))s pollInterval=\(readinessPollInterval)s\nreadinessCondition=targetIdentityAndUsableWiFiIPv4 TCPVerified=false HTTPResponseVerified=false",
             direction: .sent
         )
 
         // 残留配置会让 apply 直接返回 alreadyAssociated，却未真正关联到眼镜。
         NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
-        DebugLogStore.logWiFi("移除旧热点配置", detail: "ssid=\(ssid)")
-        try await Task.sleep(nanoseconds: 300_000_000)
-
+        diagnostics.log("移除旧热点配置", detail: "ssid=\(ssid)")
         do {
-            try await applyConfiguration(ssid: ssid, password: password)
+            try await Task.sleep(nanoseconds: 300_000_000)
+            try await applyConfiguration(ssid: ssid, password: password, diagnostics: diagnostics)
         } catch {
+            diagnostics.recordSnapshot(phase: "apply-failed-before-cleanup", force: true)
+            diagnostics.log("热点申请失败，移除配置", detail: "callerTaskCancelled=\(Task.isCancelled)")
             NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
             print("\(logTag) apply failed, abort task: \(error.localizedDescription)")
             let nsError = error as NSError
-            DebugLogStore.logWiFi(
+            diagnostics.log(
                 "系统加入热点失败，本次任务终止",
                 detail: "ssid=\(ssid)\ndomain=\(nsError.domain)\ncode=\(nsError.code)\nerror=\(error.localizedDescription)",
                 direction: .received
@@ -61,23 +70,73 @@ enum DeviceWifiManager {
             throw error
         }
 
-        guard await waitUntilReady(ssid: ssid, probe: probeEndpoint, timeout: readyTimeout) else {
-            print("\(logTag) target hotspot not ready, abort task ssid=\(ssid)")
+        do {
+            guard try await waitUntilReady(ssid: ssid, timeout: readyTimeout, diagnostics: diagnostics) else {
+                throw DeviceWifiError.unreachable
+            }
+            try Task.checkCancellation()
+        } catch {
+            let cancelled = error is CancellationError || Task.isCancelled
+            diagnostics.recordSnapshot(phase: cancelled ? "cancelled-before-cleanup" : "timeout-before-cleanup", force: true)
+            diagnostics.log("热点等待结束，移除配置", detail: "reason=\(cancelled ? "caller-cancelled" : "readiness-timeout"); snapshot_recorded_before_cleanup")
             NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
-            DebugLogStore.logWiFi(
-                "热点就绪超时，本次任务终止",
-                detail: "targetSSID=\(ssid)\ntimeout=\(Int(readyTimeout))s\nprobe=\(probeEndpoint.host):\(probeEndpoint.port)",
+            diagnostics.log(
+                cancelled ? "热点连接已取消" : "热点关联或 IP 获取超时，本次任务终止",
+                detail: "targetSSID=\(ssid)\ntimeout=\(Int(readyTimeout))s\nserviceEndpoint=\(probeEndpoint.host):\(probeEndpoint.port)\nTCPVerified=false HTTPResponseVerified=false",
                 direction: .received
             )
-            throw DeviceWifiError.unreachable
+            throw error
         }
 
-        print("\(logTag) hotspot ready ssid=\(ssid)")
-        DebugLogStore.logWiFi(
-            "眼镜热点与文件服务已就绪",
-            detail: "ssid=\(ssid)\nprobe=\(probeEndpoint.host):\(probeEndpoint.port)",
+        print("\(logTag) hotspot identity and IPv4 ready ssid=\(ssid)")
+        diagnostics.log(
+            "眼镜热点身份与 IPv4 校验通过",
+            detail: "ssid=\(ssid)\nserviceEndpoint=\(probeEndpoint.host):\(probeEndpoint.port)\nTCPVerified=false HTTPResponseVerified=false; next_stage_verifies_HTTP_service",
             direction: .received
         )
+    }
+
+    /// Gen1 AP import uses TCP 8556 at the system-reported Wi-Fi gateway.
+    /// It never applies the Gen2 subnet fallback or synthesizes a router address.
+    static func connectGen1(
+        ssid: String,
+        password: String,
+        diagnosticID: String,
+        deviceEvidence: (@MainActor () -> String)? = nil
+    ) async throws -> String {
+        try Task.checkCancellation()
+        guard !ssid.isEmpty, ssid.utf8.count <= 32 else {
+            throw DeviceWifiError.joinFailed(L10n.t("眼镜热点名称无效，请重新开启热点后重试", "Invalid glasses hotspot name. Restart the hotspot and try again"))
+        }
+        let diagnostics = WifiDiagnosticSession(
+            targetSSID: ssid, context: "gen1-media-import", id: diagnosticID, deviceEvidence: deviceEvidence
+        )
+        defer { diagnostics.stop() }
+        diagnostics.log(
+            "开始加入一代眼镜热点",
+            detail: "targetSSID=\(ssid.debugDescription) passwordUTF8Bytes=\(password.utf8.count)"
+                + "\nserviceProtocol=TCP servicePort=8556 gatewaySource=systemWiFiPath"
+                + "\nidentityPolicy=exactSSIDRequired subnetFallback=false readyTimeout=\(readyTimeout)s",
+            direction: .sent
+        )
+        NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
+        do {
+            try await Task.sleep(nanoseconds: 300_000_000)
+            try await applyConfiguration(ssid: ssid, password: password, diagnostics: diagnostics,
+                                         includePasswordInDiagnostics: false, timeout: 45)
+            let resolver = Gen1WifiGatewayResolver(targetSSID: ssid, diagnostics: diagnostics)
+            let gateway = try await resolver.resolve(timeout: readyTimeout)
+            try Task.checkCancellation()
+            diagnostics.log("一代热点网关已确认", detail: "ssid=\(ssid.debugDescription) gateway=\(gateway)"
+                + "\nserviceEndpoint=TCP:\(gateway):8556 TCPVerified=false nextStage=TCPMediaTransport", direction: .received)
+            return gateway
+        } catch {
+            diagnostics.log("一代热点连接结束，移除本次配置", detail: "ssid=\(ssid.debugDescription)"
+                + "\ncancelled=\(error is CancellationError || Task.isCancelled) error=\(error.localizedDescription)"
+                + "\nserviceProtocol=TCP servicePort=8556 gateway=unconfirmed", direction: .received)
+            NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
+            throw error
+        }
     }
 
     static func disconnect(from ssid: String) {
@@ -89,52 +148,72 @@ enum DeviceWifiManager {
 
     // MARK: - Apply
 
-    private static func applyConfiguration(ssid: String, password: String) async throws {
-        DebugLogStore.logWiFi(
+    private static func applyConfiguration(
+        ssid: String,
+        password: String,
+        diagnostics: WifiDiagnosticSession,
+        includePasswordInDiagnostics: Bool = true,
+        timeout: TimeInterval? = nil
+    ) async throws {
+        let started = ProcessInfo.processInfo.systemUptime
+        diagnostics.log(
             "请求系统加入热点",
-            detail: "ssid=\(ssid)\nsecurity=\(password.isEmpty ? "open" : "WPA/WPA2")\njoinOnce=true",
+            detail: "targetSSID=\(ssid.debugDescription)\npassword=\(includePasswordInDiagnostics ? password.debugDescription : "<redacted>")\npasswordUTF8Bytes=\(password.utf8.count)\nsecurity=\(password.isEmpty ? "open" : "WPA/WPA2")\njoinOnce=true",
             direction: .sent
         )
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let configuration: NEHotspotConfiguration
-            if password.isEmpty {
-                configuration = NEHotspotConfiguration(ssid: ssid)
-            } else {
-                configuration = NEHotspotConfiguration(ssid: ssid, passphrase: password, isWEP: false)
+        let result = CallbackResult<Void>()
+        let timeoutTask = timeout.map { seconds in
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                result.resolve(.failure(DeviceWifiError.joinFailed(L10n.t("系统加入热点请求超时", "System hotspot join request timed out"))))
             }
-            configuration.joinOnce = true
+        }
+        defer { timeoutTask?.cancel() }
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                result.install(continuation)
+                let configuration: NEHotspotConfiguration
+                if password.isEmpty {
+                    configuration = NEHotspotConfiguration(ssid: ssid)
+                } else {
+                    configuration = NEHotspotConfiguration(ssid: ssid, passphrase: password, isWEP: false)
+                }
+                configuration.joinOnce = true
 
-            NEHotspotConfigurationManager.shared.apply(configuration) { error in
-                guard let error = error as NSError? else {
-                    print("\(logTag) hotspot apply success")
-                    DebugLogStore.logWiFi("系统热点申请成功", detail: "ssid=\(ssid)", direction: .received)
-                    continuation.resume()
-                    return
-                }
-                let errorDetail = "ssid=\(ssid)\ndomain=\(error.domain)\ncode=\(error.code)\nerror=\(error.localizedDescription)"
-                guard error.domain == NEHotspotConfigurationErrorDomain else {
-                    DebugLogStore.logWiFi("系统热点申请返回错误", detail: errorDetail, direction: .received)
-                    continuation.resume(throwing: DeviceWifiError.joinFailed(error.localizedDescription))
-                    return
-                }
-                switch error.code {
-                case NEHotspotConfigurationError.alreadyAssociated.rawValue:
-                    // 「已关联」只说明系统认为配置生效，仍需探测服务可达。
-                    print("\(logTag) already associated with \(ssid)")
-                    DebugLogStore.logWiFi(
-                        "系统报告已关联，继续校验网络",
-                        detail: errorDetail,
-                        direction: .received
-                    )
-                    continuation.resume()
-                case NEHotspotConfigurationError.userDenied.rawValue:
-                    DebugLogStore.logWiFi("用户拒绝加入热点", detail: errorDetail, direction: .received)
-                    continuation.resume(throwing: DeviceWifiError.userDenied)
-                default:
-                    DebugLogStore.logWiFi("系统热点申请失败", detail: errorDetail, direction: .received)
-                    continuation.resume(throwing: DeviceWifiError.joinFailed(error.localizedDescription))
+                NEHotspotConfigurationManager.shared.apply(configuration) { error in
+                    Task { @MainActor in
+                        let elapsed = ProcessInfo.processInfo.systemUptime - started
+                        let timing = "applyElapsed=\(String(format: "%.3f", elapsed))s"
+                        diagnostics.recordSnapshot(phase: "apply-callback", force: true)
+                        guard let error = error as NSError? else {
+                            diagnostics.log("系统热点配置已应用，继续校验连接", detail: "\(timing)\nconfigurationApplied=true associationConfirmed=false; apply_success_does_not_prove_join_or_IP_ready", direction: .received)
+                            result.resolve(.success(()))
+                            return
+                        }
+                        let errorDetail = "\(timing)\nssid=\(ssid.debugDescription)\ndomain=\(error.domain)\ncode=\(error.code)\nerror=\(error.localizedDescription)"
+                        guard error.domain == NEHotspotConfigurationErrorDomain else {
+                            diagnostics.log("系统热点申请返回错误", detail: errorDetail, direction: .received)
+                            result.resolve(.failure(DeviceWifiError.joinFailed(error.localizedDescription)))
+                            return
+                        }
+                        switch error.code {
+                        case NEHotspotConfigurationError.alreadyAssociated.rawValue:
+                            diagnostics.log("系统报告已关联，继续校验网络", detail: errorDetail, direction: .received)
+                            result.resolve(.success(()))
+                        case NEHotspotConfigurationError.userDenied.rawValue:
+                            diagnostics.log("用户拒绝加入热点", detail: errorDetail, direction: .received)
+                            result.resolve(.failure(DeviceWifiError.userDenied))
+                        default:
+                            diagnostics.log("系统热点申请失败", detail: errorDetail, direction: .received)
+                            result.resolve(.failure(DeviceWifiError.joinFailed(error.localizedDescription)))
+                        }
+                    }
                 }
             }
+        } onCancel: {
+            Task { @MainActor in result.resolve(.failure(CancellationError())) }
         }
     }
 
@@ -151,140 +230,130 @@ enum DeviceWifiManager {
         }
     }
 
-    /// 轮询直到 Wi-Fi 拿到局域网 IP 且眼镜 HTTP 端口可建连。
+    /// A missing SSID remains inconclusive; only a completed sample may use the IPv4 subnet fallback.
     private static func waitUntilReady(
         ssid: String,
-        probe: ProbeEndpoint,
-        timeout: TimeInterval
-    ) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
+        timeout: TimeInterval,
+        diagnostics: WifiDiagnosticSession
+    ) async throws -> Bool {
+        let started = ProcessInfo.processInfo.systemUptime
+        let deadline = started + timeout
+        let ssidObservation = SSIDObservation(diagnostics: diagnostics)
+        defer { ssidObservation.cancel() }
         var loggedAddress: String?
         var loggedSSID: String?
         var hasLoggedSSID = false
         var lastValidation: String?
-        var probeAttempt = 0
+        var polls = 0
 
-        DebugLogStore.logWiFi(
-            "等待热点真正可用",
-            detail: "targetSSID=\(ssid)\nprobe=\(probe.host):\(probe.port)\ntimeout=\(String(format: "%.1f", timeout))s"
+        diagnostics.log(
+            "等待目标热点关联与 IPv4",
+            detail: "targetSSID=\(ssid.debugDescription)\ntimeout=\(String(format: "%.1f", timeout))s pollInterval=\(readinessPollInterval)s\nTCPVerified=false HTTPResponseVerified=false"
         )
 
-        while Date() < deadline {
-            let currentSSID = await currentWiFiSSID()
-            if !hasLoggedSSID || currentSSID != loggedSSID {
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            try Task.checkCancellation()
+            ssidObservation.startReadIfNeeded()
+            // The system SSID callback is not cancellable. Observe it without awaiting it so
+            // cancellation and the monotonic deadline remain effective if the callback stalls.
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { break }
+            try await Task.sleep(nanoseconds: UInt64(min(readinessPollInterval, remaining) * 1_000_000_000))
+            try Task.checkCancellation()
+            guard ProcessInfo.processInfo.systemUptime <= deadline else { break }
+            polls += 1
+            let currentSSID = diagnostics.currentSSID
+            let interfaces = WifiDiagnosticSession.captureInterfaces()
+            diagnostics.recordSnapshot(phase: "waiting-for-association-and-ip", interfaces: interfaces, probeAttempts: 0)
+            if ssidObservation.hasCompletedRead && (!hasLoggedSSID || currentSSID != loggedSSID) {
                 hasLoggedSSID = true
                 loggedSSID = currentSSID
-                print("\(logTag) current ssid=\(currentSSID ?? "nil") target=\(ssid)")
-                DebugLogStore.logWiFi(
-                    "当前 Wi-Fi 变化",
-                    detail: "currentSSID=\(currentSSID ?? "unavailable")\ntargetSSID=\(ssid)",
-                    direction: .received
-                )
+                diagnostics.log("当前 Wi-Fi 变化", detail: "currentSSID=\(currentSSID?.debugDescription ?? "unavailable")\ntargetSSID=\(ssid.debugDescription)", direction: .received)
             }
 
-            if let address = currentWiFiIPv4Address() {
+            if let address = interfaces.selectedIPv4 {
                 if address != loggedAddress {
                     loggedAddress = address
-                    print("\(logTag) wifi ipv4=\(address)")
-                    DebugLogStore.logWiFi("Wi-Fi 获取 IPv4", detail: "address=\(address)", direction: .received)
+                    diagnostics.log("Wi-Fi 获取 IPv4", detail: "address=\(address)", direction: .received)
                 }
-                // 对齐安卓：必须是目标 SSID，或确实拿到眼镜 SoftAP 网段地址。
-                // 防止普通路由器/VPN 恰好能访问 192.168.0.1 而被误判为眼镜热点。
-                let isTargetNetwork: Bool
-                if let currentSSID {
-                    // SSID 可读时必须精确匹配；已知连着别的 192.168.0.x 路由器不能降级放行。
-                    isTargetNetwork = currentSSID == ssid
-                } else {
-                    // 系统未授权返回 SSID 时，才按安卓逻辑用眼镜 SoftAP 网段兜底。
-                    isTargetNetwork = address.hasPrefix("192.168.0.")
-                }
+                guard ssidObservation.hasCompletedRead else { continue }
+                let isTargetNetwork = WifiConnectionDiagnostics.matchesTargetNetwork(address: address, currentSSID: currentSSID, targetSSID: ssid)
                 let validation = "ssid=\(currentSSID ?? "unavailable") address=\(address) matched=\(isTargetNetwork)"
                 if validation != lastValidation {
                     lastValidation = validation
-                    DebugLogStore.logWiFi(
+                    diagnostics.log(
                         isTargetNetwork ? "热点身份校验通过" : "当前网络不是目标热点",
-                        detail: "currentSSID=\(currentSSID ?? "unavailable")\ntargetSSID=\(ssid)\nipv4=\(address)\nmatched=\(isTargetNetwork)",
+                        detail: "currentSSID=\(currentSSID?.debugDescription ?? "unavailable")\ntargetSSID=\(ssid.debugDescription)\nipv4=\(address)\nmatched=\(isTargetNetwork)\nvalidationSource=\(currentSSID == nil ? "IPv4SubnetFallback" : "SSID")\nTCPVerified=false HTTPResponseVerified=false",
                         direction: .received
                     )
                 }
-                guard isTargetNetwork else {
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    continue
-                }
-                let remaining = deadline.timeIntervalSinceNow
-                if remaining <= 0 { break }
-                probeAttempt += 1
-                DebugLogStore.logWiFi(
-                    "探测眼镜文件服务",
-                    detail: "attempt=\(probeAttempt)\nhost=\(probe.host)\nport=\(probe.port)\ntimeout=\(String(format: "%.1f", min(3, remaining)))s",
-                    direction: .sent
-                )
-                let reachable = await TCPReachability.canConnect(
-                    host: probe.host,
-                    port: probe.port,
-                    timeout: min(3, remaining)
-                )
-                DebugLogStore.logWiFi(
-                    reachable ? "眼镜文件服务探测成功" : "眼镜文件服务暂不可达",
-                    detail: "attempt=\(probeAttempt)\nhost=\(probe.host)\nport=\(probe.port)\nreachable=\(reachable)",
-                    direction: .received
-                )
-                if reachable {
+                if isTargetNetwork {
+                    diagnostics.recordSnapshot(phase: "association-and-ip-ready", interfaces: interfaces, probeAttempts: 0, force: true)
                     return true
                 }
-            } else {
-                let validation = "no-ip"
-                if validation != lastValidation {
-                    lastValidation = validation
-                    DebugLogStore.logWiFi("Wi-Fi 尚未获取 IPv4", detail: "targetSSID=\(ssid)", direction: .received)
-                }
+            } else if lastValidation != "no-ip" {
+                lastValidation = "no-ip"
+                diagnostics.log("Wi-Fi 尚未获取有效 IPv4", detail: "targetSSID=\(ssid.debugDescription); see_interface_snapshot_for_rejection_reasons", direction: .received)
             }
-            try? await Task.sleep(nanoseconds: 500_000_000)
         }
+        try Task.checkCancellation()
+        // Preserve the final evidence before removing configuration or asking glasses to close Wi-Fi.
+        let stage = diagnostics.recordSnapshot(phase: "timeout-before-cleanup", probeAttempts: 0, force: true)
+        diagnostics.log(
+            "热点等待超时诊断",
+            detail: "lastObservedStage=\(stage)\nwaitElapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - started))s configuredTimeout=\(timeout)s polls=\(polls)\nSSIDSampleCompleted=\(ssidObservation.hasCompletedRead)\nprobeAttempts=0 lastProbeSucceeded=notAttempted\ncallerTaskCancelled=\(Task.isCancelled)\nfailureBoundary=association-or-IP-not-confirmed\nTCPVerified=false HTTPResponseVerified=false; snapshot_does_not_identify_AP_authentication_or_DHCP_root_cause",
+            direction: .received
+        )
         return false
     }
 
-    /// `fetchCurrent` 对本 App 通过 NEHotspotConfiguration 加入的网络可返回 SSID。
-    private static func currentWiFiSSID() async -> String? {
-        await withCheckedContinuation { continuation in
-            NEHotspotNetwork.fetchCurrent { network in
-                let value = network?.ssid.trimmingCharacters(in: .whitespacesAndNewlines)
-                continuation.resume(returning: value?.isEmpty == false ? value : nil)
+    /// Keeps at most one system SSID read pending while the caller polls and remains cancellable.
+    @MainActor
+    private final class SSIDObservation {
+        private let diagnostics: WifiDiagnosticSession
+        private var pendingRead: Task<Void, Never>?
+        private(set) var hasCompletedRead = false
+
+        init(diagnostics: WifiDiagnosticSession) {
+            self.diagnostics = diagnostics
+        }
+
+        func startReadIfNeeded() {
+            guard pendingRead == nil else { return }
+            hasCompletedRead = false
+            pendingRead = Task { @MainActor [weak self, diagnostics] in
+                _ = await diagnostics.fetchCurrentSSID()
+                guard !Task.isCancelled else { return }
+                self?.hasCompletedRead = true
+                self?.pendingRead = nil
             }
+        }
+
+        func cancel() {
+            pendingRead?.cancel()
+            pendingRead = nil
         }
     }
 
-    /// 取当前 Wi-Fi 接口（enX）的 IPv4 地址；未关联时为 nil。
-    private static func currentWiFiIPv4Address() -> String? {
-        var addressList: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&addressList) == 0 else { return nil }
-        defer { freeifaddrs(addressList) }
+    /// Main-actor callbacks and cancellation may race; resume the caller exactly once.
+    @MainActor
+    private final class CallbackResult<Value: Sendable> {
+        private var continuation: CheckedContinuation<Value, Error>?
+        private var result: Result<Value, Error>?
 
-        var cursor = addressList
-        while let current = cursor {
-            defer { cursor = current.pointee.ifa_next }
-
-            let flags = Int32(current.pointee.ifa_flags)
-            guard (flags & IFF_UP) == IFF_UP, (flags & IFF_LOOPBACK) == 0 else { continue }
-            guard let address = current.pointee.ifa_addr,
-                  address.pointee.sa_family == UInt8(AF_INET) else { continue }
-            guard String(cString: current.pointee.ifa_name).hasPrefix("en") else { continue }
-
-            var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            let result = getnameinfo(
-                address,
-                socklen_t(address.pointee.sa_len),
-                &buffer,
-                socklen_t(buffer.count),
-                nil,
-                0,
-                NI_NUMERICHOST
-            )
-            if result == 0 {
-                let text = String(cString: buffer)
-                if !text.isEmpty, !text.hasPrefix("169.254.") { return text }
+        func install(_ continuation: CheckedContinuation<Value, Error>) {
+            if let result {
+                continuation.resume(with: result)
+            } else {
+                self.continuation = continuation
             }
         }
-        return nil
+
+        func resolve(_ result: Result<Value, Error>) {
+            guard self.result == nil else { return }
+            self.result = result
+            continuation?.resume(with: result)
+            continuation = nil
+        }
     }
 }

@@ -35,14 +35,12 @@ struct DeviceModelItem: Decodable, Identifiable, Equatable {
         modelName
     }
 
-    /// G5T71 走 Astra BLE；其它型号暂走 Lumina 占位逻辑。
-    var usesAstraBLE: Bool {
-        let name = modelName.uppercased()
-        return name.contains("G5T71") || name.contains("ASTRA") || name.contains("A1")
+    var glassDeviceModel: GlassDeviceModel {
+        GlassDeviceModel(modelName: modelName)
     }
 
     var fallbackImageName: String {
-        usesAstraBLE ? "glass2" : "glass1"
+        glassDeviceModel.imageName
     }
 }
 

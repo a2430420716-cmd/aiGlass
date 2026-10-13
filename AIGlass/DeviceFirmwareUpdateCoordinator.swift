@@ -39,6 +39,7 @@ final class DeviceFirmwareUpdateCoordinator: ObservableObject {
         otaManager: BluetoothOtaUpgradeManager,
         importManager: MediaImportManager
     ) {
+        guard ble.isDeviceAvailable else { return }
         print("[DeviceOTA] start bluetooth upgrade target=\(serverInfo.version)")
         otaManager.startBluetoothUpgrade(
             serverInfo: serverInfo,
@@ -53,14 +54,17 @@ final class DeviceFirmwareUpdateCoordinator: ObservableObject {
         authorization: String?,
         ble: AstraA1BleManager,
         otaManager: BluetoothOtaUpgradeManager,
-        importManager: MediaImportManager
+        importManager: MediaImportManager,
+        gen1Wifi: Gen1FirmwareWifiCredentials? = nil
     ) {
+        guard ble.isDeviceAvailable else { return }
         print("[DeviceOTA] start firmware upgrade target=\(serverInfo.version)")
         otaManager.startFirmwareUpgrade(
             serverInfo: serverInfo,
             authorization: authorization,
             ble: ble,
-            importManager: importManager
+            importManager: importManager,
+            gen1Wifi: gen1Wifi
         )
     }
 
@@ -73,12 +77,14 @@ final class DeviceFirmwareUpdateCoordinator: ObservableObject {
         // 导致详情页在收到 completed/failed 后立刻被 SwiftUI 弹回。
         guard !otaManager.isUpgrading, !otaManager.state.isTerminal else { return }
         guard !ble.isQueryingDeviceVersionsAndStorage, !ble.isQueryingAboutDeviceInfo else { return }
+        // 保留导航节点，避免读取失败弹回详情页；页面负责禁用升级入口。
+        guard !ble.deviceVersionQueryFailed else { return }
         guard authSession.isLoggedIn else {
             bluetoothUpdate = nil
             firmwareUpdate = nil
             return
         }
-        guard ble.isReady else {
+        guard ble.isDeviceAvailable else {
             bluetoothUpdate = nil
             firmwareUpdate = nil
             return

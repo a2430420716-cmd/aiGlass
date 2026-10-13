@@ -49,6 +49,8 @@ final class AIVoiceChatManager: ObservableObject {
     private var generation = 0
     private var currentTurn = -1
     private var voiceChatCaptureEnabled = true
+    private var gen1StopPending = false
+    private var gen1StopTask: Task<Void, Never>?
 
     private init() {}
 
@@ -75,7 +77,7 @@ final class AIVoiceChatManager: ObservableObject {
     }
 
     var isActionEnabled: Bool {
-        true
+        sessionActive || ble?.isDeviceAvailable == true
     }
 
     func bind(ble: AstraA1BleManager, tokenProvider: @escaping () -> String?) {
@@ -90,7 +92,10 @@ final class AIVoiceChatManager: ObservableObject {
     /// 保留给旧调用方；语音唤醒开关已改由固件 `setwakeup0` 管理。
     @discardableResult
     func startContinuous() -> Bool {
-        guard let ble else { return false }
+        guard let ble, ble.isDeviceAvailable else {
+            phase = .failed(L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first"))
+            return false
+        }
         let sent = ble.startAIVoice(continuous: true)
         if sent {
             isEnabled = true
@@ -121,6 +126,10 @@ final class AIVoiceChatManager: ObservableObject {
         if sessionActive {
             return stopManualSession()
         }
+        guard ble.isDeviceAvailable else {
+            phase = .failed(L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first"))
+            return false
+        }
         // 对齐 Android AiFragment：手动入口也开启连续对话模式。
         let sent = ble.startAIVoice(continuous: true)
         if sent {
@@ -139,9 +148,10 @@ final class AIVoiceChatManager: ObservableObject {
 
     @discardableResult
     func stopManualSession() -> Bool {
+        if gen1StopPending { return true }
         let sent = ble?.stopAIVoice() ?? false
         if sent {
-            resetSession(stopSpeechPlayback: true)
+            handleLocalStopAccepted()
         } else {
             phase = .failed(ble?.mediaActionAlertMessage ?? L10n.t("语音提问关闭失败，请重试", "Failed to stop voice Q&A. Try again."))
         }
@@ -150,9 +160,10 @@ final class AIVoiceChatManager: ObservableObject {
 
     @discardableResult
     func stop() -> Bool {
+        if gen1StopPending { return true }
         let sent = ble?.stopAIVoice() ?? false
         if sent {
-            resetSession(stopSpeechPlayback: true)
+            handleLocalStopAccepted()
         }
         return sent
     }
@@ -219,7 +230,28 @@ final class AIVoiceChatManager: ObservableObject {
 
     private func handleNotify(command: String, packet: Data) {
         guard voiceChatCaptureEnabled else { return }
+        guard ble?.isDeviceAvailable == true else {
+            if sessionActive { resetSession(stopSpeechPlayback: true) }
+            return
+        }
         switch command {
+        case "gen1voiceStart":
+            beginGen1TurnIfNeeded()
+        case "gen1opus00":
+            guard !packet.isEmpty else { return }
+            appendVoiceFrames([packet])
+        case "gen1voiceEnd":
+            if recording || !frames.isEmpty { finishUtterance() }
+        case "gen1voiceStatus":
+            let payload = [UInt8](packet)
+            guard let status = payload.first else { return }
+            let channel = payload.count > 1 ? payload[1] : 0
+            guard channel == 0 || channel == 1 else { return }
+            if status == 1 {
+                beginGen1TurnIfNeeded()
+            } else if status == 0, recording || !frames.isEmpty {
+                finishUtterance()
+            }
         case "aivoicests":
             guard let status = AstraA1BleProtocol.parseAIVoiceStatus(packet) else {
                 print("[AIVoice] invalid status packet bytes=\(packet.count)")
@@ -235,6 +267,34 @@ final class AIVoiceChatManager: ObservableObject {
             print("[AIVoice] turn=\(currentTurn)")
         default:
             break
+        }
+    }
+
+    private func beginGen1TurnIfNeeded() {
+        // G5K61 may send both 0x6E=1 and AE3D START for the same utterance.
+        // Clearing here twice would discard audio received between those events.
+        guard !sessionActive || !recording else {
+            if !gen1StopPending { phase = .listening }
+            return
+        }
+        handleStatus(1)
+    }
+
+    private func handleLocalStopAccepted() {
+        guard ble?.deviceGeneration == .gen1G5K61, recording else {
+            resetSession(stopSpeechPlayback: true)
+            return
+        }
+        gen1StopPending = true
+        isManualSession = false
+        phase = .processing
+        // Keep final notifications until 0x6E=0. Firmware without that status gets
+        // a bounded drain window, after which already received audio is submitted.
+        gen1StopTask?.cancel()
+        gen1StopTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled, let self, self.gen1StopPending else { return }
+            self.finishUtterance()
         }
     }
 
@@ -303,10 +363,18 @@ final class AIVoiceChatManager: ObservableObject {
     }
 
     private func finishUtterance() {
+        guard ble?.isDeviceAvailable == true else {
+            resetSession(stopSpeechPlayback: true)
+            return
+        }
         if !recording, (state == .thinking || state == .speaking) {
             print("[AIVoice] ignore duplicate utterance end state=\(state)")
             return
         }
+
+        gen1StopTask?.cancel()
+        gen1StopTask = nil
+        gen1StopPending = false
 
         sessionActive = true
         isEnabled = true
@@ -387,6 +455,12 @@ final class AIVoiceChatManager: ObservableObject {
     private func completeTurn(_ token: Int) {
         guard isCurrent(token) else { return }
         generation += 1
+        if ble?.deviceGeneration == .gen1G5K61 {
+            // First-generation firmware requires a new user/hardware trigger per turn.
+            sessionActive = false
+            recording = false
+            frames.removeAll(keepingCapacity: true)
+        }
         guard sessionActive else {
             state = .idle
             phase = .idle
@@ -404,10 +478,17 @@ final class AIVoiceChatManager: ObservableObject {
     }
 
     private func isCurrent(_ token: Int) -> Bool {
-        generation == token
+        guard ble?.isDeviceAvailable == true else {
+            resetSession(stopSpeechPlayback: true)
+            return false
+        }
+        return generation == token
     }
 
     private func resetSession(stopSpeechPlayback: Bool) {
+        gen1StopTask?.cancel()
+        gen1StopTask = nil
+        gen1StopPending = false
         generation += 1
         sessionActive = false
         isEnabled = false

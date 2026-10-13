@@ -15,6 +15,14 @@ final class NewbieGuideController: ObservableObject {
     private var lastEventType: Int = -1
     private var lastEventTime: Date = .distantPast
     private var toastWorkItem: DispatchWorkItem?
+    private var guideSessionID = UUID()
+    private var sessionStartedAt = Date.distantFuture
+    private var sessionActive = false
+    private var gen1TargetID: UUID?
+    private var gen1StepState = Gen1GuideStepState()
+    private var guideDataTask: Task<Void, Never>?
+    private var waitDiagnosticTask: Task<Void, Never>?
+    private var audioObservers: [AnyCancellable] = []
 
     /// 对齐 Android `NewbieGuideActivity` 音乐播放。
     private var guideMusicPlayer: AVAudioPlayer?
@@ -54,34 +62,83 @@ final class NewbieGuideController: ObservableObject {
     }
 
     func start(ble: AstraA1BleManager, modelName: String, token: String?) {
+        if sessionActive { stop() }
         self.ble = ble
+        guard ble.isDeviceAvailable else {
+            isLoading = false
+            showToast(L10n.t("请先连接已绑定的眼镜", "Please connect your bound glasses first"))
+            return
+        }
+        guideSessionID = UUID()
+        let sessionID = guideSessionID
+        sessionStartedAt = Date()
+        sessionActive = true
+        gen1TargetID = ble.deviceGeneration == .gen1G5K61
+            ? ble.deviceBluetoothIdentifier.flatMap(UUID.init(uuidString:)) : nil
         // 进入页面即锁定加载态；Task 真正开始前也不能闪出默认眼镜图。
         isLoading = true
-        ble.guideEventHandler = { [weak self] eventType in
-            Task { @MainActor in
-                self?.handleGuideEvent(eventType)
+        if let gen1TargetID {
+            ble.gen1GuideEventSessionID = sessionID
+            ble.gen1GuideEventTargetID = gen1TargetID
+            ble.gen1GuideEventHandler = { [weak self] source, capturedAt, step, result in
+                guard let self, self.guideSessionID == sessionID else { return }
+                self.handleGen1GuideAck(source: source, capturedAt: capturedAt, step: step, result: result)
+            }
+            ble.gen1GuideMediaHandler = { [weak self] source, capturedAt, command in
+                guard let self, self.guideSessionID == sessionID else { return }
+                self.handleGen1Media(source: source, capturedAt: capturedAt, command: command)
+            }
+        } else {
+            ble.guideEventHandler = { [weak self] eventType in
+                Task { @MainActor in
+                    guard let self, self.sessionActive, self.guideSessionID == sessionID else { return }
+                    self.handleGuideEvent(eventType)
+                }
             }
         }
+        logGuide("引导开始", detail: "model=\(modelName)")
+        observeGuideAudio()
         ensureGuideData()
         saveCurrentStep()
         enterGuideMode()
-        Task { await loadGuideData(modelName: modelName, token: token) }
+        guideDataTask = Task { await loadGuideData(modelName: modelName, token: token, sessionID: sessionID) }
     }
 
     func stop() {
+        logGuide("引导退出")
+        let ownsSession = gen1TargetID == nil || ble?.gen1GuideEventSessionID == guideSessionID
+        sessionActive = false
+        guideDataTask?.cancel()
+        guideDataTask = nil
+        waitDiagnosticTask?.cancel()
+        waitDiagnosticTask = nil
+        audioObservers.removeAll()
+        gen1StepState.waitForStep(0)
         stopGuideMusic()
         exitGuideMode()
-        UserDefaults.standard.set(0, forKey: stepStorageKey)
-        ble?.guideEventHandler = nil
+        if ownsSession { UserDefaults.standard.set(0, forKey: stepStorageKey) }
+        if gen1TargetID != nil {
+            if ble?.gen1GuideEventSessionID == guideSessionID {
+                ble?.gen1GuideEventHandler = nil
+                ble?.gen1GuideMediaHandler = nil
+                ble?.gen1GuideEventTargetID = nil
+                ble?.gen1GuideEventSessionID = nil
+            }
+        } else { ble?.guideEventHandler = nil }
         ble = nil
     }
 
     func skipCurrentStep() {
+        logGuide("引导手动跳过")
         print("[NewbieGuide] skip step=\(stepIndex + 1)")
-        advanceStep()
+        advanceStep(reason: "user_skip")
     }
 
     func restart() {
+        guard sessionActive, ble?.isDeviceAvailable == true else { return }
+        if gen1TargetID != nil, !isCurrentGen1GuideSession { logGuide("引导重启忽略", detail: "reason=target_or_session_changed"); return }
+        sessionStartedAt = Date()
+        logGuide("引导重新开始")
         isCompleted = false
         stepIndex = 0
         lastEventType = -1
@@ -91,9 +148,10 @@ final class NewbieGuideController: ObservableObject {
         updateGuideMusicForStep()
     }
 
-    private func loadGuideData(modelName: String, token: String?) async {
+    private func loadGuideData(modelName: String, token: String?, sessionID: UUID) async {
+        guard ownsGuideDataRequest(sessionID), !Task.isCancelled else { return }
         isLoading = true
-        defer { isLoading = false }
+        defer { if ownsGuideDataRequest(sessionID) { isLoading = false } }
 
         let name = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
@@ -103,16 +161,27 @@ final class NewbieGuideController: ObservableObject {
 
         do {
             let items = try await DeviceService.fetchDeviceGuide(modelName: name, token: token)
+            guard ownsGuideDataRequest(sessionID), !Task.isCancelled else {
+                logGuide("引导内容响应忽略", detail: "reason=page_or_session_changed")
+                return
+            }
             if items.count >= expectedEvents.count {
                 guideItems = items
             } else {
                 ensureGuideData()
             }
         } catch {
+            guard ownsGuideDataRequest(sessionID), !Task.isCancelled else { return }
+            logGuide("引导内容加载失败", detail: "error=\(error.localizedDescription)")
             print("[NewbieGuide] load guide failed: \(error.localizedDescription)")
             ensureGuideData()
         }
         saveCurrentStep()
+    }
+
+    private func ownsGuideDataRequest(_ sessionID: UUID) -> Bool {
+        sessionActive && guideSessionID == sessionID
+            && (gen1TargetID == nil || ble?.gen1GuideEventSessionID == sessionID)
     }
 
     private func ensureGuideData() {
@@ -122,24 +191,40 @@ final class NewbieGuideController: ObservableObject {
     }
 
     private func enterGuideMode() {
-        guard let ble, ble.isReady else {
+        guard let ble, ble.isDeviceAvailable else {
             showToast(L10n.t("设备未连接", "Not connected"))
             return
         }
-        guideModeEnabled = ble.setGuideModeEnabled(true)
+        if gen1TargetID != nil {
+            guard isCurrentGen1GuideSession else { logGuide("引导开启忽略", detail: "reason=target_or_session_changed"); return }
+            gen1StepState.waitForStep(stepIndex + 1)
+        }
+        guideModeEnabled = ble.deviceGeneration == .gen1G5K61
+            ? ble.setGuideStep(stepIndex + 1)
+            : ble.setGuideModeEnabled(true)
         if !guideModeEnabled {
             showToast(L10n.t("设备未连接", "Not connected"))
         }
+        logGuide("引导模式请求", detail: "queued=\(guideModeEnabled); queued_is_not_device_ack")
+        armWaitDiagnostic()
     }
 
     private func exitGuideMode() {
         guard guideModeEnabled else { return }
-        _ = ble?.setGuideModeEnabled(false)
+        if gen1TargetID != nil {
+            if isCurrentGuideTarget, ble?.gen1GuideEventSessionID == guideSessionID {
+                let sent = ble?.setGuideStep(0) == true
+                logGuide("引导退出请求", detail: "queued=\(sent)")
+            } else { logGuide("引导退出指令未发送", detail: "reason=target_or_session_changed") }
+        } else {
+            _ = ble?.setGuideModeEnabled(false)
+        }
         guideModeEnabled = false
     }
 
     private func handleGuideEvent(_ eventType: UInt8) {
-        if isCompleted { return }
+        guard ble?.isDeviceAvailable == true, !isCompleted,
+              ble?.deviceGeneration != .gen1G5K61 else { return }
 
         let now = Date()
         if Int(eventType) == lastEventType, now.timeIntervalSince(lastEventTime) < debounceSeconds {
@@ -158,23 +243,129 @@ final class NewbieGuideController: ObservableObject {
         }
         // 对齐 Android：先执行本步音乐动作，再推进步骤
         simulateStepAction(for: stepIndex)
-        advanceStep()
+        advanceStep(reason: "guide_event")
     }
 
-    private func advanceStep() {
+    /// 一代只上报当前步骤完成状态，不能按二代触控事件解释。
+    private func handleGen1GuideAck(source: UUID, capturedAt: Date, step: Int, result: Int) {
+        let evidence = "source=\(source) receivedStep=\(step) result=\(result) callbackAt=\(capturedAt.timeIntervalSince1970)"
+        if let reason = gen1EventRejection(source: source, capturedAt: capturedAt) {
+            logGuide("引导完成回包忽略", detail: "\(evidence) reason=\(reason)")
+            return
+        }
+        let decision = gen1StepState.receiveAcknowledgement(step: step, result: result)
+        logGuide("引导完成回包处理", detail: "\(evidence) decision=\(decision)")
+        if case .completed(let action) = decision {
+            if let action { performGen1MediaAction(action) }
+            advanceStep(reason: "gen1_step_ack")
+        }
+    }
+
+    private func handleGen1Media(source: UUID, capturedAt: Date, command: UInt8) {
+        let evidence = "source=\(source) command=\(String(format: "0x%02X", command)) callbackAt=\(capturedAt.timeIntervalSince1970)"
+        if let reason = gen1EventRejection(source: source, capturedAt: capturedAt) {
+            logGuide("引导媒体事件忽略", detail: "\(evidence) reason=\(reason)")
+            return
+        }
+        let decision = gen1StepState.receiveMedia(command: command)
+        logGuide("引导媒体事件处理", detail: "\(evidence) decision=\(decision); media_does_not_advance_step")
+        if case .media(let action) = decision { performGen1MediaAction(action) }
+    }
+
+    private var isCurrentGuideTarget: Bool {
+        guard let gen1TargetID, let ble else { return false }
+        return ble.deviceGeneration == .gen1G5K61
+            && ble.deviceBluetoothIdentifier == gen1TargetID.uuidString
+            && ble.savedPeripheralUUIDString == gen1TargetID.uuidString
+    }
+
+    private var isCurrentGen1GuideSession: Bool {
+        isCurrentGuideTarget && ble?.gen1GuideEventSessionID == guideSessionID
+    }
+
+    private func gen1EventRejection(source: UUID, capturedAt: Date) -> String? {
+        if !sessionActive { return "page_inactive" }
+        if capturedAt < sessionStartedAt { return "callback_before_session_started" }
+        if source != gen1TargetID || !isCurrentGuideTarget { return "target_changed" }
+        if ble?.gen1GuideEventSessionID != guideSessionID { return "session_replaced" }
+        if ble?.isDeviceAvailable != true { return "device_unavailable" }
+        if !guideModeEnabled { return "guide_not_enabled" }
+        if isCompleted { return "guide_already_completed" }
+        return nil
+    }
+
+    private func performGen1MediaAction(_ action: Gen1GuideStepState.MediaAction) {
+        switch action {
+        case .play: playGuideMusic(index: 1, restart: true)
+        case .pause: pauseGuideMusic()
+        case .next: playGuideMusic(index: nextGuideMusicIndex(), restart: true)
+        case .previous: playGuideMusic(index: previousGuideMusicIndex(), restart: true)
+        }
+    }
+
+    private func advanceStep(reason: String) {
+        guard sessionActive, !isCompleted, ble?.isDeviceAvailable == true else {
+            logGuide("引导推进忽略", detail: "reason=inactive_completed_or_device_unavailable")
+            return
+        }
+        if gen1TargetID != nil, !isCurrentGen1GuideSession { logGuide("引导推进忽略", detail: "reason=target_or_session_changed"); return }
+        waitDiagnosticTask?.cancel()
+        logGuide("引导步骤完成", detail: "reason=\(reason)")
         if stepIndex >= expectedEvents.count - 1 {
             isCompleted = true
+            gen1StepState.waitForStep(0)
             UserDefaults.standard.set(0, forKey: stepStorageKey)
             exitGuideMode()
             stopGuideMusic()
             return
         }
         stepIndex += 1
+        if ble?.deviceGeneration == .gen1G5K61, guideModeEnabled {
+            gen1StepState.waitForStep(stepIndex + 1)
+            let sent = ble?.setGuideStep(stepIndex + 1) == true
+            logGuide("引导切换步骤", detail: "reason=\(reason) queued=\(sent); queued_is_not_device_ack")
+            if !sent {
+                showToast(L10n.t("引导步骤同步失败，请重试", "Couldn't sync the guide step. Try again."))
+            }
+        }
         saveCurrentStep()
         updateGuideMusicForStep()
+        armWaitDiagnostic()
+    }
+
+    private func logGuide(_ title: String, detail: String = "") {
+        DebugLogStore.logBLEEvent(title, detail: "session=\(guideSessionID) target=\(gen1TargetID?.uuidString ?? ble?.deviceBluetoothIdentifier ?? "nil") step=\(stepIndex + 1) waitingStep=\(gen1StepState.waitingStep) active=\(sessionActive) enabled=\(guideModeEnabled) completed=\(isCompleted) available=\(ble?.isDeviceAvailable == true) playerExists=\(guideMusicPlayer != nil) track=\(guideMusicIndex + 1) playing=\(guideMusicPlayer?.isPlaying == true) \(detail)")
+    }
+
+    private func armWaitDiagnostic() {
+        waitDiagnosticTask?.cancel()
+        guard gen1TargetID != nil, sessionActive, !isCompleted else { return }
+        let sessionID = guideSessionID, step = stepIndex
+        let started = ProcessInfo.processInfo.systemUptime
+        waitDiagnosticTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { return }
+                guard let self, self.sessionActive, !self.isCompleted,
+                      self.guideSessionID == sessionID, self.stepIndex == step else { return }
+                self.logGuide("引导仍在等待完成回包", detail: "elapsed=\(Int(ProcessInfo.processInfo.systemUptime - started))s; no_automatic_step_advance\n\(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
+            }
+        }
+    }
+
+    private func observeGuideAudio() {
+        let sessionID = guideSessionID
+        for name in [AVAudioSession.interruptionNotification, AVAudioSession.routeChangeNotification] {
+            audioObservers.append(NotificationCenter.default.publisher(for: name).receive(on: DispatchQueue.main).sink { [weak self] note in
+                guard let self, self.sessionActive, self.guideSessionID == sessionID else { return }
+                let interruption = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+                let routeReason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+                self.logGuide("引导音频状态变化", detail: "notification=\(name.rawValue) interruption=\(interruption.map(String.init) ?? "nil") routeReason=\(routeReason.map(String.init) ?? "nil")\n\(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
+            })
+        }
     }
 
     private func saveCurrentStep() {
+        guard ownsGuideDataRequest(guideSessionID) else { return }
         UserDefaults.standard.set(stepIndex + 1, forKey: stepStorageKey)
     }
 
@@ -225,6 +416,7 @@ final class NewbieGuideController: ObservableObject {
     }
 
     private func playGuideMusic(index: Int, restart: Bool) {
+        logGuide("引导音乐播放请求", detail: "requestedTrack=\(index + 1) restart=\(restart)")
         let targetIndex = max(0, min(index, guideMusicNames.count - 1))
         if !restart,
            guideMusicIndex == targetIndex,
@@ -235,6 +427,7 @@ final class NewbieGuideController: ObservableObject {
         if guideMusicIndex != targetIndex || guideMusicPlayer == nil || restart {
             releaseGuideMusicPlayer()
             guard let url = guideMusicURL(at: targetIndex) else {
+                logGuide("引导音乐播放失败", detail: "reason=resource_missing resource=\(guideMusicNames[targetIndex])")
                 print("[NewbieGuide] music file missing: \(guideMusicNames[targetIndex]).mp3")
                 return
             }
@@ -246,6 +439,7 @@ final class NewbieGuideController: ObservableObject {
                 guideMusicPlayer = player
                 guideMusicIndex = targetIndex
             } catch {
+                logGuide("引导音乐播放失败", detail: "reason=audio_session_or_player_error error=\(error.localizedDescription)")
                 print("[NewbieGuide] create music player failed: \(error.localizedDescription)")
                 releaseGuideMusicPlayer()
                 return
@@ -254,18 +448,23 @@ final class NewbieGuideController: ObservableObject {
 
         guard let player = guideMusicPlayer else { return }
         if player.play() {
+            logGuide("引导音乐播放结果", detail: "success=true\n\(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
             print("[NewbieGuide] music playing: index=\(targetIndex + 1)")
         } else {
+            logGuide("引导音乐播放结果", detail: "success=false reason=player_play_returned_false\n\(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
             print("[NewbieGuide] start music failed: index=\(targetIndex + 1)")
         }
     }
 
     private func pauseGuideMusic() {
+        logGuide("引导音乐暂停请求")
         guideMusicPlayer?.pause()
+        logGuide("引导音乐暂停结果", detail: "playerPresent=\(guideMusicPlayer != nil); missing_player_is_not_pause_success")
         print("[NewbieGuide] music paused: index=\(guideMusicIndex + 1)")
     }
 
     private func stopGuideMusic() {
+        logGuide("引导音乐停止")
         if guideMusicPlayer == nil {
             guideMusicIndex = -1
             return

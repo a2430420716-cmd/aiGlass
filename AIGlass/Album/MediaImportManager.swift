@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import UIKit
 
 struct MediaImportFailureRecord: Equatable, Identifiable {
     let id = UUID()
@@ -28,6 +29,8 @@ struct MediaImportFailureReport: Equatable {
     let importedFileNames: [String]
     let listedFileNames: [String]
     let failureRecords: [MediaImportFailureRecord]
+    var credentialSource: String = "wificonfig"
+    var transportName: String = "HTTP"
 
     var formattedLog: String {
         let formatter = ISO8601DateFormatter()
@@ -40,8 +43,8 @@ struct MediaImportFailureReport: Equatable {
             "设备已连接: \(deviceReady ? "是" : "否")",
             "预期待导入数量: \(expectedFileCount)",
             "Wi-Fi SSID: \(wifiSSID)",
-            "Wi-Fi 凭据来源: wificonfig",
-            "HTTP Base URL: \(httpBaseURL)",
+            "Wi-Fi 凭据来源: \(credentialSource)",
+            "\(transportName) Base URL: \(httpBaseURL)",
             "列表文件总数: \(totalListedFiles)",
             "成功导入: \(importedCount)",
             "跳过(空文件/损坏): \(purgedCount)",
@@ -77,7 +80,7 @@ struct MediaImportFailureReport: Equatable {
             for (index, record) in failureRecords.enumerated() {
                 lines.append("[\(index + 1)] \(record.mediaType) | \(record.fileName) | \(record.fileIndex)/\(record.totalFiles)")
                 lines.append("阶段: \(record.stage)")
-                lines.append("HTTP Base URL: \(record.baseURL)")
+                lines.append("\(transportName) Base URL: \(record.baseURL)")
                 if let bytesDownloaded = record.bytesDownloaded {
                     lines.append("已下载字节数: \(bytesDownloaded)")
                 }
@@ -108,6 +111,8 @@ final class MediaImportManager: ObservableObject {
 
     @Published private(set) var state: MediaImportState = .idle
     @Published private(set) var lastFailureReport: MediaImportFailureReport?
+    @Published private(set) var pendingGen1RecoveryCount = 0
+    @Published private var isClosingGen1Hotspot = false
 
     private let logTag = "[MediaImport]"
     private var connectedSSID: String?
@@ -158,6 +163,9 @@ final class MediaImportManager: ObservableObject {
         case .downloading(let current, let total, _):
             return L10n.t("正在导入 \(current)/\(total)", "Importing \(current)/\(total)")
         case .finishing:
+            if isClosingGen1Hotspot {
+                return L10n.t("正在等待眼镜热点关闭，请勿重复导入...", "Waiting for glasses hotspot shutdown. Please wait before importing again...")
+            }
             return L10n.t("正在完成导入...", "Finishing import...")
         case .completed(let imported, let failedPhotos, let failedVideos):
             if failedPhotos > 0 || failedVideos > 0 {
@@ -174,9 +182,27 @@ final class MediaImportManager: ObservableObject {
         ble: AstraA1BleManager,
         library: MediaLibrary,
         expectedFileCount: Int = 0,
-        autoSaveToPhotoLibrary: Bool = false
+        autoSaveToPhotoLibrary: Bool = false,
+        recoverLocalFilesOnly: Bool = false
     ) {
         guard !isImporting, importTask == nil else { return }
+        refreshGen1Recovery(ble: ble)
+        // Completed phone originals need neither BLE nor a charged/idle device.
+        // Recovery is an independent action. A permanently undecodable original
+        // must not prevent the user from importing new files from the glasses.
+        if recoverLocalFilesOnly, pendingGen1RecoveryCount > 0,
+           let targetID = ble.savedPeripheralUUIDString.flatMap(UUID.init(uuidString:)),
+           let accountID = ble.gen1ImportAccount(for: targetID) {
+            importTask = Task { [weak self] in
+                await self?.recoverGen1LocalFiles(ble: ble, library: library, targetID: targetID, accountID: accountID, autoSave: autoSaveToPhotoLibrary)
+                self?.importTask = nil
+            }
+            return
+        }
+        guard ble.isDeviceAvailable else {
+            state = .failed(L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first"))
+            return
+        }
         lastFailureReport = nil
         importTask = Task { [weak self] in
             await self?.startImport(
@@ -200,8 +226,12 @@ final class MediaImportManager: ObservableObject {
             state = .failed(L10n.t("录音正在导入，请稍后再试", "Recording import in progress, try again later"))
             return
         }
-        guard ble.isReady else {
-            state = .failed(L10n.t("请先连接眼镜设备", "Please connect your glasses first"))
+        guard ble.isDeviceAvailable else {
+            state = .failed(L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first"))
+            return
+        }
+        if ble.deviceGeneration == .gen1G5K61 {
+            await startGen1Import(ble: ble, library: library, expectedFileCount: expectedFileCount, autoSave: autoSaveToPhotoLibrary)
             return
         }
         guard !ble.isBatteryTooLowForMedia else {
@@ -209,8 +239,17 @@ final class MediaImportManager: ObservableObject {
             return
         }
 
+        // 保持亮屏覆盖热点连接、下载、媒体处理和保存；不随相册页面切换而提前释放。
+        let previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
+        UIApplication.shared.isIdleTimerDisabled = true
+        defer {
+            // 成功、失败或任务取消退出时，都恢复导入前的自动锁屏状态。
+            UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
+        }
+
         let startedAt = Date()
-        DebugLogStore.logWiFi(
+        let diagnostics = ImportDiagnosticContext(kind: "album", ble: ble)
+        diagnostics.log(
             "相册导入：开始 Wi-Fi 流程",
             detail: "expectedFileCount=\(expectedFileCount)\nautoSaveToPhotoLibrary=\(autoSaveToPhotoLibrary)\nbleReady=\(ble.isReady)"
         )
@@ -224,25 +263,30 @@ final class MediaImportManager: ObservableObject {
             let wifi = try await resolveWifiCredential(ble: ble)
             connectedSSID = wifi.ssid
             print("\(logTag) wifi ssid=\(wifi.ssid) http=\(wifi.httpAddress)")
-            DebugLogStore.logWiFi(
+            diagnostics.log(
                 "相册导入：热点配置就绪",
                 detail: "ssid=\(wifi.ssid)\npasswordEmpty=\(wifi.password.isEmpty)\nhttp=\(wifi.httpAddress)",
                 direction: .received
             )
 
+            try await requireAvailableDevice(ble)
             state = .connectingWifi
             print("\(logTag) Step2: join hotspot")
             try await DeviceWifiManager.connect(
                 ssid: wifi.ssid,
                 password: wifi.password,
-                probeBaseURL: wifi.httpAddress
+                probeBaseURL: wifi.httpAddress,
+                diagnosticContext: diagnostics.connectionContext,
+                diagnosticID: diagnostics.id,
+                deviceEvidence: { diagnostics.deviceEvidence }
             )
-            DebugLogStore.logWiFi(
+            diagnostics.log(
                 "相册导入：热点连接成功",
                 detail: "ssid=\(wifi.ssid)\nhttp=\(wifi.httpAddress)",
                 direction: .received
             )
 
+            try await requireAvailableDevice(ble)
             state = .fetchingList
             // HTTP 地址以本次 wificonfig 为准；为空再兜底。
             var baseURL = wifi.httpAddress
@@ -255,7 +299,9 @@ final class MediaImportManager: ObservableObject {
             print("\(logTag) work path=\(baseURL)")
 
             print("\(logTag) Step4: GET file list (HTTP)")
-            let fileNames = try await fetchMediaFileList(baseURL: baseURL, expectedCount: expectedFileCount)
+            diagnostics.log("相册导入：开始读取目录", detail: "url=\(baseURL)", direction: .sent)
+            let fileNames = try await fetchMediaFileList(ble: ble, baseURL: baseURL, expectedCount: expectedFileCount)
+            diagnostics.log("相册导入：目录读取完成", detail: "url=\(baseURL) fileCount=\(fileNames.count)", direction: .received)
             print("\(logTag) parsed files=\(fileNames)")
 
             var importedNames: [String] = []
@@ -265,11 +311,12 @@ final class MediaImportManager: ObservableObject {
             var failedVideoCount = 0
             var failureRecords: [MediaImportFailureRecord] = []
             for (index, name) in fileNames.enumerated() {
+                try await requireAvailableDevice(ble)
                 state = .downloading(current: index + 1, total: fileNames.count, fileName: name)
 
                 let data: Data
                 do {
-                    data = try await downloadFile(baseURL: baseURL, fileName: name)
+                    data = try await downloadFile(ble: ble, baseURL: baseURL, fileName: name)
                 } catch GlassesHTTPError.emptyBody {
                     purgedFromDeviceCount += 1
                     filesToDeleteOnDevice.append(name)
@@ -396,7 +443,7 @@ final class MediaImportManager: ObservableObject {
                 failedVideos: failedVideoCount
             )
             print("\(logTag) done imported=\(importedNames.count)")
-            DebugLogStore.logWiFi(
+            diagnostics.log(
                 "相册导入：Wi-Fi 流程结束",
                 detail: "imported=\(importedNames.count)\nfailedPhotos=\(failedPhotoCount)\nfailedVideos=\(failedVideoCount)"
             )
@@ -404,43 +451,326 @@ final class MediaImportManager: ObservableObject {
             let failedStage = String(describing: state)
             state = .failed(error.localizedDescription)
             print("\(logTag) FAILED: \(error.localizedDescription)")
-            DebugLogStore.logWiFi(
+            let nsError = error as NSError
+            diagnostics.log(
                 "相册导入：Wi-Fi 流程失败",
-                detail: "stage=\(failedStage)\nssid=\(connectedSSID ?? "nil")\nerror=\(error.localizedDescription)",
+                detail: "stage=\(failedStage)\nssid=\(connectedSSID ?? "nil")\nerrorDomain=\(nsError.domain) errorCode=\(nsError.code)\nerror=\(error.localizedDescription)\ncallerTaskCancelled=\(Task.isCancelled) phase=before-device-cleanup",
                 direction: .received
             )
             try? await ble.closeWifi()
             disconnectHotspot()
             // Android 的 error/cancel 路径同样 resetDeviceImportState(STANDBY)。
             ble.syncDeviceStatusAfterImport(reason: "media-import-failed")
+            diagnostics.log("相册导入：失败清理结束", detail: "deviceCleanupAttempted=true; close_result_is_recorded_in_BLE_and_WiFi_logs")
         }
     }
 
-    /// 等 BLE 回到 ready（连/退热点常会断线重连）。
+    // MARK: - First-generation AP + TCP import (does not enter the Gen2 HTTP flow)
+
+    func refreshGen1Recovery(ble: AstraA1BleManager) {
+        guard let target = ble.savedPeripheralUUIDString.flatMap(UUID.init(uuidString:)),
+              let account = ble.gen1ImportAccount(for: target) else {
+            pendingGen1RecoveryCount = 0
+            return
+        }
+        pendingGen1RecoveryCount = (try? Gen1ImportInbox().completedEntries(for: target, accountID: account).count) ?? 0
+    }
+
+    private func commitGen1File(
+        _ entry: Gen1ImportInbox.Entry,
+        inbox: Gen1ImportInbox,
+        library: MediaLibrary,
+        autoSave: Bool,
+        validateOwnership: () throws -> Void
+    ) async throws -> StoredMediaItem {
+        try validateOwnership()
+        let item = try await library.importGen1Original(fileURL: inbox.fileURL(for: entry), fileName: entry.fileName)
+        try validateOwnership()
+        if autoSave {
+            do {
+                try await SystemPhotoLibrarySaver.save(fileURL: library.originalURL(for: item), isVideo: item.isVideo)
+            } catch {
+                DebugLogStore.logWiFi("一代：保存系统相册失败，App 原件已保留", detail: "file=\(entry.fileName) error=\(error.localizedDescription)")
+                throw MediaImportError.message(L10n.t(
+                    "\(entry.fileName) 的 App 原件已保存，但系统相册保存失败；可再次导入重试：\(error.localizedDescription)",
+                    "The app original for \(entry.fileName) is safe, but saving to Photos failed. Import again to retry: \(error.localizedDescription)"
+                ))
+            }
+        }
+        try validateOwnership()
+        // Permanent original and app manifest have committed. A cleanup failure can be
+        // retried safely because the library receipt deduplicates this exact source URL.
+        do { try inbox.removeCommitted(entry) }
+        catch { DebugLogStore.logWiFi("一代：待恢复目录清理失败", detail: "file=\(entry.fileName) error=\(error.localizedDescription)") }
+        return item
+    }
+
+    private func recoverGen1LocalFiles(
+        ble: AstraA1BleManager, library: MediaLibrary, targetID: UUID, accountID: String, autoSave: Bool
+    ) async {
+        let authorizationID = ble.gen1ImportAuthorizationID
+        let ownershipWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+                if ble.gen1ImportAuthorizationID != authorizationID || ble.gen1ImportAccount(for: targetID) != accountID {
+                    self?.importTask?.cancel()
+                    return
+                }
+            }
+        }
+        defer { ownershipWatch.cancel() }
+        let previousIdle = UIApplication.shared.isIdleTimerDisabled
+        UIApplication.shared.isIdleTimerDisabled = true
+        defer { UIApplication.shared.isIdleTimerDisabled = previousIdle; refreshGen1Recovery(ble: ble) }
+        state = .fetchingList
+        lastFailureReport = nil
+        let startedAt = Date()
+        var importedNames: [String] = []
+        var listedNames: [String] = []
+        var failures: [MediaImportFailureRecord] = []
+        var failedPhotos = 0
+        var failedVideos = 0
+        func checkOwnership() throws {
+            try Task.checkCancellation()
+            guard ble.gen1ImportAuthorizationID == authorizationID,
+                  ble.gen1ImportAccount(for: targetID) == accountID else {
+                throw Gen1APImportError.targetChanged
+            }
+        }
+        defer {
+            if !failures.isEmpty {
+                lastFailureReport = MediaImportFailureReport(
+                    startedAt: startedAt, deviceSN: ble.deviceSN, deviceReady: ble.isReady,
+                    expectedFileCount: listedNames.count, wifiSSID: "",
+                    httpBaseURL: "local://Gen1ImportInbox", totalListedFiles: listedNames.count,
+                    importedCount: importedNames.count, purgedCount: 0,
+                    failedPhotoCount: failedPhotos, failedVideoCount: failedVideos,
+                    importedFileNames: importedNames, listedFileNames: listedNames, failureRecords: failures,
+                    credentialSource: "local recovery", transportName: "Local"
+                )
+            }
+        }
+        do {
+            let inbox = Gen1ImportInbox()
+            let entries = try inbox.completedEntries(for: targetID, accountID: accountID)
+            listedNames = entries.map(\.fileName)
+            for (index, entry) in entries.enumerated() {
+                try checkOwnership()
+                state = .downloading(current: index + 1, total: entries.count, fileName: entry.fileName)
+                do {
+                    _ = try await commitGen1File(entry, inbox: inbox, library: library, autoSave: autoSave, validateOwnership: checkOwnership)
+                    importedNames.append(entry.fileName)
+                } catch {
+                    try checkOwnership()
+                    if error is CancellationError { throw error }
+                    let isVideo = Self.isGen1VideoFileName(entry.fileName)
+                    if isVideo { failedVideos += 1 } else { failedPhotos += 1 }
+                    failures.append(MediaImportFailureRecord(
+                        fileName: entry.fileName, mediaType: isVideo ? "video" : "photo",
+                        fileIndex: index + 1, totalFiles: entries.count, stage: "localRecovery",
+                        baseURL: "local://Gen1ImportInbox", bytesDownloaded: nil,
+                        errorDetail: Self.formatErrorDetail(error)
+                    ))
+                    DebugLogStore.logWiFi("一代：本地恢复失败，原件保留并继续下一项", detail: "file=\(entry.fileName) error=\(error.localizedDescription)")
+                }
+            }
+            try checkOwnership()
+            state = .completed(imported: importedNames.count, failedPhotos: failedPhotos, failedVideos: failedVideos)
+        } catch {
+            state = .failed(L10n.t("已恢复 \(importedNames.count) 项，剩余原件仍保留在手机：\(error.localizedDescription)", "Recovered \(importedNames.count) item(s). Remaining originals are retained on this phone: \(error.localizedDescription)"))
+        }
+    }
+
+    private static func isGen1VideoFileName(_ name: String) -> Bool {
+        isVideoFileName(name) || name.lowercased().hasSuffix(".avi")
+    }
+
+    private func startGen1Import(
+        ble: AstraA1BleManager, library: MediaLibrary, expectedFileCount: Int, autoSave: Bool
+    ) async {
+        guard let targetID = ble.deviceBluetoothIdentifier.flatMap(UUID.init(uuidString:)) else {
+            state = .failed(Gen1APImportError.unavailable.localizedDescription)
+            return
+        }
+        guard !ble.isBatteryTooLowForMedia else { state = .failed(ble.lowBatteryMediaMessage); return }
+        let identity: Gen1APImportIdentity
+        do { identity = try ble.beginGen1MediaImport(targetID: targetID) }
+        catch { state = .failed(error.localizedDescription); return }
+
+        let previousIdle = UIApplication.shared.isIdleTimerDisabled
+        UIApplication.shared.isIdleTimerDisabled = true
+        let startedAt = Date()
+        let deviceSN = ble.deviceSN
+        let diagnostics = ImportDiagnosticContext(kind: "gen1-album", ble: ble)
+        let hotspot = Gen1HotspotSession(ble: ble, identity: identity)
+        let inbox = Gen1ImportInbox()
+        var client: Gen1MediaTCPClient?
+        var ssid: String?
+        var endpoint = "unavailable"
+        var remainingFileCount: Int?
+        var listedNames: [String] = []
+        var importedNames: [String] = []
+        var failures: [MediaImportFailureRecord] = []
+        var failedPhotos = 0
+        var failedVideos = 0
+        var finalError: Error?
+        let identityWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+                if !ble.isGen1MediaImportCurrent(identity) {
+                    self?.importTask?.cancel()
+                    return
+                }
+            }
+        }
+        defer {
+            identityWatch.cancel()
+            ble.endGen1MediaImport(identity, remainingFileCount: remainingFileCount)
+            isClosingGen1Hotspot = false
+            UIApplication.shared.isIdleTimerDisabled = previousIdle
+            refreshGen1Recovery(ble: ble)
+        }
+        func checkTarget() throws {
+            guard ble.isGen1MediaImportCurrent(identity) else { throw Gen1APImportError.targetChanged }
+            try Task.checkCancellation()
+        }
+        func record(_ name: String, index: Int, total: Int, stage: String, error: Error) {
+            if Self.isGen1VideoFileName(name) { failedVideos += 1 } else { failedPhotos += 1 }
+            failures.append(MediaImportFailureRecord(
+                fileName: name, mediaType: Self.isGen1VideoFileName(name) ? "video" : "photo",
+                fileIndex: index, totalFiles: total, stage: stage, baseURL: endpoint,
+                bytesDownloaded: nil, errorDetail: Self.formatErrorDetail(error)
+            ))
+            diagnostics.log("一代：文件导入失败，保留手机现有原始数据", detail: "file=\(name) stage=\(stage) error=\(error.localizedDescription)")
+        }
+
+        state = .fetchingList
+        diagnostics.log("一代：开始 AP 相册导入", detail: "target=\(targetID) transport=TCP:8556")
+        do {
+            // License activation may need internet. Finish this while still on the
+            // phone's normal network, before switching to the glasses' local AP.
+            let licensed = await Task.detached(priority: .utility) {
+                PixSmartImageStabilizer.prewarmLicense()
+            }.value
+            diagnostics.log("一代：视频防抖预鉴权结束", detail: "licensed=\(licensed); failure_keeps_original_video")
+            try checkTarget()
+            // Restore previously completed downloads first; do not ask glasses to send
+            // those deleted originals again after a processing failure or app restart.
+            let recovered = try inbox.completedEntries(for: targetID, accountID: identity.accountID)
+            for (index, entry) in recovered.enumerated() {
+                try checkTarget()
+                state = .downloading(current: index + 1, total: recovered.count, fileName: entry.fileName)
+                do {
+                    _ = try await commitGen1File(entry, inbox: inbox, library: library, autoSave: autoSave, validateOwnership: checkTarget)
+                    importedNames.append(entry.fileName)
+                } catch { record(entry.fileName, index: index + 1, total: recovered.count, stage: "localRecovery", error: error) }
+            }
+            try checkTarget()
+            state = .openingWifi
+            let credentials = try await hotspot.open()
+            ssid = credentials.ssid
+            try checkTarget()
+            state = .connectingWifi
+            let gateway = try await DeviceWifiManager.connectGen1(
+                ssid: credentials.ssid, password: credentials.password,
+                diagnosticID: diagnostics.id, deviceEvidence: { diagnostics.deviceEvidence }
+            )
+            try checkTarget()
+            endpoint = "tcp://\(gateway):8556"
+            let transport = Gen1MediaTCPClient(host: gateway)
+            client = transport
+            try await transport.connect()
+            try checkTarget()
+            state = .fetchingList
+            listedNames = try await transport.fileList()
+            remainingFileCount = listedNames.count
+            diagnostics.log("一代：TCP 文件列表已获取", detail: "endpoint=\(endpoint) count=\(listedNames.count); BLE_ready_not_required_during_transfer")
+            for (index, name) in listedNames.enumerated() {
+                try checkTarget()
+                state = .downloading(current: index + 1, total: listedNames.count, fileName: name)
+                let entry = try inbox.prepare(targetID: targetID, fileName: name, accountID: identity.accountID)
+                do {
+                    let bytes = try await transport.downloadFile(named: name, to: inbox.fileURL(for: entry))
+                    remainingFileCount = max(0, (remainingFileCount ?? 0) - 1)
+                    diagnostics.log("一代：原始文件已完整落盘", detail: "file=\(name) bytes=\(bytes) original=\(inbox.fileURL(for: entry).path)")
+                } catch {
+                    record(name, index: index + 1, total: listedNames.count, stage: "tcpDownload", error: error)
+                    throw error // A broken stream cannot safely continue with another request.
+                }
+                try checkTarget()
+                do {
+                    _ = try await commitGen1File(entry, inbox: inbox, library: library, autoSave: autoSave, validateOwnership: checkTarget)
+                    importedNames.append(name)
+                } catch { record(name, index: index + 1, total: listedNames.count, stage: "importToLibrary", error: error) }
+            }
+            try checkTarget()
+            state = .finishing
+            // Match Android: batch completion once, not a deletion ACK after each file.
+            try await transport.finishTransfer()
+        } catch {
+            finalError = ble.isGen1MediaImportCurrent(identity) ? error : Gen1APImportError.targetChanged
+            diagnostics.log("一代：导入流程失败", detail: "endpoint=\(endpoint) imported=\(importedNames.count) error=\(finalError!.localizedDescription)")
+        }
+
+        // Finish all cleanup before publishing a terminal state or accepting a retry.
+        state = .finishing
+        await client?.close()
+        if let ssid { DeviceWifiManager.disconnect(from: ssid) }
+        isClosingGen1Hotspot = true
+        let cleanupPending = await hotspot.close() == .pending
+        isClosingGen1Hotspot = false
+        identityWatch.cancel()
+        if !failures.isEmpty {
+            lastFailureReport = MediaImportFailureReport(
+                startedAt: startedAt, deviceSN: deviceSN, deviceReady: ble.isReady,
+                expectedFileCount: expectedFileCount, wifiSSID: ssid ?? "",
+                httpBaseURL: endpoint, totalListedFiles: listedNames.count,
+                importedCount: importedNames.count, purgedCount: 0,
+                failedPhotoCount: failedPhotos, failedVideoCount: failedVideos,
+                importedFileNames: importedNames, listedFileNames: listedNames, failureRecords: failures,
+                credentialSource: "Gen1 0x37", transportName: "TCP"
+            )
+        }
+        if let finalError {
+            let cleanupDetail = cleanupPending ? "\n\(Gen1APImportError.hotspotCleanupPending.localizedDescription)" : ""
+            state = .failed(L10n.t("已导入 \(importedNames.count) 项。\(finalError.localizedDescription)；已下载完整的原件保留在手机，可再次导入恢复。\(cleanupDetail)", "Imported \(importedNames.count) item(s). \(finalError.localizedDescription). Completed originals are retained on this phone for recovery.\(cleanupDetail)"))
+        } else if cleanupPending {
+            state = .failed(L10n.t("已导入 \(importedNames.count) 项。\(Gen1APImportError.hotspotCleanupPending.localizedDescription)", "Imported \(importedNames.count) item(s). \(Gen1APImportError.hotspotCleanupPending.localizedDescription)"))
+        } else {
+            state = .completed(imported: importedNames.count, failedPhotos: failedPhotos, failedVideos: failedVideos)
+        }
+    }
+
+    /// 热点切换允许有限重连；恢复后仍须有对应账号设备卡片。
+    private func requireAvailableDevice(_ ble: AstraA1BleManager) async throws {
+        try Task.checkCancellation()
+        guard await waitUntilBLEReady(ble, timeout: 20) else {
+            throw MediaImportError.deviceUnavailable
+        }
+        try Task.checkCancellation()
+    }
+
     private func waitUntilBLEReady(_ ble: AstraA1BleManager, timeout: TimeInterval) async -> Bool {
-        if ble.isReady { return true }
+        if ble.isReady { return ble.isDeviceAvailable }
         let deadline = Date().addingTimeInterval(timeout)
         print("\(logTag) waiting BLE ready, timeout=\(timeout)s state=\(String(describing: ble.connectionState))")
         while Date() < deadline {
+            if Task.isCancelled { return false }
             if ble.isReady {
-                print("\(logTag) BLE ready")
-                return true
+                print("\(logTag) BLE ready, available=\(ble.isDeviceAvailable)")
+                return ble.isDeviceAvailable
             }
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
         print("\(logTag) wait BLE ready timeout, isReady=\(ble.isReady)")
-        return ble.isReady
+        return ble.isDeviceAvailable
     }
 
     private func deleteDeviceFilesWithRetry(ble: AstraA1BleManager, fileNames: [String]) async {
         guard !fileNames.isEmpty else { return }
         var remaining = fileNames
         for attempt in 1...3 {
-            guard ble.isReady else {
-                print("\(logTag) delete attempt \(attempt): BLE not ready")
-                _ = await waitUntilBLEReady(ble, timeout: 10)
-                continue
-            }
+            guard await waitUntilBLEReady(ble, timeout: 10) else { return }
             do {
                 try await ble.deleteImportedFiles(remaining)
                 print("\(logTag) deleted device files ok count=\(remaining.count) attempt=\(attempt)")
@@ -495,9 +825,10 @@ final class MediaImportManager: ObservableObject {
 
     // MARK: - HTTP
 
-    private func fetchMediaFileList(baseURL: String, expectedCount: Int) async throws -> [String] {
+    private func fetchMediaFileList(ble: AstraA1BleManager, baseURL: String, expectedCount: Int) async throws -> [String] {
         var lastError: Error?
         for attempt in 1...8 {
+            try await requireAvailableDevice(ble)
             do {
                 let html = try await GlassesHTTPClient.fetchText(baseURL: baseURL)
                 print("\(logTag) html length=\(html.count)")
@@ -529,9 +860,10 @@ final class MediaImportManager: ObservableObject {
         throw lastError ?? MediaImportError.message(L10n.t("获取文件列表失败", "Failed to get file list"))
     }
 
-    private func downloadFile(baseURL: String, fileName: String) async throws -> Data {
+    private func downloadFile(ble: AstraA1BleManager, baseURL: String, fileName: String) async throws -> Data {
         var lastError: Error?
         for attempt in 1...3 {
+            try await requireAvailableDevice(ble)
             do {
                 return try await GlassesHTTPClient.fetchData(baseURL: baseURL, fileName: fileName)
             } catch GlassesHTTPError.emptyBody {
@@ -552,6 +884,8 @@ final class MediaImportManager: ObservableObject {
     }
 
     private static func isWifiConnectivityFailure(_ error: Error) -> Bool {
+        if case MediaImportError.deviceUnavailable = error { return true }
+        if error is CancellationError { return true }
         if error is DeviceWifiError { return true }
         return (error as? GlassesHTTPError)?.isConnectivityFailure == true
     }
@@ -678,9 +1012,11 @@ final class MediaImportManager: ObservableObject {
 }
 
 private enum MediaImportError: LocalizedError {
+    case deviceUnavailable
     case message(String)
     var errorDescription: String? {
         switch self {
+        case .deviceUnavailable: return L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
         case .message(let text): return text
         }
     }

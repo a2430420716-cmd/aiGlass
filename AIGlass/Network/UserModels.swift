@@ -321,10 +321,6 @@ struct UserDevice: Decodable, Identifiable, Equatable {
     }
 
     var cardImageName: String {
-        let model = (modelName ?? "").lowercased()
-        if model.contains("astra") || model.contains("a1") || model.contains("mca") {
-            return "glass2"
-        }
-        return "glass1"
+        GlassDeviceModel(modelName: modelName ?? "").imageName
     }
 }

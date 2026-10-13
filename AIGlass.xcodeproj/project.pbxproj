@@ -13,6 +13,14 @@
 		A1P1X5M4RT001F001E15012 /* VideoStabilizeProcessorGL.m in Sources */ = {isa = PBXBuildFile; fileRef = A1P1X5M4RT001F001E15022 /* VideoStabilizeProcessorGL.m */; };
 		A1P1X5M4RT001F001E15013 /* EisData.m in Sources */ = {isa = PBXBuildFile; fileRef = A1P1X5M4RT001F001E15023 /* EisData.m */; };
 		A1P1X5M4RT001F001E15014 /* CMTimeDualQueue.m in Sources */ = {isa = PBXBuildFile; fileRef = A1P1X5M4RT001F001E15024 /* CMTimeDualQueue.m */; };
+		B105B0000000000000000001 /* JL_OTALib in Frameworks */ = {isa = PBXBuildFile; fileRef = B105A0000000000000000001; };
+		B105C0000000000000000001 /* JL_OTALib in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B105A0000000000000000001; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B105B0000000000000000002 /* JL_HashPair in Frameworks */ = {isa = PBXBuildFile; fileRef = B105A0000000000000000002; };
+		B105C0000000000000000002 /* JL_HashPair in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B105A0000000000000000002; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B105B0000000000000000003 /* JL_AdvParse in Frameworks */ = {isa = PBXBuildFile; fileRef = B105A0000000000000000003; };
+		B105C0000000000000000003 /* JL_AdvParse in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B105A0000000000000000003; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B105B0000000000000000004 /* JLLogHelper in Frameworks */ = {isa = PBXBuildFile; fileRef = B105A0000000000000000004; };
+		B105C0000000000000000004 /* JLLogHelper in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B105A0000000000000000004; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -23,6 +31,10 @@
 			dstSubfolderSpec = 10;
 			files = (
 				A1P1X5M4RT001F001E15004 /* libpixsmart_vs_pv.framework in Embed Frameworks */,
+				B105C0000000000000000004 /* JLLogHelper in Embed Frameworks */,
+				B105C0000000000000000003 /* JL_AdvParse in Embed Frameworks */,
+				B105C0000000000000000002 /* JL_HashPair in Embed Frameworks */,
+				B105C0000000000000000001 /* JL_OTALib in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -39,6 +51,10 @@
 		A1P1X5M4RT001F001E15022 /* VideoStabilizeProcessorGL.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = VideoStabilizeProcessorGL.m; path = IOS/SXS_VideoStabilizePvDemo/videostabilization/VideoStabilizeProcessorGL.m; sourceTree = "<group>"; };
 		A1P1X5M4RT001F001E15023 /* EisData.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = EisData.m; path = IOS/SXS_VideoStabilizePvDemo/videostabilization/EisData.m; sourceTree = "<group>"; };
 		A1P1X5M4RT001F001E15024 /* CMTimeDualQueue.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = CMTimeDualQueue.m; path = IOS/SXS_VideoStabilizePvDemo/videostabilization/CMTimeDualQueue.m; sourceTree = "<group>"; };
+		B105A0000000000000000001 /* JL_OTALib.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = JL_OTALib.xcframework; path = Frameworks/Jieli/JL_OTALib.xcframework; sourceTree = "<group>"; };
+		B105A0000000000000000002 /* JL_HashPair.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = JL_HashPair.xcframework; path = Frameworks/Jieli/JL_HashPair.xcframework; sourceTree = "<group>"; };
+		B105A0000000000000000003 /* JL_AdvParse.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = JL_AdvParse.xcframework; path = Frameworks/Jieli/JL_AdvParse.xcframework; sourceTree = "<group>"; };
+		B105A0000000000000000004 /* JLLogHelper.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = JLLogHelper.xcframework; path = Frameworks/Jieli/JLLogHelper.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -55,6 +71,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				2C2DEE33D8E70E71E730753E /* Pods_AIGlass.framework in Frameworks */,
+				B105B0000000000000000004 /* JLLogHelper in Frameworks */,
+				B105B0000000000000000003 /* JL_AdvParse in Frameworks */,
+				B105B0000000000000000002 /* JL_HashPair in Frameworks */,
+				B105B0000000000000000001 /* JL_OTALib in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +85,10 @@
 			isa = PBXGroup;
 			children = (
 				587506712FF121D100E16599 /* AIGlass */,
+				B105A0000000000000000004 /* JLLogHelper.xcframework */,
+				B105A0000000000000000003 /* JL_AdvParse.xcframework */,
+				B105A0000000000000000002 /* JL_HashPair.xcframework */,
+				B105A0000000000000000001 /* JL_OTALib.xcframework */,
 				A1P1X5M4RT001F001E15001 /* libpixsmart_vs_pv.framework */,
 				A1P1X5M4RT001F001E15021 /* VideoStabilizeProcessor.m */,
 				A1P1X5M4RT001F001E15022 /* VideoStabilizeProcessorGL.m */,

@@ -98,9 +98,9 @@ enum GlassesHTTPClient {
             ]
         )
 
-        let status: Int
+        let response: GlassesHTTPUploadResponse.Outcome
         do {
-            status = try await RawHTTPConnection.put(
+            response = try await RawHTTPConnection.put(
                 host: host,
                 port: port,
                 path: path,
@@ -118,14 +118,15 @@ enum GlassesHTTPClient {
             )
             throw error
         }
-        print("\(logTag) upload \(fileName) status=\(status) bytes=\(body.count)")
+        let status = response.statusCode
+        print("\(logTag) upload \(fileName) status=\(status.map(String.init) ?? "unverified") bytes=\(body.count)")
         DebugLogStore.logHTTPReceived(
             method: "PUT",
             url: urlText,
             statusCode: status,
-            body: nil
+            body: status == nil ? "Android-compatible continuation after complete local send; HTTPResponseVerified=false; device result still required" : nil
         )
-        guard (200...299).contains(status) else {
+        if let status, !(200...299).contains(status) {
             throw GlassesHTTPError.httpStatus(status)
         }
     }
@@ -317,302 +318,360 @@ enum GlassesHTTPClient {
     }
 }
 
-/// 基于 NWConnection 的一次性 HTTP GET，读到连接关闭为止。
-private enum RawHTTPConnection {
-    /// 对齐 Android `onUnavailable`：短暂网络等待先给 2 秒恢复窗口，不能把一次
-    /// `NWConnection.waiting` 直接当成热点已断开。
-    private static let wifiWaitingGrace: TimeInterval = 2
+/// A task can be cancelled from any executor; transport state remains on its serial queue.
+nonisolated private final class HTTPTaskCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var action: (@Sendable () -> Void)?
 
-    static func get(host: String, port: UInt16, path: String, timeout: TimeInterval) async throws -> Data {
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func install(_ action: @escaping @Sendable () -> Void) {
+        lock.lock()
+        self.action = action
+        let shouldCancel = cancelled
+        lock.unlock()
+        if shouldCancel { action() }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let action = action
+        lock.unlock()
+        action?()
+    }
+
+    func complete() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        action = nil
+        return cancelled
+    }
+}
+
+/// One HTTP request per Wi-Fi-only connection. Association and HTTP have separate deadlines.
+nonisolated private enum RawHTTPConnection {
+    /// Accessed exclusively on each request's serial queue.
+    private final class RequestState: @unchecked Sendable {
+        var finished = false
+        var requestStarted = false
+        var bodySendCompleted = false
+        var received = Data()
+        var response = GlassesHTTPUploadResponse()
+    }
+    // Android HttpURLConnection uses a 10-second connect timeout and a 30-second PUT read timeout.
+    private static let connectTimeout: TimeInterval = 10
+    private static let uploadResponseTimeout: TimeInterval = 30
+
+    private static func makeConnection(host: String, port: UInt16) -> NWConnection {
         let parameters = NWParameters.tcp
-        // 强制走 Wi-Fi，禁止蜂窝，确保连到眼镜热点的 192.168.0.1
         parameters.requiredInterfaceType = .wifi
         parameters.prohibitedInterfaceTypes = [.cellular]
+        return NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port) ?? 80, using: parameters)
+    }
 
-        let nwHost = NWEndpoint.Host(host)
-        let nwPort = NWEndpoint.Port(rawValue: port) ?? 80
-        let connection = NWConnection(host: nwHost, port: nwPort, using: parameters)
+    /// Record the real HTTP connection now that a separate TCP probe no longer gates hotspot joining.
+    private static func logConnection(
+        _ connection: NWConnection, id: String, method: String, host: String, port: UInt16,
+        path: String, event: String, detail: String = "", error: NWError? = nil
+    ) {
+        let interfaces = WifiDiagnosticSession.captureInterfaces()
+        DebugLogStore.logWiFi(
+            "眼镜 HTTP \(method) \(event)",
+            detail: "httpDiagnosticVersion=3 requestID=\(id) uptime=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime))s\nhost=\(host) port=\(port) path=\(path)\nrequiredInterfaceType=wifi prohibitedInterfaceTypes=cellular\nselectedIPv4=\(interfaces.selectedIPv4 ?? "none")\n\(WifiConnectionDiagnostics.interfaceDescription(interfaces))\n\(TCPReachability.pathDescription(connection.currentPath))\n\(error.map { TCPReachability.errorDescription($0) } ?? "")\n\(detail)",
+            direction: .received
+        )
+    }
 
-        let request = "GET \(path) HTTP/1.1\r\n"
-            + "Host: \(host)\r\n"
-            + "User-Agent: AIGlass/1.0\r\n"
-            + "Accept: */*\r\n"
-            + "Connection: close\r\n"
-            + "\r\n"
+    static func get(host: String, port: UInt16, path: String, timeout: TimeInterval) async throws -> Data {
+        let cancellation = HTTPTaskCancellation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+                let queue = DispatchQueue(label: "com.aiglass.rawhttp")
+                let connection = makeConnection(host: host, port: port)
+                let id = UUID().uuidString
+                let requestState = RequestState()
+                let request = "GET \(path) HTTP/1.1\r\n"
+                    + "Host: \(host)\r\nUser-Agent: AIGlass/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n"
 
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-            let queue = DispatchQueue(label: "com.aiglass.rawhttp")
-            var received = Data()
-            var finished = false
-            var requestStarted = false
-            var waitingGeneration = 0
-
-            let finish: (Result<Data, Error>) -> Void = { result in
-                queue.async {
-                    guard !finished else { return }
-                    finished = true
+                let log: @Sendable (String, String, NWError?) -> Void = { event, detail, error in
+                    logConnection(connection, id: id, method: "GET", host: host, port: port, path: path,
+                                  event: event, detail: "receivedBytes=\(requestState.received.count) requestStarted=\(requestState.requestStarted)\n\(detail)", error: error)
+                }
+                // All callers run on queue. Finish synchronously so competing callbacks cannot win twice.
+                let finish: @Sendable (Result<Data, Error>) -> Void = { result in
+                    guard !requestState.finished else { return }
+                    requestState.finished = true
+                    let cancelled = cancellation.complete()
+                    connection.stateUpdateHandler = nil
+                    connection.pathUpdateHandler = nil
+                    connection.viabilityUpdateHandler = nil
                     connection.cancel()
-                    continuation.resume(with: result)
+                    continuation.resume(with: cancelled ? .failure(CancellationError()) : result)
                 }
-            }
-
-            // 超时保护
-            queue.asyncAfter(deadline: .now() + timeout) {
-                if !finished {
-                    if received.isEmpty {
-                        DebugLogStore.logWiFi(
-                            "眼镜 HTTP GET 超时",
-                            detail: "host=\(host)\nport=\(port)\npath=\(path)\ntimeout=\(String(format: "%.1f", timeout))s\nreceivedBytes=0",
-                            direction: .received
-                        )
-                        finish(.failure(GlassesHTTPError.unreachable))
-                    } else {
-                        DebugLogStore.logWiFi(
-                            "眼镜 HTTP GET 等待结束超时，保留已收数据",
-                            detail: "host=\(host)\nport=\(port)\npath=\(path)\ntimeout=\(String(format: "%.1f", timeout))s\nreceivedBytes=\(received.count)",
-                            direction: .received
-                        )
-                        finish(.success(received))
-                    }
-                }
-            }
-
-            func receiveLoop() {
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
-                    if let data, !data.isEmpty {
-                        received.append(data)
-                    }
-                    if let error {
-                        print("[GlassesHTTP] GET connection lost: \(error.localizedDescription)")
-                        DebugLogStore.logWiFi(
-                            "眼镜 HTTP GET 连接中断",
-                            detail: "host=\(host)\nport=\(port)\npath=\(path)\nreceivedBytes=\(received.count)\nerror=\(error.localizedDescription)",
-                            direction: .received
-                        )
-                        finish(.failure(GlassesHTTPError.unreachable))
-                        return
-                    }
-                    if isComplete {
-                        finish(.success(received))
-                        return
-                    }
-                    receiveLoop()
-                }
-            }
-
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    waitingGeneration += 1
-                    DebugLogStore.logWiFi(
-                        requestStarted ? "眼镜 HTTP GET Wi-Fi 路由已恢复" : "眼镜 HTTP GET Wi-Fi 路由就绪",
-                        detail: "host=\(host)\nport=\(port)\npath=\(path)\nrequestStarted=\(requestStarted)",
-                        direction: .received
-                    )
-                    // 路由从 waiting 恢复时，已发送的请求/receive 会由 NWConnection 继续处理；
-                    // 再发一次会把两个 HTTP 响应拼在一起。
-                    guard !requestStarted else { return }
-                    requestStarted = true
-                    let payload = Data(request.utf8)
-                    connection.send(content: payload, completion: .contentProcessed { sendError in
-                        if let sendError {
-                            print("[GlassesHTTP] GET send failed: \(sendError.localizedDescription)")
-                            DebugLogStore.logWiFi(
-                                "眼镜 HTTP GET 发送失败",
-                                detail: "host=\(host)\nport=\(port)\npath=\(path)\nerror=\(sendError.localizedDescription)",
-                                direction: .received
-                            )
+                @Sendable func receiveLoop() {
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
+                        guard !requestState.finished else { return }
+                        if let data { requestState.received.append(data) }
+                        if let error {
+                            log("连接中断", "", error)
                             finish(.failure(GlassesHTTPError.unreachable))
-                            return
+                        } else if isComplete {
+                            finish(.success(requestState.received))
+                        } else {
+                            receiveLoop()
                         }
-                        receiveLoop()
-                    })
-                case .waiting(let error):
-                    waitingGeneration += 1
-                    let generation = waitingGeneration
-                    DebugLogStore.logWiFi(
-                        "眼镜 HTTP GET 临时等待网络",
-                        detail: "host=\(host)\nport=\(port)\npath=\(path)\nNWError=\(error.localizedDescription)\nrecoveryGrace=\(String(format: "%.1f", Self.wifiWaitingGrace))s",
-                        direction: .received
-                    )
-                    queue.asyncAfter(deadline: .now() + Self.wifiWaitingGrace) {
-                        guard !finished, waitingGeneration == generation else { return }
-                        DebugLogStore.logWiFi(
-                            "眼镜 HTTP GET 网络等待未恢复",
-                            detail: "host=\(host)\nport=\(port)\npath=\(path)\nNWError=\(error.localizedDescription)\nwaited=\(String(format: "%.1f", Self.wifiWaitingGrace))s",
-                            direction: .received
-                        )
+                    }
+                }
+
+                connection.stateUpdateHandler = { state in
+                    guard !requestState.finished else { return }
+                    switch state {
+                    case .ready:
+                        log("Wi-Fi 路由就绪", "", nil)
+                        // A waiting -> ready transition must never replay an HTTP request.
+                        guard !requestState.requestStarted else { return }
+                        requestState.requestStarted = true
+                        connection.send(content: Data(request.utf8), completion: .contentProcessed { error in
+                            guard !requestState.finished else { return }
+                            if let error {
+                                log("发送失败", "", error)
+                                finish(.failure(GlassesHTTPError.unreachable))
+                            } else {
+                                receiveLoop()
+                            }
+                        })
+                    case .waiting(let error):
+                        log("等待网络", "connectTimeout=\(connectTimeout)s overallTimeout=\(timeout)s; keep_waiting_within_deadline", error)
+                    case .failed(let error):
+                        log("连接失败", "", error)
+                        finish(.failure(GlassesHTTPError.unreachable))
+                    case .cancelled:
+                        finish(.failure(CancellationError()))
+                    default:
+                        break
+                    }
+                }
+                connection.pathUpdateHandler = { _ in
+                    guard !requestState.finished else { return }
+                    log("路径变化", "", nil)
+                }
+                connection.viabilityUpdateHandler = { viable in
+                    guard !requestState.finished else { return }
+                    log("连接可用性变化", "isViable=\(viable)", nil)
+                }
+                cancellation.install {
+                    queue.async {
+                        guard !requestState.finished else { return }
+                        log("已取消", "", nil)
+                        finish(.failure(CancellationError()))
+                    }
+                }
+                queue.async {
+                    guard !requestState.finished else { return }
+                    guard !cancellation.isCancelled else {
+                        finish(.failure(CancellationError()))
+                        return
+                    }
+                    log("开始连接", "connectTimeout=\(connectTimeout)s overallTimeout=\(timeout)s", nil)
+                    queue.asyncAfter(deadline: .now() + connectTimeout) {
+                        guard !requestState.finished, !requestState.requestStarted else { return }
+                        log("连接超时", "failureBoundary=TCP-connect", nil)
                         finish(.failure(GlassesHTTPError.unreachable))
                     }
-                case .failed(let error):
-                    waitingGeneration += 1
-                    DebugLogStore.logWiFi(
-                        "眼镜 HTTP GET 连接失败",
-                        detail: "host=\(host)\nport=\(port)\npath=\(path)\nNWError=\(error.localizedDescription)",
-                        direction: .received
-                    )
-                    finish(.failure(GlassesHTTPError.unreachable))
-                case .cancelled:
-                    if !finished, !received.isEmpty {
-                        finish(.success(received))
+                    queue.asyncAfter(deadline: .now() + timeout) {
+                        guard !requestState.finished else { return }
+                        log("请求超时", "timeout=\(timeout)s", nil)
+                        // Preserve the existing EOF-less GET behavior; callers still validate file size.
+                        finish(requestState.received.isEmpty ? .failure(GlassesHTTPError.unreachable) : .success(requestState.received))
                     }
-                default:
-                    break
+                    connection.start(queue: queue)
                 }
             }
-
-            connection.start(queue: queue)
+        } onCancel: {
+            cancellation.cancel()
         }
     }
 
     static func put(
-        host: String,
-        port: UInt16,
-        path: String,
-        body: Data,
-        timeout: TimeInterval,
+        host: String, port: UInt16, path: String, body: Data, timeout: TimeInterval,
         onProgress: (@Sendable (Int) -> Void)? = nil
-    ) async throws -> Int {
+    ) async throws -> GlassesHTTPUploadResponse.Outcome {
         let requestPath = path.hasPrefix("/") ? path : "/" + path
+        let cancellation = HTTPTaskCancellation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<GlassesHTTPUploadResponse.Outcome, Error>) in
+                let queue = DispatchQueue(label: "com.aiglass.rawhttp.put")
+                let connection = makeConnection(host: host, port: port)
+                let id = UUID().uuidString
+                let totalBytes = body.count
+                let requestState = RequestState()
 
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int, Error>) in
-            let queue = DispatchQueue(label: "com.aiglass.rawhttp.put")
-            let parameters = NWParameters.tcp
-            parameters.requiredInterfaceType = .wifi
-            parameters.prohibitedInterfaceTypes = [.cellular]
-
-            let connection = NWConnection(
-                host: NWEndpoint.Host(host),
-                port: NWEndpoint.Port(rawValue: port) ?? 80,
-                using: parameters
-            )
-            var finished = false
-            let totalBytes = body.count
-            var requestStarted = false
-            var waitingGeneration = 0
-
-            let finish: (Result<Int, Error>) -> Void = { result in
-                queue.async {
-                    guard !finished else { return }
-                    finished = true
+                let log: @Sendable (String, String, NWError?) -> Void = { event, detail, error in
+                    logConnection(connection, id: id, method: "PUT", host: host, port: port, path: requestPath,
+                                  event: event, detail: "bytes=\(totalBytes) requestStarted=\(requestState.requestStarted) bodySendCompleted=\(requestState.bodySendCompleted)\n\(detail)", error: error)
+                }
+                let finish: @Sendable (Result<GlassesHTTPUploadResponse.Outcome, Error>) -> Void = { result in
+                    guard !requestState.finished else { return }
+                    requestState.finished = true
+                    let cancelled = cancellation.complete()
+                    connection.stateUpdateHandler = nil
+                    connection.pathUpdateHandler = nil
+                    connection.viabilityUpdateHandler = nil
                     connection.cancel()
-                    continuation.resume(with: result)
+                    continuation.resume(with: cancelled ? .failure(CancellationError()) : result)
                 }
-            }
-
-            queue.asyncAfter(deadline: .now() + timeout) {
-                if !finished {
-                    DebugLogStore.logWiFi(
-                        "眼镜 HTTP PUT 超时",
-                        detail: "host=\(host)\nport=\(port)\npath=\(requestPath)\ntimeout=\(String(format: "%.1f", timeout))s\nbytes=\(totalBytes)",
-                        direction: .received
-                    )
-                    finish(.failure(GlassesHTTPError.unreachable))
-                }
-            }
-
-            func receiveResponse() {
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
-                    if let error {
-                        print("[GlassesHTTP] PUT connection lost: \(error.localizedDescription)")
-                        DebugLogStore.logWiFi(
-                            "眼镜 HTTP PUT 连接中断",
-                            detail: "host=\(host)\nport=\(port)\npath=\(requestPath)\nerror=\(error.localizedDescription)",
-                            direction: .received
-                        )
-                        finish(.failure(GlassesHTTPError.unreachable))
-                        return
-                    }
-                    guard let data, !data.isEmpty else {
-                        if isComplete {
+                @Sendable func receiveResponse() {
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, isComplete, error in
+                        guard !requestState.finished else { return }
+                        // Data and an error can arrive together. An observed HTTP rejection always wins.
+                        switch requestState.response.append(data ?? Data()) {
+                        case .status(let code):
+                            log("收到响应", "status=\(code) HTTPResponseVerified=true", error)
+                            finish(.success(.httpStatus(code)))
+                            return
+                        case .invalid:
+                            log("响应格式异常", "", error)
+                            finish(.failure(GlassesHTTPError.badResponse))
+                            return
+                        case .pending:
+                            break
+                        }
+                        if let error {
+                            if let outcome = requestState.response.outcomeAfterConnectionError(
+                                error, bodySendCompleted: requestState.bodySendCompleted, totalBytes: totalBytes,
+                                cancelled: cancellation.isCancelled
+                            ) {
+                                log("完整发送后连接关闭，按安卓兼容继续",
+                                    "HTTPResponseVerified=false deviceAcceptanceVerified=false continuationReason=connectionClosedAfterCompleteLocalSend; awaiting_device_result", error)
+                                finish(.success(outcome))
+                            } else {
+                                log("连接中断", "HTTPResponseVerified=false", error)
+                                finish(.failure(GlassesHTTPError.unreachable))
+                            }
+                        } else if isComplete {
+                            // A clean EOF with no status is not Android's reset exception compatibility path.
+                            log("响应提前结束", "HTTPResponseVerified=false", nil)
                             finish(.failure(GlassesHTTPError.badResponse))
                         } else {
                             receiveResponse()
                         }
+                    }
+                }
+
+                connection.stateUpdateHandler = { state in
+                    guard !requestState.finished else { return }
+                    switch state {
+                    case .ready:
+                        log("Wi-Fi 路由就绪", "", nil)
+                        guard !requestState.requestStarted else { return }
+                        requestState.requestStarted = true
+                        let headers = "PUT \(requestPath) HTTP/1.1\r\n"
+                            + "Host: \(host)\r\nUser-Agent: AIGlass/1.0\r\nContent-Type: application/octet-stream\r\n"
+                            + "Content-Length: \(totalBytes)\r\nConnection: close\r\n\r\n"
+                        var payload = Data(headers.utf8)
+                        payload.append(body)
+                        connection.send(content: payload, completion: .contentProcessed { error in
+                            guard !requestState.finished else { return }
+                            if let error {
+                                log("发送失败", "HTTPResponseVerified=false", error)
+                                finish(.failure(GlassesHTTPError.unreachable))
+                                return
+                            }
+                            requestState.bodySendCompleted = true
+                            log("本地发送完成，等待响应", "responseTimeout=\(uploadResponseTimeout)s HTTPResponseVerified=false deviceAcceptanceVerified=false", nil)
+                            onProgress?(100)
+                            queue.asyncAfter(deadline: .now() + uploadResponseTimeout) {
+                                guard !requestState.finished else { return }
+                                log("响应超时", "failureBoundary=HTTP-response HTTPResponseVerified=false", nil)
+                                finish(.failure(GlassesHTTPError.unreachable))
+                            }
+                            receiveResponse()
+                        })
+                    case .waiting(let error):
+                        log("等待网络", "connectTimeout=\(connectTimeout)s overallTimeout=\(timeout)s; keep_waiting_within_deadline", error)
+                    case .failed(let error):
+                        log("连接失败", "", error)
+                        // Once sending starts, its completion or pending receive owns the outcome.
+                        // Finishing here could mask a HTTP 500 carried by the receive callback.
+                        if !requestState.requestStarted { finish(.failure(GlassesHTTPError.unreachable)) }
+                    case .cancelled:
+                        finish(.failure(CancellationError()))
+                    default:
+                        break
+                    }
+                }
+                connection.pathUpdateHandler = { _ in
+                    guard !requestState.finished else { return }
+                    log("路径变化", "", nil)
+                }
+                connection.viabilityUpdateHandler = { viable in
+                    guard !requestState.finished else { return }
+                    log("连接可用性变化", "isViable=\(viable)", nil)
+                }
+                cancellation.install {
+                    queue.async {
+                        guard !requestState.finished else { return }
+                        log("已取消", "", nil)
+                        finish(.failure(CancellationError()))
+                    }
+                }
+                queue.async {
+                    guard !requestState.finished else { return }
+                    guard !cancellation.isCancelled else {
+                        finish(.failure(CancellationError()))
                         return
                     }
-                    if let status = parseHTTPStatus(from: data) {
-                        finish(.success(status))
-                    } else {
-                        finish(.failure(GlassesHTTPError.badResponse))
-                    }
-                }
-            }
-
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    waitingGeneration += 1
-                    DebugLogStore.logWiFi(
-                        requestStarted ? "眼镜 HTTP PUT Wi-Fi 路由已恢复" : "眼镜 HTTP PUT Wi-Fi 路由就绪",
-                        detail: "host=\(host)\nport=\(port)\npath=\(requestPath)\nbytes=\(totalBytes)\nrequestStarted=\(requestStarted)",
-                        direction: .received
-                    )
-                    guard !requestStarted else { return }
-                    requestStarted = true
-                    let headers = "PUT \(requestPath) HTTP/1.1\r\n"
-                        + "Host: \(host)\r\n"
-                        + "User-Agent: AIGlass/1.0\r\n"
-                        + "Content-Type: application/octet-stream\r\n"
-                        + "Content-Length: \(totalBytes)\r\n"
-                        + "Connection: close\r\n"
-                        + "\r\n"
-                    var payload = Data(headers.utf8)
-                    payload.append(body)
-                    connection.send(content: payload, completion: .contentProcessed { sendError in
-                        if let sendError {
-                            print("[GlassesHTTP] PUT send failed: \(sendError.localizedDescription)")
-                            DebugLogStore.logWiFi(
-                                "眼镜 HTTP PUT 发送失败",
-                                detail: "host=\(host)\nport=\(port)\npath=\(requestPath)\nerror=\(sendError.localizedDescription)",
-                                direction: .received
-                            )
-                            finish(.failure(GlassesHTTPError.unreachable))
-                            return
-                        }
-                        onProgress?(100)
-                        receiveResponse()
-                    })
-                case .waiting(let error):
-                    waitingGeneration += 1
-                    let generation = waitingGeneration
-                    DebugLogStore.logWiFi(
-                        "眼镜 HTTP PUT 临时等待网络",
-                        detail: "host=\(host)\nport=\(port)\npath=\(requestPath)\nNWError=\(error.localizedDescription)\nrecoveryGrace=\(String(format: "%.1f", Self.wifiWaitingGrace))s",
-                        direction: .received
-                    )
-                    queue.asyncAfter(deadline: .now() + Self.wifiWaitingGrace) {
-                        guard !finished, waitingGeneration == generation else { return }
-                        DebugLogStore.logWiFi(
-                            "眼镜 HTTP PUT 网络等待未恢复",
-                            detail: "host=\(host)\nport=\(port)\npath=\(requestPath)\nNWError=\(error.localizedDescription)\nwaited=\(String(format: "%.1f", Self.wifiWaitingGrace))s",
-                            direction: .received
-                        )
+                    log("开始连接", "connectTimeout=\(connectTimeout)s responseTimeout=\(uploadResponseTimeout)s overallTimeout=\(timeout)s", nil)
+                    queue.asyncAfter(deadline: .now() + connectTimeout) {
+                        guard !requestState.finished, !requestState.requestStarted else { return }
+                        log("连接超时", "failureBoundary=TCP-connect", nil)
                         finish(.failure(GlassesHTTPError.unreachable))
                     }
-                case .failed(let error):
-                    waitingGeneration += 1
-                    DebugLogStore.logWiFi(
-                        "眼镜 HTTP PUT 连接失败",
-                        detail: "host=\(host)\nport=\(port)\npath=\(requestPath)\nNWError=\(error.localizedDescription)",
-                        direction: .received
-                    )
-                    finish(.failure(GlassesHTTPError.unreachable))
-                default:
-                    break
+                    queue.asyncAfter(deadline: .now() + timeout) {
+                        guard !requestState.finished else { return }
+                        log("请求超时", "failureBoundary=overall-request HTTPResponseVerified=false", nil)
+                        finish(.failure(GlassesHTTPError.unreachable))
+                    }
+                    connection.start(queue: queue)
                 }
             }
-
-            connection.start(queue: queue)
+        } onCancel: {
+            cancellation.cancel()
         }
     }
 }
 
-/// 仅建 TCP 连接判断眼镜 HTTP 服务是否已就绪，用于加入热点后的可达性探测。
-enum TCPReachability {
-    static func canConnect(host: String, port: UInt16, timeout: TimeInterval) async -> Bool {
+/// 仅建立 TCP 连接探测端口可达性；成功不代表 HTTP 协议或 OTA 上传正常。
+nonisolated enum TCPReachability {
+    /// Mutable state is accessed only from the probe's serial queue.
+    nonisolated private final class CompletionState: @unchecked Sendable {
+        var finished = false
+        var lastConnectionState = "notObserved"
+        var lastConnectionStateAt: TimeInterval?
+        var lastWaitingError: NWError?
+        var lastWaitingErrorAt: TimeInterval?
+        var lastPathDescription: String?
+        var lastViability: Bool?
+    }
+
+    static func canConnect(
+        host: String,
+        port: UInt16,
+        timeout: TimeInterval,
+        diagnosticID: String? = nil,
+        probeAttempt: Int? = nil
+    ) async -> Bool {
         await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             let queue = DispatchQueue(label: "com.aiglass.tcpprobe")
+            let startedAt = ProcessInfo.processInfo.systemUptime
             let parameters = NWParameters.tcp
             parameters.requiredInterfaceType = .wifi
             parameters.prohibitedInterfaceTypes = [.cellular]
@@ -622,62 +681,165 @@ enum TCPReachability {
                 port: NWEndpoint.Port(rawValue: port) ?? 80,
                 using: parameters
             )
-            var finished = false
-            let finish: (Bool) -> Void = { reachable in
-                queue.async {
-                    guard !finished else { return }
-                    finished = true
-                    connection.cancel()
-                    continuation.resume(returning: reachable)
+            let completionState = CompletionState()
+            let logState: (String, String, NWError?) -> Void = { title, state, error in
+                let uptime = ProcessInfo.processInfo.systemUptime
+                var detail = [
+                    "tcpDiagnosticVersion=2",
+                    "diagnosticID=\(diagnosticID ?? "unavailable")",
+                    "probeAttempt=\(probeAttempt.map(String.init) ?? "unavailable")",
+                    "uptime=\(String(format: "%.3f", uptime))s",
+                    "elapsed=\(String(format: "%.3f", uptime - startedAt))s",
+                    "host=\(host)",
+                    "port=\(port)",
+                    "timeout=\(String(format: "%.1f", timeout))s",
+                    "state=\(state)",
+                    "lastConnectionState=\(completionState.lastConnectionState)",
+                    "lastConnectionStateDuration=\(completionState.lastConnectionStateAt.map { String(format: "%.3f", uptime - $0) + "s" } ?? "unavailable")",
+                    "lastReportedViability=\(completionState.lastViability.map(String.init) ?? "unavailable")",
+                    "requiredInterfaceType=wifi",
+                    "prohibitedInterfaceTypes=cellular",
+                    pathDescription(connection.currentPath)
+                ]
+                if let error {
+                    detail.append(errorDescription(error))
                 }
+                if let lastWaitingError = completionState.lastWaitingError {
+                    detail.append(errorDescription(lastWaitingError, prefix: "lastWaitingError"))
+                    detail.append("lastWaitingErrorAge=\(completionState.lastWaitingErrorAt.map { String(format: "%.3f", uptime - $0) + "s" } ?? "unavailable")")
+                    detail.append("lastWaitingErrorIsHistorical=true")
+                } else {
+                    detail.append("lastWaitingError=noneObserved")
+                }
+                if let lastPathDescription = completionState.lastPathDescription {
+                    detail.append(lastPathDescription)
+                }
+                if state == "ready" {
+                    detail.append("result=TCP 连接成功；未发送 HTTP 请求，不证明 HTTP 协议或 OTA 上传正常")
+                }
+                DebugLogStore.logWiFi(title, detail: detail.joined(separator: "\n"), direction: .received)
             }
-
-            queue.asyncAfter(deadline: .now() + timeout) {
-                if !finished {
-                    DebugLogStore.logWiFi(
-                        "TCP 探测超时",
-                        detail: "host=\(host)\nport=\(port)\ntimeout=\(String(format: "%.1f", timeout))s",
-                        direction: .received
-                    )
-                    finish(false)
-                }
+            // State callbacks and the deadline run on this serial queue. Finish synchronously
+            // so a ready/failed callback cannot be followed by a misleading timeout log.
+            let finish: (Bool) -> Void = { reachable in
+                guard !completionState.finished else { return }
+                completionState.finished = true
+                connection.stateUpdateHandler = nil
+                connection.pathUpdateHandler = nil
+                connection.viabilityUpdateHandler = nil
+                connection.cancel()
+                continuation.resume(returning: reachable)
             }
 
             connection.stateUpdateHandler = { state in
+                guard !completionState.finished else { return }
+                let stateName = connectionStateName(state)
+                if completionState.lastConnectionState != stateName {
+                    completionState.lastConnectionState = stateName
+                    completionState.lastConnectionStateAt = ProcessInfo.processInfo.systemUptime
+                }
                 switch state {
+                case .setup:
+                    logState("TCP 探测初始化", "setup", nil)
+                case .preparing:
+                    logState("TCP 探测正在建立连接", "preparing", nil)
                 case .ready:
+                    logState("TCP 探测端口可达", "ready", nil)
                     finish(true)
                 case .waiting(let error):
-                    DebugLogStore.logWiFi(
-                        "TCP 探测等待网络",
-                        detail: "host=\(host)\nport=\(port)\nNWError=\(error.localizedDescription)",
-                        direction: .received
-                    )
+                    completionState.lastWaitingError = error
+                    completionState.lastWaitingErrorAt = ProcessInfo.processInfo.systemUptime
+                    logState("TCP 探测等待网络", "waiting", error)
                 case .failed(let error):
-                    DebugLogStore.logWiFi(
-                        "TCP 探测连接失败",
-                        detail: "host=\(host)\nport=\(port)\nNWError=\(error.localizedDescription)",
-                        direction: .received
-                    )
+                    logState("TCP 探测连接失败", "failed", error)
                     finish(false)
                 case .cancelled:
+                    logState("TCP 探测已取消", "cancelled", nil)
                     finish(false)
-                default:
-                    break
+                @unknown default:
+                    logState("TCP 探测未知状态", String(describing: state), nil)
                 }
             }
-            connection.start(queue: queue)
+            connection.pathUpdateHandler = { path in
+                guard !completionState.finished else { return }
+                let description = pathDescription(path, prefix: "lastPathUpdate")
+                guard description != completionState.lastPathDescription else { return }
+                completionState.lastPathDescription = description
+                logState("TCP 探测连接路径变化", "pathChanged", nil)
+            }
+            connection.viabilityUpdateHandler = { isViable in
+                guard !completionState.finished,
+                      completionState.lastViability != isViable else { return }
+                completionState.lastViability = isViable
+                logState("TCP 探测连接可用性变化", "viabilityChanged", nil)
+            }
+            queue.async {
+                logState("TCP 探测开始", "started", nil)
+                queue.asyncAfter(deadline: .now() + timeout) {
+                    guard !completionState.finished else { return }
+                    logState("TCP 探测超时", "timeout", nil)
+                    finish(false)
+                }
+                connection.start(queue: queue)
+            }
         }
     }
-}
 
-private func parseHTTPStatus(from data: Data) -> Int? {
-    guard let headerEnd = data.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) else { return nil }
-    let headerText = String(data: data.subdata(in: data.startIndex..<headerEnd.lowerBound), encoding: .isoLatin1) ?? ""
-    guard let statusLine = headerText.components(separatedBy: "\r\n").first else { return nil }
-    let parts = statusLine.split(separator: " ")
-    guard parts.count >= 2 else { return nil }
-    return Int(parts[1])
+    private static func connectionStateName(_ state: NWConnection.State) -> String {
+        switch state {
+        case .setup: return "setup"
+        case .preparing: return "preparing"
+        case .ready: return "ready"
+        case .waiting: return "waiting"
+        case .failed: return "failed"
+        case .cancelled: return "cancelled"
+        @unknown default: return String(describing: state)
+        }
+    }
+
+    fileprivate static func errorDescription(_ error: NWError, prefix: String = "NWError") -> String {
+        let nsError = error as NSError
+        let errorCase: String
+        let rawCode: String
+        switch error {
+        case .posix(let code):
+            errorCase = "posix"
+            rawCode = String(code.rawValue)
+        case .dns(let code):
+            errorCase = "dns"
+            rawCode = String(code)
+        case .tls(let code):
+            errorCase = "tls"
+            rawCode = String(code)
+        default:
+            errorCase = "unknown"
+            rawCode = "unavailable"
+        }
+        return [
+            "\(prefix).case=\(errorCase)",
+            "\(prefix).domain=\(nsError.domain)",
+            "\(prefix).code=\(nsError.code)",
+            "\(prefix).rawCode=\(rawCode)",
+            "\(prefix).description=\(String(describing: error))",
+            "\(prefix).localizedDescription=\(error.localizedDescription)"
+        ].joined(separator: "\n")
+    }
+
+    fileprivate static func pathDescription(_ path: NWPath?, prefix: String = "currentPath") -> String {
+        guard let path else { return "\(prefix)=unavailable" }
+        let interfaces = path.availableInterfaces.map { interface in
+            "\(interface.name)(\(String(describing: interface.type)))"
+        }.sorted().joined(separator: ",")
+        return [
+            "\(prefix).status=\(String(describing: path.status))",
+            "\(prefix).unsatisfiedReason=\(path.status == .unsatisfied ? String(describing: path.unsatisfiedReason) : "notApplicable")",
+            "\(prefix).supportsIPv4=\(path.supportsIPv4)",
+            "\(prefix).supportsIPv6=\(path.supportsIPv6)",
+            "\(prefix).usesWiFi=\(path.usesInterfaceType(.wifi))",
+            "\(prefix).usesCellular=\(path.usesInterfaceType(.cellular))",
+            "\(prefix).availableInterfaces=\(interfaces.isEmpty ? "none" : interfaces)"
+        ].joined(separator: "\n")
+    }
 }
 
 enum GlassesHTTPError: LocalizedError {

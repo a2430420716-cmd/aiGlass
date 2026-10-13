@@ -26,25 +26,35 @@ final class PairingCoordinator: ObservableObject {
     /// 绑定成功但经典蓝牙（A2DP/AVRCP）未连上时的引导提示。
     @Published var classicAudioTipMessage: String?
 
-    /// Astra A1 / G5T71：BLE 连接（CYT 文档协议）
+    /// 一代 G5K61 与二代 G5T71 共用连接管理，按 GATT 服务选择协议。
     let astraA1BleManager = AstraA1BleManager()
-    /// Lumina L1：连接方式不同，后续单独实现
-    let luminaL1Connector = LuminaL1Connector()
 
-    weak var authSession: AuthSession?
+    weak var authSession: AuthSession? {
+        didSet { observeDeviceCards() }
+    }
 
     private var cancellables = Set<AnyCancellable>()
+    private var deviceCardsObservation: AnyCancellable?
     private var hasStartedBind = false
+    private var pairingAttempt = PairingAttemptState()
+    private var deviceIdentityTimeout: DispatchWorkItem?
+    private var pendingPairingFailureMessage: String?
 
     init() {
+        astraA1BleManager.deviceCardPresenceProvider = { [weak self] in
+            self?.hasCorrespondingDeviceCard == true
+        }
+        astraA1BleManager.gen1ImportAccountProvider = { [weak self] targetID, hardwareSN in
+            guard let self, let auth = self.authSession, auth.isLoggedIn,
+                  auth.homeDeviceCards.contains(where: { card in
+                      !card.isFindDevice && DeviceAvailabilityPolicy.matches(
+                          serialNumber: card.serialNumber, hardwareSN: card.hardwareSN,
+                          currentPeripheralID: targetID.uuidString, currentHardwareSN: hardwareSN
+                      )
+                  }) else { return nil }
+            return auth.userInfo.map { "user:\($0.id)" }
+        }
         astraA1BleManager.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
-
-        luminaL1Connector.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
@@ -54,8 +64,9 @@ final class PairingCoordinator: ObservableObject {
         astraA1BleManager.$isDeviceInfoReady
             .receive(on: DispatchQueue.main)
             .sink { [weak self] ready in
-                guard ready else { return }
-                Task { await self?.bindAstraDeviceIfNeeded() }
+                guard ready, let self, self.userConfirmedPairingDevice else { return }
+                let token = self.pairingAttempt.generation
+                Task { await self.bindDeviceIfNeeded(attempt: token) }
             }
             .store(in: &cancellables)
 
@@ -71,7 +82,7 @@ final class PairingCoordinator: ObservableObject {
                     message = nil
                 }
                 guard let message else { return }
-                self.userConfirmedPairingDevice = false
+                self.cancelPairingAttempt()
                 self.isBindingDevice = false
                 self.hasStartedBind = false
                 self.bindStatusMessage = nil
@@ -97,6 +108,29 @@ final class PairingCoordinator: ObservableObject {
             .store(in: &cancellables)
     }
 
+    /// Uses the same real cards as HomeView. A find-device placeholder is never a device.
+    private var hasCorrespondingDeviceCard: Bool {
+        guard let authSession, authSession.isLoggedIn else { return false }
+        return authSession.homeDeviceCards.contains { card in
+            !card.isFindDevice && astraA1BleManager.matchesCurrentDevice(
+                serialNumber: card.serialNumber, hardwareSN: card.hardwareSN
+            )
+        }
+    }
+
+    private func observeDeviceCards() {
+        deviceCardsObservation = authSession?.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                // Deliver after AuthSession's @Published values change. Both BLE-observing
+                // detail views and coordinator-observing home views must reevaluate the gate.
+                self?.astraA1BleManager.objectWillChange.send()
+                self?.objectWillChange.send()
+            }
+        astraA1BleManager.objectWillChange.send()
+        objectWillChange.send()
+    }
+
     func openPairingFlow() {
         guard path.isEmpty else { return }
         path.append(PairingDestination.selectDevice)
@@ -118,11 +152,12 @@ final class PairingCoordinator: ObservableObject {
 
     /// 记录所选型号信息，直接进入配对准备页。对齐 Android，删除多余「去配对」中间页。
     func selectDevice(_ model: DeviceModelItem, guideItems: [DeviceGuideItem]) {
+        cancelPairingAttempt()
         selectedAPIModelName = model.modelName
         selectedEqName = model.eqName
         selectedGuideItems = guideItems
         selectedPrepareHTML = model.prepare
-        pairingModel = model.usesAstraBLE ? .astraA1 : .luminaL1
+        pairingModel = model.glassDeviceModel
         hasStartedBind = false
         isBindingDevice = false
         bindStatusMessage = nil
@@ -137,11 +172,12 @@ final class PairingCoordinator: ObservableObject {
         guard selectedAPIModelName == model.modelName else { return }
         selectedEqName = model.eqName
         selectedPrepareHTML = model.prepare
-        pairingModel = model.usesAstraBLE ? .astraA1 : .luminaL1
+        pairingModel = model.glassDeviceModel
     }
 
     /// 配对准备页「开始配对」→ 开始蓝牙扫描/连接。
     func startPairing() {
+        cancelPairingAttempt()
         hasStartedBind = false
         isBindingDevice = false
         bindStatusMessage = nil
@@ -149,10 +185,8 @@ final class PairingCoordinator: ObservableObject {
         showSearchingSheet = true
 
         switch pairingModel {
-        case .astraA1:
+        case .astraA1, .luminaL1, .unknown:
             astraA1BleManager.startPairing(preferredDeviceName: selectedAPIModelName)
-        case .luminaL1:
-            luminaL1Connector.startPairing()
         case .none:
             bindStatusMessage = L10n.t("请先选择设备型号", "Select a device model first")
             showSearchingSheet = true
@@ -160,6 +194,7 @@ final class PairingCoordinator: ObservableObject {
     }
 
     func pairWithDiscoveredDevice(id: UUID) {
+        guard !userConfirmedPairingDevice, !isBindingDevice else { return }
         // 该眼镜已在账号里：只提示，不连接、不绑定。
         if isPeripheralAlreadyBound(id) {
             print("[Pairing] tap already-bound device \(id.uuidString), skip connect")
@@ -168,13 +203,14 @@ final class PairingCoordinator: ObservableObject {
         }
 
         switch pairingModel {
-        case .astraA1:
+        case .astraA1, .luminaL1, .unknown:
             if astraA1BleManager.pairWithDiscoveredDevice(id: id) {
                 userConfirmedPairingDevice = true
+                startDeviceIdentityTimeout(peripheralID: id)
             } else {
                 pairingAlertMessage = L10n.t("配对状态已失效，请重新搜索设备", "Pairing session expired. Search again.")
             }
-        case .luminaL1, .none:
+        case .none:
             break
         }
     }
@@ -191,9 +227,9 @@ final class PairingCoordinator: ObservableObject {
 
     var discoveredPairingDevices: [DiscoveredBLEDevice] {
         switch pairingModel {
-        case .astraA1:
+        case .astraA1, .luminaL1, .unknown:
             return astraA1BleManager.discoveredPairingDevices
-        case .luminaL1, .none:
+        case .none:
             return []
         }
     }
@@ -202,14 +238,14 @@ final class PairingCoordinator: ObservableObject {
         if isBindingDevice { return true }
         if userConfirmedPairingDevice { return true }
         switch pairingModel {
-        case .astraA1:
+        case .astraA1, .luminaL1, .unknown:
             switch astraA1BleManager.connectionState {
             case .connecting, .discoveringServices, .enablingNotifications:
                 return true
             default:
                 return false
             }
-        case .luminaL1, .none:
+        case .none:
             return false
         }
     }
@@ -223,7 +259,7 @@ final class PairingCoordinator: ObservableObject {
                 return bindStatusMessage
             }
             switch pairingModel {
-            case .astraA1:
+            case .astraA1, .luminaL1, .unknown:
                 if case .failed(let message) = astraA1BleManager.connectionState {
                     return message
                 }
@@ -233,7 +269,7 @@ final class PairingCoordinator: ObservableObject {
                     return status
                 }
                 return L10n.t("正在配对", "Pairing")
-            case .luminaL1, .none:
+            case .none:
                 return L10n.t("正在配对", "Pairing")
             }
         }
@@ -241,13 +277,11 @@ final class PairingCoordinator: ObservableObject {
             return L10n.t("正在配对", "Pairing")
         }
         switch pairingModel {
-        case .astraA1:
+        case .astraA1, .luminaL1, .unknown:
             if case .bluetoothUnavailable(let message) = astraA1BleManager.connectionState {
                 return message
             }
             return L10n.t("正在搜索设备", "Searching for devices")
-        case .luminaL1:
-            return luminaL1Connector.statusMessage
         case .none:
             return L10n.t("正在搜索设备", "Searching for devices")
         }
@@ -255,6 +289,7 @@ final class PairingCoordinator: ObservableObject {
 
     /// 用户主动取消搜索/连接。
     func cancelSearching() {
+        cancelPairingAttempt()
         stopActivePairingIfNeeded()
         isBindingDevice = false
         bindStatusMessage = nil
@@ -268,6 +303,13 @@ final class PairingCoordinator: ObservableObject {
     func onSearchingSheetDismissed() {
         // 用户点「配对」后的程序化关闭：BLE 流程继续，不能当成取消。
         if userConfirmedPairingDevice { return }
+        // 等 sheet 完全退出再交给 HomeView 弹提示，避免 alert 被 sheet 遮住。
+        if let message = pendingPairingFailureMessage {
+            pendingPairingFailureMessage = nil
+            pairingAlertMessage = message
+            return
+        }
+        cancelPairingAttempt()
         stopActivePairingIfNeeded()
         isBindingDevice = false
         bindStatusMessage = nil
@@ -277,11 +319,22 @@ final class PairingCoordinator: ObservableObject {
 
     /// 配对未成功就退出时，把原本已连接的眼镜接回来（扫描/取消会断掉它）。
     func restoreBoundDeviceConnection() {
-        let serials = (authSession?.userInfo?.device ?? []).map(\.serialNumber)
+        guard !userConfirmedPairingDevice, !isBindingDevice,
+              let authSession, authSession.isLoggedIn, let info = authSession.userInfo else { return }
+        let serials = info.device.map(\.serialNumber)
+        let ble = astraA1BleManager
+        let savedIsBound = ble.savedPeripheralUUIDString.flatMap(UUID.init(uuidString:))
+            .map(isPeripheralAlreadyBound) ?? false
+        if !hasCorrespondingDeviceCard, (ble.isReady || (ble.savedPeripheralUUIDString != nil && !savedIsBound)) {
+            DebugLogStore.logConnect("discard unbound pairing connection", detail: "reason=restore-bound-only ready=\(ble.isReady) savedIsBound=\(savedIsBound) cardCount=\(info.device.count)")
+            ble.disconnectAndClearSession()
+        }
+        guard !serials.isEmpty else { return }
         astraA1BleManager.restoreBoundConnectionAfterPairing(boundSerialNumbers: serials)
     }
 
     func showNotFoundReason() {
+        cancelPairingAttempt()
         stopActivePairingIfNeeded()
         isBindingDevice = false
         bindStatusMessage = nil
@@ -295,14 +348,14 @@ final class PairingCoordinator: ObservableObject {
 
     private func stopActivePairingIfNeeded() {
         switch pairingModel {
-        case .astraA1:
-            // 已连接成功时保留 BLE，仅停止未完成的扫描/连接
-            if case .ready = astraA1BleManager.connectionState {
+        case .astraA1, .luminaL1, .unknown:
+            // GATT ready is not a completed pairing. Keep only an account device whose
+            // real home card matches this connection; discard temporary pairing targets.
+            if astraA1BleManager.isDeviceAvailable {
                 return
             }
-            astraA1BleManager.cancelPairing()
-        case .luminaL1:
-            luminaL1Connector.cancelPairing()
+            DebugLogStore.logConnect("discard incomplete pairing connection", detail: "ready=\(astraA1BleManager.isReady) correspondingCard=\(hasCorrespondingDeviceCard)")
+            astraA1BleManager.disconnectAndClearSession()
         case .none:
             break
         }
@@ -313,10 +366,8 @@ final class PairingCoordinator: ObservableObject {
             return bindStatusMessage
         }
         switch pairingModel {
-        case .astraA1:
+        case .astraA1, .luminaL1, .unknown:
             return astraA1BleManager.statusMessage
-        case .luminaL1:
-            return luminaL1Connector.statusMessage
         case .none:
             return L10n.t("查找设备中...", "Looking for devices...")
         }
@@ -325,7 +376,7 @@ final class PairingCoordinator: ObservableObject {
     var isSearchingInProgress: Bool {
         if isBindingDevice { return true }
         switch pairingModel {
-        case .astraA1:
+        case .astraA1, .luminaL1, .unknown:
             switch astraA1BleManager.connectionState {
             case .ready:
                 // 已连接，等待/正在绑定
@@ -335,8 +386,6 @@ final class PairingCoordinator: ObservableObject {
             default:
                 return true
             }
-        case .luminaL1:
-            return false
         case .none:
             return true
         }
@@ -348,12 +397,10 @@ final class PairingCoordinator: ObservableObject {
             return true
         }
         switch pairingModel {
-        case .astraA1:
+        case .astraA1, .luminaL1, .unknown:
             if case .failed = astraA1BleManager.connectionState { return true }
             if case .bluetoothUnavailable = astraA1BleManager.connectionState { return true }
             return false
-        case .luminaL1:
-            return true
         case .none:
             return false
         }
@@ -361,12 +408,18 @@ final class PairingCoordinator: ObservableObject {
 
     func pop() {
         guard !path.isEmpty else { return }
+        if userConfirmedPairingDevice || showSearchingSheet {
+            cancelSearching()
+        } else {
+            cancelPairingAttempt()
+        }
         DispatchQueue.main.async {
             self.path.removeLast()
         }
     }
 
     func popToRoot() {
+        cancelPairingAttempt()
         let count = path.count
         guard count > 0 else { return }
         path.removeLast(count)
@@ -374,6 +427,8 @@ final class PairingCoordinator: ObservableObject {
 
     /// 重置账号相关配对界面。普通退登保留设备连接；账号注销才断开并清理。
     func resetForLogout(keepDeviceConnection: Bool) {
+        astraA1BleManager.invalidateGen1MediaImportForLogout()
+        cancelPairingAttempt()
         showSearchingSheet = false
         isBindingDevice = false
         bindStatusMessage = nil
@@ -386,7 +441,6 @@ final class PairingCoordinator: ObservableObject {
         path.removeAll()
         if !keepDeviceConnection {
             astraA1BleManager.disconnectAndClearSession()
-            luminaL1Connector.cancelPairing()
         }
     }
 
@@ -451,11 +505,16 @@ final class PairingCoordinator: ObservableObject {
     }
 
     /// BLE 读到设备信息后：绑定设备 → 刷新用户信息 → 回首页。
-    private func bindAstraDeviceIfNeeded() async {
-        guard pairingModel == .astraA1, userConfirmedPairingDevice, !hasStartedBind else { return }
-        // model_name 必须用接口型号列表里的名称（如 G5T71），不能用 BLE 硬件码 MCA010
-        let bindModelName = selectedAPIModelName ?? "G5T71"
+    private func bindDeviceIfNeeded(attempt token: Int) async {
+        guard pairingAttempt.isCurrent(token) else { return }
+        guard pairingModel != nil, userConfirmedPairingDevice, !hasStartedBind else { return }
+        // 保留用户选择的销售型号；不能将一代或未知型号回退成 G5T71。
+        guard let bindModelName = selectedAPIModelName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !bindModelName.isEmpty else { return }
         guard let request = astraA1BleManager.bindDeviceSnapshot(appModelName: bindModelName) else { return }
+        guard let peripheralID = UUID(uuidString: request.serialNumber),
+              pairingAttempt.beginBinding(token: token, peripheralID: peripheralID) else { return }
+        cancelDeviceIdentityTimeout()
 
         hasStartedBind = true
         isBindingDevice = true
@@ -465,7 +524,9 @@ final class PairingCoordinator: ObservableObject {
         print("[Pairing] bind request model_name=\(request.modelName) device_name=\(request.deviceName) sn=\(request.sn)")
 
         guard let authSession else {
+            cancelPairingAttempt()
             isBindingDevice = false
+            stopActivePairingIfNeeded()
             bindStatusMessage = L10n.t("绑定失败：未登录", "Bind failed: Not signed in")
             userConfirmedPairingDevice = false
             pairingAlertMessage = bindStatusMessage
@@ -474,6 +535,7 @@ final class PairingCoordinator: ObservableObject {
 
         // 当前账号已绑定同一设备：提示后断开，不重复绑，保留 sheet 让用户看到提示。
         if isDeviceAlreadyBoundToCurrentAccount(request) {
+            cancelPairingAttempt()
             isBindingDevice = false
             bindStatusMessage = L10n.t("设备已绑定", "Already bound")
             objectWillChange.send()
@@ -486,15 +548,19 @@ final class PairingCoordinator: ObservableObject {
 
         do {
             try await authSession.bindDeviceAndRefresh(request)
+            guard pairingAttempt.isCurrent(token) else { return }
             isBindingDevice = false
             bindStatusMessage = L10n.t("绑定成功", "Bound successfully")
             objectWillChange.send()
 
             try? await Task.sleep(nanoseconds: 800_000_000)
+            guard pairingAttempt.isCurrent(token) else { return }
             userConfirmedPairingDevice = false
             popToRoot()
             checkClassicAudioConnectedAfterPairing()
         } catch {
+            guard pairingAttempt.isCurrent(token) else { return }
+            cancelPairingAttempt()
             isBindingDevice = false
             let message = error.localizedDescription
             // 已绑定其他账号：提示后断开，不做解绑/重绑。
@@ -505,6 +571,7 @@ final class PairingCoordinator: ObservableObject {
             } else {
                 bindStatusMessage = L10n.t("绑定失败：\(message)", "Bind failed: \(message)")
                 print("[Pairing] bind failed: \(message)")
+                stopActivePairingIfNeeded()
             }
             userConfirmedPairingDevice = false
             pairingAlertMessage = bindStatusMessage
@@ -512,12 +579,71 @@ final class PairingCoordinator: ObservableObject {
         }
     }
 
+    /// Match Android's 60-second device-info deadline after the user selects a device.
+    private func startDeviceIdentityTimeout(peripheralID: UUID) {
+        cancelDeviceIdentityTimeout()
+        pendingPairingFailureMessage = nil
+        let token = pairingAttempt.begin(peripheralID: peripheralID)
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self, self.pairingAttempt.expireIdentityWait(token: token) else { return }
+            self.deviceIdentityTimeout = nil
+            self.userConfirmedPairingDevice = false
+            self.isBindingDevice = false
+            self.hasStartedBind = false
+            let message = L10n.t(
+                "配对失败：未能读取完整设备信息，请重新搜索并配对。",
+                "Pairing failed: Could not read complete device information. Search and pair again."
+            )
+            self.bindStatusMessage = message
+            DebugLogStore.logConnect("pairing identity timeout", detail: "timeout=60s peripheral=\(peripheralID.uuidString) ready=\(self.astraA1BleManager.isReady) hasCompleteIdentity=\(self.astraA1BleManager.isDeviceInfoReady); attempt invalidated, late identity cannot bind")
+
+            // A stale deadline must never disconnect another or already-bound device.
+            let currentID = self.astraA1BleManager.deviceBluetoothIdentifier
+            let savedID = self.astraA1BleManager.savedPeripheralUUIDString
+            let stillTargetsAttempt = currentID == peripheralID.uuidString
+                || (currentID == nil && savedID == peripheralID.uuidString)
+            if stillTargetsAttempt,
+               !self.isPeripheralAlreadyBound(peripheralID) {
+                // READY saves this temporary target before server binding. Clear it
+                // so restoring an older binding cannot reconnect the timed-out target.
+                self.astraA1BleManager.disconnectAndClearSession()
+            }
+            if self.showSearchingSheet {
+                self.pendingPairingFailureMessage = message
+                self.showSearchingSheet = false
+            } else {
+                self.pairingAlertMessage = message
+            }
+            self.restoreBoundDeviceConnection()
+        }
+        deviceIdentityTimeout = timeout
+        DebugLogStore.logConnect("pairing identity wait started", detail: "timeout=60s peripheral=\(peripheralID.uuidString) attempt=\(token)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: timeout)
+    }
+
+    private func cancelDeviceIdentityTimeout() {
+        deviceIdentityTimeout?.cancel()
+        deviceIdentityTimeout = nil
+    }
+
+    private func cancelPairingAttempt() {
+        if pairingAttempt.phase != .idle {
+            DebugLogStore.logConnect("pairing attempt invalidated", detail: "attempt=\(pairingAttempt.generation) phase=\(pairingAttempt.phase) target=\(pairingAttempt.peripheralID?.uuidString ?? "nil") ready=\(astraA1BleManager.isReady) correspondingCard=\(hasCorrespondingDeviceCard)")
+        }
+        cancelDeviceIdentityTimeout()
+        pairingAttempt.cancel()
+        pendingPairingFailureMessage = nil
+        userConfirmedPairingDevice = false
+    }
+
     /// iOS 无公开 API 主动发起经典蓝牙连接，A2DP/AVRCP 只能由眼镜或系统设置建立。
     /// 绑定后经典蓝牙没起来时，媒体键（上一首/下一首）和音量都不会生效，这里提示用户手动连一次。
     private func checkClassicAudioConnectedAfterPairing() {
+        let generation = pairingAttempt.generation
         Task { @MainActor in
             // 经典蓝牙常比 BLE 晚几秒，给足重试窗口再判定。
             try? await Task.sleep(nanoseconds: 9_000_000_000)
+            guard pairingAttempt.generation == generation else { return }
             guard astraA1BleManager.isReady, !GlassesAudioRouteController.isOutputOnBluetooth else { return }
             print("[Pairing] classic bluetooth audio not connected after pairing")
             classicAudioTipMessage = L10n.t(

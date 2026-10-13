@@ -169,16 +169,60 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
     @Published private(set) var state: BluetoothOtaUpgradeState = .idle
     @Published private(set) var activeKind: OtaUpgradeKind?
     @Published private(set) var activeTargetVersion: String?
+    @Published private(set) var isVerifyingGen1Version = false
+    @Published private(set) var isWaitingForBluetooth = false
+    @Published private(set) var isCleaningUpPreparation = false
+    @Published private var gen1FirmwarePhase: Gen1FirmwareUpdateSession.Phase?
 
     private let logTag = "[DeviceOTA]"
     private let bluetoothOtaLogTag = "[bluetooth_ota]"
     private var upgradeTask: Task<Void, Never>?
     private var connectedSSID: String?
+    private var isGen1Upgrade = false
 
     var isUpgrading: Bool { state.isActive }
 
     var currentStatusText: String {
-        state.statusText(kind: activeKind)
+        if let gen1FirmwarePhase {
+            switch gen1FirmwarePhase {
+            case .checkingBattery: return L10n.t("正在检查眼镜电量...", "Checking glasses battery...")
+            case .provisioningWifi(let attempt): return L10n.t("正在为眼镜连接 Wi-Fi（\(attempt)/2）...", "Connecting glasses to Wi-Fi (\(attempt)/2)...")
+            case .diagnosingWifi: return L10n.t("正在读取眼镜配网结果...", "Reading glasses Wi-Fi diagnostics...")
+            case .restarting: return L10n.t("固件已写入，正在重启眼镜...", "Firmware written. Restarting glasses...")
+            case .verifyingVersion: return L10n.t("正在等待眼镜重连并核对版本...", "Waiting for glasses to reconnect and verifying the version...")
+            case .upgrading, .completed: break
+            }
+        }
+        if isCleaningUpPreparation {
+            return L10n.t("正在退出本次升级准备...", "Exiting update preparation...")
+        }
+        if isWaitingForBluetooth {
+            return L10n.t("正在等待眼镜蓝牙恢复...", "Waiting for glasses Bluetooth to reconnect...")
+        }
+        if isVerifyingGen1Version {
+            return L10n.t("正在等待眼镜重连并核对版本...", "Waiting for glasses to reconnect and verifying the version...")
+        }
+        return state.statusText(kind: activeKind)
+    }
+
+    var overallProgress: Int? {
+        guard isGen1Upgrade else { return state.overallProgress }
+        if let gen1FirmwarePhase {
+            switch gen1FirmwarePhase {
+            case .checkingBattery: return 1
+            case .provisioningWifi, .diagnosingWifi: return 5
+            case .upgrading(let percent): return 10 + min(85, max(0, percent) * 85 / 100)
+            case .restarting, .verifyingVersion: return 95
+            case .completed: return nil
+            }
+        }
+        if isVerifyingGen1Version { return 95 }
+        switch state {
+        case .downloadingFirmware(let percent): return max(0, min(20, percent / 5))
+        case .uploadingFirmware(let percent): return 20 + max(0, min(70, percent * 70 / 100))
+        case .upgrading(let percent): return max(0, min(95, percent * 95 / 100))
+        default: return state.overallProgress
+        }
     }
 
     private func btLog(_ message: String, kind: OtaUpgradeKind) {
@@ -200,9 +244,10 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         serverInfo: DeviceOTAInfo,
         authorization: String?,
         ble: AstraA1BleManager,
-        importManager: MediaImportManager
+        importManager: MediaImportManager,
+        gen1Wifi: Gen1FirmwareWifiCredentials? = nil
     ) {
-        startUpgrade(kind: .firmware, serverInfo: serverInfo, authorization: authorization, ble: ble, importManager: importManager)
+        startUpgrade(kind: .firmware, serverInfo: serverInfo, authorization: authorization, ble: ble, importManager: importManager, gen1Wifi: gen1Wifi)
     }
 
     private func startUpgrade(
@@ -210,28 +255,44 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         serverInfo: DeviceOTAInfo,
         authorization: String?,
         ble: AstraA1BleManager,
-        importManager: MediaImportManager
+        importManager: MediaImportManager,
+        gen1Wifi: Gen1FirmwareWifiCredentials? = nil
     ) {
         guard !isUpgrading, upgradeTask == nil else { return }
         activeKind = kind
         activeTargetVersion = serverInfo.version
+        isGen1Upgrade = ble.deviceGeneration == .gen1G5K61
+        isVerifyingGen1Version = false
+        gen1FirmwarePhase = nil
+        guard ble.isDeviceAvailable, let startingIdentifier = ble.deviceBluetoothIdentifier else {
+            state = .failed(L10n.t("请先连接已绑定的眼镜设备", "Please connect your bound glasses first"))
+            return
+        }
         upgradeTask = Task { [weak self] in
-            await self?.runUpgrade(
+            guard let self else { return }
+            defer { self.upgradeTask = nil }
+            guard ble.isDeviceAvailable, ble.deviceBluetoothIdentifier == startingIdentifier else {
+                self.state = .failed(L10n.t("眼镜连接或绑定已改变，升级已停止", "Glasses connection or binding changed. Update stopped"))
+                return
+            }
+            await self.runUpgrade(
                 kind: kind,
                 serverInfo: serverInfo,
                 authorization: authorization,
                 ble: ble,
-                importManager: importManager
+                importManager: importManager,
+                gen1Wifi: gen1Wifi
             )
-            self?.upgradeTask = nil
         }
     }
 
     func resetCompletedState() {
+        guard upgradeTask == nil else { return }
         if case .completed = state { state = .idle }
         if case .failed = state { state = .idle }
         activeKind = nil
         activeTargetVersion = nil
+        isVerifyingGen1Version = false
     }
 
     private func runUpgrade(
@@ -239,16 +300,17 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         serverInfo: DeviceOTAInfo,
         authorization: String?,
         ble: AstraA1BleManager,
-        importManager: MediaImportManager
+        importManager: MediaImportManager,
+        gen1Wifi: Gen1FirmwareWifiCredentials? = nil
     ) async {
         btLog(
             "flow begin targetVersion=\(serverInfo.version) bleReady=\(ble.isReady) importing=\(importManager.isImporting) sn=\(ble.deviceSN ?? "nil") bleId=\(ble.deviceBluetoothIdentifier ?? "nil") ver28=\(ble.deviceVersion2800 ?? "nil")",
             kind: kind
         )
 
-        guard ble.isReady else {
-            btLog("abort: device not ready", kind: kind)
-            state = .failed(L10n.t("请先连接眼镜设备", "Please connect your glasses first"))
+        guard ble.isDeviceAvailable else {
+            btLog("abort: bound device not available", kind: kind)
+            state = .failed(L10n.t("请先连接已绑定的眼镜设备", "Please connect your bound glasses first"))
             return
         }
         guard !importManager.isImporting else {
@@ -262,12 +324,26 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             return
         }
 
+        if ble.deviceGeneration == .gen1G5K61 {
+            await runGen1Upgrade(kind: kind, serverInfo: serverInfo, ble: ble, gen1Wifi: gen1Wifi)
+            return
+        }
+
+        guard ble.deviceGeneration == .gen2,
+              let targetID = ble.deviceBluetoothIdentifier.flatMap(UUID.init(uuidString:)) else {
+            state = .failed(L10n.t("未能确认当前眼镜，请重新连接后升级", "Could not identify the glasses. Reconnect before updating"))
+            return
+        }
+
         ble.beginFirmwareUpgradeFlow()
         var fileName = "firmware.bin"
         var localFileURL: URL?
         var lastUpgradePercent = 0
+        var preserveRuntimeStatus = false
         defer {
-            ble.endFirmwareUpgradeFlow(reason: "ota-flow-finished")
+            isWaitingForBluetooth = false
+            isCleaningUpPreparation = false
+            ble.endFirmwareUpgradeFlow(reason: "ota-flow-finished", preserveRuntimeStatus: preserveRuntimeStatus)
         }
 
         do {
@@ -290,6 +366,8 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             localFileURL = cachedURL
             print("\(logTag) firmware cached \(fileName) bytes=\(firmwareData.count)")
             btLog("step1 cached path=\(cachedURL.path)", kind: kind)
+
+            try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "after-firmware-download")
 
             let algorithmUpdate: PreparedAlgorithmUpdate
             if kind == .bluetooth {
@@ -330,6 +408,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 algorithmUpdate = .empty
             }
 
+            try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "before-opening-hotspot")
             state = .openingWifi
             btLog("step2 toopenwifi (purpose=ota)", kind: kind)
             DebugLogStore.logWiFi(
@@ -350,7 +429,8 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             try await DeviceWifiManager.connect(
                 ssid: wifi.ssid,
                 password: wifi.password,
-                probeBaseURL: wifi.httpAddress
+                probeBaseURL: wifi.httpAddress,
+                diagnosticContext: "ota kind=\(kind) peripheral=\(targetID)"
             )
             btLog("step3 hotspot connected", kind: kind)
             DebugLogStore.logWiFi(
@@ -358,6 +438,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 detail: "kind=\(kind)\nssid=\(wifi.ssid)\nhttp=\(wifi.httpAddress)",
                 direction: .received
             )
+            try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "after-hotspot-connection")
 
             if kind == .bluetooth, algorithmUpdate.needsInstall {
                 do {
@@ -373,8 +454,12 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                         deviceHTTPBaseURL: wifi.httpAddress
                     )
                     btLog("dll step2 path=\(dllBaseURL)", kind: kind)
-                    try await uploadAlgorithmUpdate(algorithmUpdate, baseURL: dllBaseURL, kind: kind)
+                    try await uploadAlgorithmUpdate(
+                        algorithmUpdate, baseURL: dllBaseURL, kind: kind,
+                        ble: ble, targetID: targetID
+                    )
 
+                    try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "before-algorithm-install")
                     state = .installingAlgorithm(percent: 0)
                     btLog("dll step4 dllupload0 count=\(algorithmUpdate.files.count)", kind: kind)
                     let result = try await ble.waitForDLLInstall(
@@ -382,8 +467,10 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                         timeout: 120
                     ) { [weak self] percent in
                         Task { @MainActor in
-                            self?.state = .installingAlgorithm(percent: percent)
-                            self?.btLog("dll install progress=\(percent)%", kind: kind)
+                            guard let self, !self.isCleaningUpPreparation,
+                                  case .installingAlgorithm = self.state else { return }
+                            self.state = .installingAlgorithm(percent: percent)
+                            self.btLog("dll install progress=\(percent)%", kind: kind)
                         }
                     }
                     guard result.status == 1 else {
@@ -409,8 +496,10 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             }
 
             state = .gettingOtaPath
+            try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "before-ota-path")
             btLog("step4 getworkpat OTA path", kind: kind)
             let receivedOtaPath = try await ble.getOtaWorkPath()
+            try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "before-firmware-upload")
             let otaBaseURL = Self.resolveDeviceWorkPath(
                 receivedOtaPath,
                 fallbackDirectory: "fw_upload",
@@ -427,6 +516,8 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 body: firmwareData
             ) { percent in
                 Task { @MainActor in
+                    guard !self.isCleaningUpPreparation,
+                          case .uploadingFirmware = self.state else { return }
                     self.state = .uploadingFirmware(percent: percent)
                 }
             }
@@ -434,6 +525,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
 
             state = .closingWifi
             btLog("step6 closewifi0 + disconnect hotspot", kind: kind)
+            try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "before-hotspot-shutdown")
             try? await ble.closeWifi(timeout: 2)
             disconnectHotspot()
             btLog("step6 hotspot closed", kind: kind)
@@ -442,15 +534,18 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 detail: "kind=\(kind)\nfile=\(fileName)\nbytes=\(firmwareData.count)"
             )
 
+            try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "before-upgrade-command")
             state = .upgrading(percent: 0)
             btLog("step7 \(kind == .firmware ? "otaupload1" : "otaupload0") start file=\(fileName)", kind: kind)
             // 先挂进度回调再发 otaupload，避免首包进度丢失。
             try await ble.waitForOtaUpgradeCompletion { [weak self] percent in
                 lastUpgradePercent = percent
                 Task { @MainActor in
-                    self?.state = .upgrading(percent: percent)
+                    guard let self, !self.isCleaningUpPreparation,
+                          case .upgrading = self.state else { return }
+                    self.state = .upgrading(percent: percent)
                     if percent == 0 || percent == 100 || percent % 5 == 0 {
-                        self?.btLog("step7 upgrade progress=\(percent)%", kind: kind)
+                        self.btLog("step7 upgrade progress=\(percent)%", kind: kind)
                     }
                 }
             } sendUpgradeCommand: {
@@ -471,25 +566,9 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 kind: kind
             )
             ble.queryUpgradeDeviceInfo()
-        } catch let error as AstraA1BleManager.ImportBLEError {
-            let shouldCloseWifi = Self.shouldCloseDeviceWifiOnFailure(state)
-            let failedStage = String(describing: state)
-            state = .failed(error.localizedDescription)
-            print("\(logTag) upgrade failed: \(error.localizedDescription)")
-            btLog("failed: \(error.localizedDescription) lastProgress=\(lastUpgradePercent)%", kind: kind)
-            DebugLogStore.logWiFi(
-                "升级：Wi-Fi 流程失败",
-                detail: "kind=\(kind)\nstage=\(failedStage)\nssid=\(connectedSSID ?? "nil")\nerror=\(error.localizedDescription)",
-                direction: .received
-            )
-            if shouldCloseWifi {
-                try? await ble.closeWifi(timeout: 2)
-            }
-            disconnectHotspot()
         } catch {
-            let shouldCloseWifi = Self.shouldCloseDeviceWifiOnFailure(state)
             let failedStage = String(describing: state)
-            state = .failed(error.localizedDescription)
+            preserveRuntimeStatus = true
             print("\(logTag) upgrade failed: \(error.localizedDescription)")
             btLog("failed: \(error.localizedDescription) lastProgress=\(lastUpgradePercent)%", kind: kind)
             DebugLogStore.logWiFi(
@@ -497,10 +576,10 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 detail: "kind=\(kind)\nstage=\(failedStage)\nssid=\(connectedSSID ?? "nil")\nerror=\(error.localizedDescription)",
                 direction: .received
             )
-            if shouldCloseWifi {
-                try? await ble.closeWifi(timeout: 2)
-            }
+            // Keep the flow active until cleanup ends, so a retry cannot race its cancellation.
+            let cleanupNote = await cleanupGen2Preparation(ble, targetID: targetID, failedStage: state)
             disconnectHotspot()
+            state = .failed([error.localizedDescription, cleanupNote].compactMap { $0 }.joined(separator: "\n"))
         }
 
         if let localFileURL {
@@ -510,13 +589,288 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         btLog("flow end state=\(String(describing: state))", kind: kind)
     }
 
+    /// Hotspot switching can interrupt GATT even after the HTTP service is reachable.
+    /// Wait only for the original bound glasses; never carry commands to a replacement.
+    private func waitForGen2Bluetooth(
+        _ ble: AstraA1BleManager,
+        targetID: UUID,
+        reason: String,
+        timeout: TimeInterval = 30,
+        requiresAvailableDevice: Bool = true
+    ) async throws {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        var lastReconnectAt = -Double.infinity
+        var loggedWait = false
+        defer { isWaitingForBluetooth = false }
+        while true {
+            try Task.checkCancellation()
+            let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+            let decision = Gen2OtaRecoveryState.connectionDecision(
+                targetID: targetID,
+                savedID: ble.savedPeripheralUUIDString.flatMap(UUID.init(uuidString:)),
+                connectedID: ble.deviceBluetoothIdentifier.flatMap(UUID.init(uuidString:)),
+                isReady: ble.isReady,
+                isGen2: ble.deviceGeneration == .gen2,
+                elapsed: elapsed,
+                timeout: timeout
+            )
+            switch decision {
+            case .ready:
+                // Recovery still waits on transport readiness. Business preparation also
+                // needs the same device to remain represented by an account device card.
+                if requiresAvailableDevice, !ble.isDeviceAvailable {
+                    guard elapsed < timeout else {
+                        throw BluetoothOtaUpgradeError.message(L10n.t("未能确认对应的已绑定眼镜，本次升级已停止", "The bound glasses could not be confirmed. Update stopped"))
+                    }
+                    isWaitingForBluetooth = true
+                    if !loggedWait {
+                        loggedWait = true
+                        DebugLogStore.logWiFi("升级：等待眼镜身份与设备卡片匹配", detail: "reason=\(reason) peripheral=\(targetID)")
+                    }
+                    // After GATT recovery an SN-keyed card may need fresh identity replies.
+                    // Do not send preparation commands until that identity matches again.
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                    continue
+                }
+                if loggedWait {
+                    DebugLogStore.logWiFi("升级：蓝牙已恢复", detail: "reason=\(reason) peripheral=\(targetID) elapsed=\(String(format: "%.1f", elapsed))s")
+                }
+                return
+            case .targetChanged:
+                DebugLogStore.logWiFi("升级：目标眼镜已改变", detail: "reason=\(reason) expected=\(targetID) current=\(ble.deviceBluetoothIdentifier ?? "nil") saved=\(ble.savedPeripheralUUIDString ?? "nil")")
+                throw BluetoothOtaUpgradeError.message(L10n.t("连接或绑定的眼镜已改变，本次升级已停止", "Connected or bound glasses changed. Update stopped"))
+            case .timedOut:
+                DebugLogStore.logWiFi("升级：等待蓝牙恢复超时", detail: "reason=\(reason) peripheral=\(targetID) timeout=\(timeout)s")
+                throw BluetoothOtaUpgradeError.message(L10n.t("等待眼镜蓝牙恢复超时，请重新连接后升级", "Bluetooth reconnection timed out. Reconnect glasses before updating"))
+            case .wait:
+                isWaitingForBluetooth = true
+                if !loggedWait {
+                    loggedWait = true
+                    DebugLogStore.logWiFi("升级：等待同一眼镜蓝牙恢复", detail: "reason=\(reason) peripheral=\(targetID) timeout=\(timeout)s")
+                }
+                if elapsed - lastReconnectAt >= 2 {
+                    lastReconnectAt = elapsed
+                    ble.ensureConnected(reason: "ota-\(reason)")
+                }
+                try await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
+    }
+
+    /// Android exits OTA on failure. Restrict cancellation to our accepted preparation;
+    /// a timeout after submitting firmware is not permission to interrupt device flashing.
+    private func cleanupGen2Preparation(
+        _ ble: AstraA1BleManager,
+        targetID: UUID,
+        failedStage: BluetoothOtaUpgradeState
+    ) async -> String? {
+        guard Self.canCleanUpPreparation(in: failedStage),
+              ble.canCancelGen2OtaPreparation(for: targetID) else {
+            DebugLogStore.logWiFi("升级：未发送退出指令", detail: "stage=\(failedStage) reason=no-owned-preparation-or-installation-started; do not infer ownership from firmware busy state")
+            return nil
+        }
+        isCleaningUpPreparation = true
+        defer { isCleaningUpPreparation = false }
+        disconnectHotspot()
+        do {
+            try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "cleanup-preparation", requiresAvailableDevice: false)
+            do {
+                try await ble.closeWifi(timeout: 2)
+            } catch {
+                DebugLogStore.logWiFi("升级：关闭热点未确认，仍尝试退出准备", detail: error.localizedDescription)
+            }
+            try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "before-ota-cancel", timeout: 10, requiresAvailableDevice: false)
+            let previousStatusSequence = ble.deviceRuntimeStatusReportSequence
+            guard ble.cancelGen2OtaPreparation(for: targetID) else {
+                throw BluetoothOtaUpgradeError.message(L10n.t("退出升级准备指令未发送", "Could not send update preparation cancellation"))
+            }
+            // A queued command is not an ACK. Require a fresh STANDBY report before
+            // telling the user the glasses have left their upgrade preparation state.
+            let deadline = ProcessInfo.processInfo.systemUptime + 6
+            var nextQueryAt = -Double.infinity
+            while ProcessInfo.processInfo.systemUptime < deadline {
+                try Task.checkCancellation()
+                guard ble.savedPeripheralUUIDString == targetID.uuidString,
+                      ble.deviceBluetoothIdentifier == targetID.uuidString else { break }
+                if ble.isReady, ble.deviceRuntimeStatusReportSequence > previousStatusSequence,
+                   ble.lastReportedDeviceRuntimeStatus == .standby {
+                    DebugLogStore.logWiFi("升级：已确认退出升级准备", detail: "peripheral=\(targetID) freshStatus=STANDBY")
+                    return nil
+                }
+                let now = ProcessInfo.processInfo.systemUptime
+                if ble.isReady, now >= nextQueryAt {
+                    nextQueryAt = now + 1
+                    ble.queryGen2OtaRuntimeStatus(for: targetID)
+                }
+                try await Task.sleep(nanoseconds: 250_000_000)
+            }
+            DebugLogStore.logWiFi("升级：退出准备尚未确认", detail: "peripheral=\(targetID) cancelQueued=true status=\(ble.deviceRuntimeStatus.name)")
+        } catch {
+            DebugLogStore.logWiFi("升级：退出准备未完成", detail: "peripheral=\(targetID) error=\(error.localizedDescription)")
+        }
+        return L10n.t("尚未确认眼镜退出升级准备，请重新连接并检查设备状态", "Could not confirm exit from update preparation. Reconnect and check glasses status")
+    }
+
     // MARK: - Bluetooth OTA algorithm DLL pre-update
 
-    /// 对齐 Android shouldCloseWifiOnFailure：下载/getalgoinf 失败时不额外发 closewifi。
-    private static func shouldCloseDeviceWifiOnFailure(_ state: BluetoothOtaUpgradeState) -> Bool {
+    /// Gen1 main firmware pulls its HTTP image; Bluetooth firmware uses vendor RCSP.
+    /// Neither path uses Gen2 hotspot, HTTP upload, DLL, or otaupload commands.
+    private func runGen1Upgrade(kind: OtaUpgradeKind, serverInfo: DeviceOTAInfo, ble: AstraA1BleManager,
+                                gen1Wifi: Gen1FirmwareWifiCredentials?) async {
+        guard ble.isDeviceAvailable, ble.deviceGeneration == .gen1G5K61,
+              let targetIdentifier = ble.deviceBluetoothIdentifier,
+              let peripheralIdentifier = UUID(uuidString: targetIdentifier),
+              ble.savedPeripheralUUIDString == targetIdentifier else {
+            state = .failed(L10n.t("无法识别当前绑定的眼镜，请重新连接", "Unable to identify the bound glasses. Reconnect and retry"))
+            return
+        }
+        do { try ble.requireGen1HotspotCleanupFinished(for: peripheralIdentifier) }
+        catch { state = .failed(error.localizedDescription); return }
+        if kind == .firmware {
+            await runGen1MainFirmwareUpgrade(serverInfo: serverInfo, wifi: gen1Wifi, ble: ble)
+            return
+        }
+        guard let battery = ble.deviceBatteryPercent, battery > 15 else {
+            state = .failed(L10n.t("请将眼镜充电至 15% 以上再升级", "Charge glasses above 15% before updating"))
+            return
+        }
+        guard ble.isDeviceRuntimeIdle else {
+            state = .failed(ble.deviceRuntimeStatus.busyMessage)
+            return
+        }
+        ble.beginFirmwareUpgradeFlow()
+        defer { ble.endFirmwareUpgradeFlow(reason: "gen1-ota-finished") }
+
+        do {
+            if kind == .bluetooth {
+                let prepared = try await prepareFirmwarePayload(kind: kind, serverInfo: serverInfo) { percent in
+                    self.state = .downloadingFirmware(percent: percent)
+                }
+                try Task.checkCancellation()
+                guard ble.isDeviceAvailable, ble.deviceGeneration == .gen1G5K61,
+                      ble.deviceBluetoothIdentifier == targetIdentifier,
+                      ble.savedPeripheralUUIDString == targetIdentifier else {
+                    throw BluetoothOtaUpgradeError.message(L10n.t("眼镜连接或绑定已改变，升级已停止", "Glasses connection or binding changed. Update stopped"))
+                }
+                ble.suspendNormalConnectionForGen1OTA()
+                do {
+                    try await Task.sleep(nanoseconds: 800_000_000)
+                    guard ble.savedPeripheralUUIDString == targetIdentifier else {
+                        throw BluetoothOtaUpgradeError.message(L10n.t("眼镜绑定已改变，升级已停止", "Glasses binding changed. Update stopped"))
+                    }
+                    state = .uploadingFirmware(percent: 0)
+                    let transport = Gen1BluetoothOtaTransport()
+                    try await transport.upgrade(data: prepared.data, peripheralIdentifier: peripheralIdentifier) { percent in
+                        self.state = .uploadingFirmware(percent: percent)
+                    }
+                } catch {
+                    ble.resumeNormalConnectionAfterGen1OTA()
+                    throw error
+                }
+                ble.resumeNormalConnectionAfterGen1OTA()
+                state = .upgrading(percent: 100)
+                // A 100% transfer or bootloader disconnect alone is not success.
+                try await verifyGen1Version(command: 0x14, targetVersion: serverInfo.version,
+                                            targetIdentifier: targetIdentifier, ble: ble)
+                state = .completed
+            }
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
+    }
+
+    private func runGen1MainFirmwareUpgrade(serverInfo: DeviceOTAInfo,
+                                            wifi: Gen1FirmwareWifiCredentials?,
+                                            ble: AstraA1BleManager) async {
+        do {
+            guard let wifi else {
+                throw BluetoothOtaUpgradeError.message(L10n.t("请输入眼镜连接的 Wi-Fi 名称和密码", "Enter Wi-Fi credentials for the glasses"))
+            }
+            let payload = try Gen1FirmwareUpdateProtocol.urlPayload(serverInfo.downloadURL, trustedBaseURL: APIClient.baseURL)
+            _ = try Gen1FirmwareUpdateProtocol.wifiPayload(ssid: wifi.ssid, password: wifi.password)
+            let identity = try ble.beginGen1FirmwareUpgrade()
+            defer {
+                gen1FirmwarePhase = nil
+                ble.endGen1FirmwareUpgrade(identity)
+            }
+            state = .upgrading(percent: 0)
+            DebugLogStore.logWiFi("一代主固件升级：开始", detail: "target=\(identity.targetID) version=\(serverInfo.version) transport=BLE-provision+device-HTTP-download")
+            let session = Gen1FirmwareUpdateSession(
+                send: { command, data in
+                    guard ble.isGen1FirmwareUpgradeCurrent(identity) else { return false }
+                    return ble.sendGen1Command(command: command, payload: data)
+                },
+                validate: {
+                    guard ble.isGen1FirmwareUpgradeCurrent(identity) else {
+                        throw Gen1FirmwareUpdateSession.Failure.targetChanged
+                    }
+                },
+                isConnected: { ble.isReady && ble.deviceBluetoothIdentifier == identity.targetID.uuidString },
+                reconnect: { ble.ensureConnected(reason: "gen1-ota-version-verification") },
+                changed: { phase in
+                    self.gen1FirmwarePhase = phase
+                    if case .upgrading(let percent) = phase { self.state = .upgrading(percent: percent) }
+                },
+                log: { message in DebugLogStore.logWiFi("一代主固件升级", detail: "target=\(identity.targetID) \(message)") }
+            )
+            // Subscribe before querying battery or sending Wi-Fi credentials.
+            let subscription = ble.gen1ControlSubject.sink { frame in
+                session.receive(command: frame.command, payload: frame.payload)
+            }
+            defer { subscription.cancel() }
+            try await session.run(wifi: wifi, urlPayload: payload, targetVersion: serverInfo.version,
+                                  baselineBattery: ble.deviceBatteryPercent)
+            state = .completed
+            DebugLogStore.logWiFi("一代主固件升级：版本确认成功", detail: "target=\(identity.targetID) version=\(serverInfo.version)")
+        } catch {
+            DebugLogStore.logWiFi("一代主固件升级：停止", detail: "error=\(error.localizedDescription)")
+            state = .failed(error.localizedDescription)
+        }
+    }
+
+    private func verifyGen1Version(command: UInt8, targetVersion: String, targetIdentifier: String,
+                                  ble: AstraA1BleManager) async throws {
+        isVerifyingGen1Version = true
+        defer { isVerifyingGen1Version = false }
+        // Read a fresh version after reboot. Cached pre-update version cannot confirm success.
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+        var freshVersion: String?
+        let subscription = ble.gen1ControlSubject.sink { frame in
+            guard frame.command == command, ble.deviceBluetoothIdentifier == targetIdentifier else { return }
+            freshVersion = String(data: frame.payload, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
+        }
+        defer { subscription.cancel() }
+        let deadline = Date().addingTimeInterval(90)
+        var lastQueryAt = Date.distantPast
+        while Date() < deadline {
+            try Task.checkCancellation()
+            guard ble.savedPeripheralUUIDString == targetIdentifier else {
+                throw BluetoothOtaUpgradeError.message(L10n.t("眼镜绑定已改变，版本校验已停止", "Glasses binding changed. Version verification stopped"))
+            }
+            if ble.isReady, ble.deviceGeneration != .gen1G5K61 || ble.deviceBluetoothIdentifier != targetIdentifier {
+                throw BluetoothOtaUpgradeError.message(L10n.t("当前连接的眼镜已改变，版本校验已停止", "Connected glasses changed. Version verification stopped"))
+            }
+            if ble.isReady, ble.deviceBluetoothIdentifier == targetIdentifier,
+               Date().timeIntervalSince(lastQueryAt) >= 3 {
+                lastQueryAt = Date()
+                _ = ble.sendGen1Command(command: command)
+            } else if !ble.isReady {
+                ble.ensureConnected(reason: "gen1-ota-version-verification")
+            }
+            if let freshVersion, Gen1FirmwareUpdateProtocol.versionsMatch(freshVersion, target: targetVersion) { return }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        let detail = freshVersion.map { "\($0) → \(targetVersion)" } ?? targetVersion
+        throw BluetoothOtaUpgradeError.message(L10n.t("固件写入完成，但尚未确认重启后的版本（\(detail)），请重新连接眼镜检查", "Firmware was written, but its version after restart could not be confirmed (\(detail)). Reconnect glasses and check"))
+    }
+
+    /// Only stage eligibility; actual cancellation also requires accepted preparation
+    /// ownership and proof that no firmware command was submitted.
+    private static func canCleanUpPreparation(in state: BluetoothOtaUpgradeState) -> Bool {
         switch state {
         case .openingWifi, .connectingWifi, .gettingOtaPath, .uploadingFirmware,
-             .gettingDLLPath, .uploadingAlgorithm, .installingAlgorithm:
+             .gettingDLLPath, .uploadingAlgorithm, .closingWifi, .upgrading:
             return true
         default:
             return false
@@ -713,13 +1067,16 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
     private func uploadAlgorithmUpdate(
         _ update: PreparedAlgorithmUpdate,
         baseURL: String,
-        kind: OtaUpgradeKind
+        kind: OtaUpgradeKind,
+        ble: AstraA1BleManager,
+        targetID: UUID
     ) async throws {
         let totalFiles = update.files.count + (update.localJSON == nil ? 0 : 1)
         guard totalFiles > 0 else { return }
         var completedFiles = 0
 
         for file in update.files {
+            try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "before-algorithm-file-upload")
             let completedBefore = completedFiles
             let manager = self
             state = .uploadingAlgorithm(percent: completedBefore * 100 / totalFiles)
@@ -730,12 +1087,17 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 body: file.data
             ) { filePercent in
                 let overall = min(100, (completedBefore * 100 + filePercent) / totalFiles)
-                Task { @MainActor in manager.state = .uploadingAlgorithm(percent: overall) }
+                Task { @MainActor in
+                    guard !manager.isCleaningUpPreparation,
+                          case .uploadingAlgorithm = manager.state else { return }
+                    manager.state = .uploadingAlgorithm(percent: overall)
+                }
             }
             completedFiles += 1
         }
 
         if let localJSON = update.localJSON {
+            try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "before-algorithm-manifest-upload")
             let completedBefore = completedFiles
             let manager = self
             state = .uploadingAlgorithm(percent: completedBefore * 100 / totalFiles)
@@ -746,7 +1108,11 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 body: localJSON
             ) { filePercent in
                 let overall = min(100, (completedBefore * 100 + filePercent) / totalFiles)
-                Task { @MainActor in manager.state = .uploadingAlgorithm(percent: overall) }
+                Task { @MainActor in
+                    guard !manager.isCleaningUpPreparation,
+                          case .uploadingAlgorithm = manager.state else { return }
+                    manager.state = .uploadingAlgorithm(percent: overall)
+                }
             }
         }
         state = .uploadingAlgorithm(percent: 100)

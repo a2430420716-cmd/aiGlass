@@ -86,7 +86,7 @@ struct AlbumView: View {
                         selectionHeader
                     } else {
                         header
-                        if pendingImportCount > 0 || importManager.isImporting {
+                        if pendingImportCount > 0 || importManager.pendingGen1RecoveryCount > 0 || importManager.isImporting {
                             importCard
                         }
                     }
@@ -114,7 +114,16 @@ struct AlbumView: View {
         .animation(.easeInOut(duration: 0.2), value: isSelectionMode)
         .animation(.easeInOut(duration: 0.2), value: pendingImportCount)
         .onAppear {
-            pairingCoordinator.astraA1BleManager.refreshPendingImportFiles()
+            importManager.refreshGen1Recovery(ble: pairingCoordinator.astraA1BleManager)
+            if pairingCoordinator.astraA1BleManager.isDeviceAvailable {
+                pairingCoordinator.astraA1BleManager.refreshPendingImportFiles()
+            }
+        }
+        .onChangeCompat(of: authSession.userInfo?.id) { _ in
+            importManager.refreshGen1Recovery(ble: pairingCoordinator.astraA1BleManager)
+        }
+        .onChangeCompat(of: pairingCoordinator.astraA1BleManager.savedPeripheralUUIDString) { _ in
+            importManager.refreshGen1Recovery(ble: pairingCoordinator.astraA1BleManager)
         }
         .fullScreenCover(item: $selectedDetailItem) { item in
             AlbumMediaDetailView(item: item)
@@ -190,8 +199,8 @@ struct AlbumView: View {
     }
 
     private func openGlassesSettings() {
-        guard pairingCoordinator.astraA1BleManager.isReady else {
-            settingsAlertMessage = L10n.t("请先连接眼镜", "Please connect your glasses first")
+        guard pairingCoordinator.astraA1BleManager.isDeviceAvailable else {
+            settingsAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
             return
         }
         navigateToGlassesSettings = true
@@ -304,7 +313,9 @@ struct AlbumView: View {
                 .scaledToFit()
                 .frame(width: 28, height: 28)
 
-            Text(L10n.t("\(pendingImportCount)项照片和视频可导入手机", "\(pendingImportCount) photo(s)/video(s) ready to import"))
+            Text(importManager.pendingGen1RecoveryCount > 0
+                 ? L10n.t("\(importManager.pendingGen1RecoveryCount)项原件可从手机恢复", "\(importManager.pendingGen1RecoveryCount) original(s) can be recovered from this phone")
+                 : L10n.t("\(pendingImportCount)项照片和视频可导入手机", "\(pendingImportCount) photo(s)/video(s) ready to import"))
                 .font(AppTheme.notoSansSC(size: 15, weight: .regular))
                 .foregroundStyle(AppTheme.primaryText)
                 .lineLimit(1)
@@ -312,17 +323,34 @@ struct AlbumView: View {
 
             Spacer(minLength: 8)
 
-            Button {
-                startImport()
-            } label: {
-                Text(L10n.t("导入", "Import"))
-                    .font(AppTheme.notoSansSC(size: 13, weight: .medium))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 6)
+            VStack(spacing: 8) {
+                Button {
+                    startImport(recoverLocalFilesOnly: importManager.pendingGen1RecoveryCount > 0)
+                } label: {
+                    Text(importManager.pendingGen1RecoveryCount > 0 ? L10n.t("恢复", "Recover") : L10n.t("导入", "Import"))
+                        .font(AppTheme.notoSansSC(size: 13, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                }
+                .background(Color(red: 0.25, green: 0.25, blue: 0.25))
+                .clipShape(Capsule())
+                .disabled(!pairingCoordinator.astraA1BleManager.isDeviceAvailable && importManager.pendingGen1RecoveryCount == 0)
+                .opacity(pairingCoordinator.astraA1BleManager.isDeviceAvailable || importManager.pendingGen1RecoveryCount > 0 ? 1 : 0.45)
+
+                if importManager.pendingGen1RecoveryCount > 0,
+                   pairingCoordinator.astraA1BleManager.isDeviceAvailable,
+                   pairingCoordinator.astraA1BleManager.deviceGeneration == .gen1G5K61 {
+                    Button {
+                        startImport()
+                    } label: {
+                        Text(L10n.t("导入眼镜文件", "Import from glasses"))
+                            .font(AppTheme.notoSansSC(size: 12, weight: .medium))
+                            .foregroundStyle(AppTheme.primaryText)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .background(Color(red: 0.25, green: 0.25, blue: 0.25))
-            .clipShape(Capsule())
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 18)
@@ -591,11 +619,17 @@ struct AlbumView: View {
         }
     }
 
-    private func startImport() {
+    private func startImport(recoverLocalFilesOnly: Bool = false) {
         let ble = pairingCoordinator.astraA1BleManager
-        let deviceKey = ble.deviceBluetoothIdentifier
-            ?? authSession.userInfo?.device.first?.serialNumber
-            ?? ble.deviceSN
+        importManager.refreshGen1Recovery(ble: ble)
+        guard ble.isDeviceAvailable || importManager.pendingGen1RecoveryCount > 0 else {
+            importErrorMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
+            return
+        }
+        let boundDevice = authSession.userInfo?.device.first(where: {
+            ble.matchesCurrentDevice(serialNumber: $0.serialNumber, hardwareSN: $0.hardwareSN)
+        })
+        let deviceKey = boundDevice?.serialNumber ?? ble.deviceBluetoothIdentifier ?? ble.deviceSN ?? ble.savedPeripheralUUIDString
         importManager.beginImport(
             ble: ble,
             library: mediaLibrary,
@@ -603,14 +637,15 @@ struct AlbumView: View {
             autoSaveToPhotoLibrary: DeviceMediaSettings.isAutoSaveEnabled(
                 userId: authSession.phoneNumber,
                 deviceKey: deviceKey
-            )
+            ),
+            recoverLocalFilesOnly: recoverLocalFilesOnly
         )
     }
 
     private func refreshDeviceFiles() {
         let ble = pairingCoordinator.astraA1BleManager
-        guard ble.isReady else {
-            settingsAlertMessage = L10n.t("设备未连接", "Device not connected")
+        guard ble.isDeviceAvailable else {
+            settingsAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
             return
         }
         guard !isRefreshingDeviceFiles else { return }

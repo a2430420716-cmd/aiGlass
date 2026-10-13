@@ -44,6 +44,16 @@ final class ConversationTranslationController: ObservableObject {
     private var token = ""
     private var audioEngine: AVAudioEngine?
     private var converter: AVAudioConverter?
+    private let glassesOpusDecoder = AIVoiceM4aConverter.StreamingOpusDecoder()
+    private var glassesState = TranslationGlassesRecordingState()
+    private var isActive = false
+    private var permissionGeneration = 0
+    private var loggedFirstGlassesPCM = false
+    private var glassesStopPending = false
+    private var glassesStopTask: Task<Void, Never>?
+    private var glassesDrainTask: Task<Void, Never>?
+    private var socketReadyTask: Task<Void, Never>?
+    private var bleStateSubscription: AnyCancellable?
 
     private var activeSide: RecordingSide?
     private var currentTurnSide: RecordingSide?
@@ -64,22 +74,30 @@ final class ConversationTranslationController: ObservableObject {
     private let processingFallbackNs: UInt64 = 8_000_000_000
 
     func start(ble: AstraA1BleManager, token: String?) {
+        isActive = true
         self.ble = ble
         self.token = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        // 对话翻译占用 trslatedat；暂停 AI 连续语音，避免抢同一麦克风链路。
-        if AIVoiceChatManager.shared.isEnabled {
-            _ = AIVoiceChatManager.shared.stop()
-        }
+        // Android only disables local AI capture here. Sending an AI stop command
+        // can race the translation start on the same device microphone.
         AIVoiceChatManager.shared.setVoiceChatCaptureEnabled(false)
         ble.translationVoiceNotifyHandler = { [weak self] command, packet in
-            Task { @MainActor in
-                self?.handleGlassesNotify(command: command, packet: packet)
-            }
+            // Preserve START/DATA/END ordering on the BLE manager's MainActor.
+            self?.handleGlassesNotify(command: command, packet: packet)
+        }
+        bleStateSubscription = ble.$connectionState.dropFirst().sink { [weak self] state in
+            guard let self, self.isActive, self.glassesState.hasSentCommand else { return }
+            if case .ready = state { return }
+            self.failGlassesStart(reason: "BLE disconnected")
+            self.statusText = L10n.t("请先连接眼镜", "Please connect glasses first")
         }
         statusText = L10n.t("点击下方按钮开始录音", "Tap a button below to start recording")
     }
 
     func stop() {
+        isActive = false
+        permissionGeneration += 1
+        bleStateSubscription?.cancel()
+        bleStateSubscription = nil
         persistConversation()
         stopAllRecording(resetSocket: true)
         ble?.translationVoiceNotifyHandler = nil
@@ -108,11 +126,16 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     func toggleGlassesRecording() {
+        permissionGeneration += 1
+        guard isActive, !glassesStopPending else { return }
         // 连接中再点一次：取消开麦。
         if glassesConnecting, !glassesRecording {
             glassesConnecting = false
+            cancelSocketReadyTimeout()
             cancelGlassesStartTimeout()
-            _ = ble?.stopTranslateRecording()
+            if glassesState.hasSentCommand { _ = ble?.stopTranslateRecording() }
+            glassesState.reset()
+            ble?.resetTranslateRecordingState()
             manager?.markLocalRecordingStopped(reason: "conversation glasses start cancelled")
             manager?.finish()
             manager?.close()
@@ -123,6 +146,25 @@ final class ConversationTranslationController: ObservableObject {
         if glassesRecording {
             let sent = ble?.stopTranslateRecording() ?? false
             print("[ConversationTranslation] stop translate record sent=\(sent)")
+            guard sent else {
+                alertMessage = ble?.mediaActionAlertMessage ?? L10n.t("眼镜录音停止失败，请重试", "Failed to stop glasses recording. Try again.")
+                return
+            }
+            if ble?.deviceGeneration == .gen1G5K61 {
+                // Stop ACK is not END; keep the socket input and decoder alive for final DATA.
+                glassesStopPending = true
+                glassesState.drain()
+                statusText = L10n.t("正在结束录音…", "Finishing recording…")
+                glassesStopTask?.cancel()
+                glassesStopTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 45_000_000_000)
+                    guard !Task.isCancelled, let self, self.glassesStopPending else { return }
+                    self.finishGlassesStream(reason: "first-generation 45s END timeout")
+                }
+                scheduleGlassesDrainCheck()
+                return
+            }
+            glassesState.reset()
             manager?.markLocalRecordingStopped(reason: "conversation glasses manual stop")
             manager?.finish()
             glassesRecording = false
@@ -132,8 +174,8 @@ final class ConversationTranslationController: ObservableObject {
         if phoneActive {
             stopPhoneRecording()
         }
-        guard ble?.isReady == true else {
-            alertMessage = L10n.t("请先连接眼镜", "Please connect glasses first")
+        guard ble?.isDeviceAvailable == true else {
+            alertMessage = L10n.t("请先连接已绑定的眼镜", "Please connect your bound glasses first")
             return
         }
         guard !token.isEmpty else {
@@ -142,6 +184,7 @@ final class ConversationTranslationController: ObservableObject {
         }
         activeSide = .glasses
         beginTranslationTurn()
+        glassesState.begin()
         glassesConnecting = true
         statusText = L10n.t("正在连接翻译服务…", "Connecting to translation service…")
         connectManager(
@@ -151,12 +194,23 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     func togglePhoneRecording() {
+        guard isActive else { return }
+        permissionGeneration += 1
+        let permissionRequest = permissionGeneration
         if phoneActive {
             stopPhoneRecording()
             return
         }
         if glassesActive {
-            _ = ble?.stopTranslateRecording()
+            if glassesState.hasSentCommand { _ = ble?.stopTranslateRecording() }
+            glassesState.reset()
+            glassesStopTask?.cancel()
+            glassesStopTask = nil
+            glassesDrainTask?.cancel()
+            glassesDrainTask = nil
+            glassesStopPending = false
+            ble?.resetTranslateRecordingState()
+            cancelSocketReadyTimeout()
             cancelGlassesStartTimeout()
             manager?.markLocalRecordingStopped(reason: "conversation switch from glasses to phone")
             manager?.finish()
@@ -164,7 +218,9 @@ final class ConversationTranslationController: ObservableObject {
             glassesRecording = false
         }
         Task {
-            guard await requestMicrophonePermission() else {
+            let granted = await requestMicrophonePermission()
+            guard isActive, permissionGeneration == permissionRequest else { return }
+            guard granted else {
                 alertMessage = L10n.t("请开启麦克风权限后重试", "Enable microphone access and try again")
                 statusText = L10n.t("请开启麦克风权限后重试", "Enable microphone access and try again")
                 return
@@ -187,6 +243,13 @@ final class ConversationTranslationController: ObservableObject {
     // MARK: - Turn lifecycle
 
     private func beginTranslationTurn() {
+        glassesStopTask?.cancel()
+        glassesStopTask = nil
+        glassesDrainTask?.cancel()
+        glassesDrainTask = nil
+        glassesStopPending = false
+        glassesOpusDecoder.reset()
+        loggedFirstGlassesPCM = false
         cancelProcessingStatusFallback()
         manager?.resetSpeechPlaybackForTurn()
         latestTranscript = ""
@@ -209,16 +272,26 @@ final class ConversationTranslationController: ObservableObject {
             targetLanguage: TranslationLanguage.code(forDisplayName: target),
             token: token
         )
+        scheduleSocketReadyTimeout()
     }
 
     private func startGlassesCommand() {
+        guard isActive, glassesConnecting, glassesState.shouldSendStart else { return }
+        guard ble?.isDeviceAvailable == true else {
+            failGlassesStart(reason: "Bound glasses unavailable before START")
+            alertMessage = L10n.t("请先连接已绑定的眼镜", "Please connect your bound glasses first")
+            return
+        }
+        print("[ConversationTranslation] glasses start requested generation=\(ble?.deviceGeneration.rawValue ?? "unknown")")
         guard ble?.startTranslateRecording() == true else {
+            glassesState.reset()
             activeSide = nil
             glassesConnecting = false
             statusText = L10n.t("眼镜录音开启失败", "Failed to start glasses recording")
             alertMessage = ble?.mediaActionAlertMessage ?? statusText
             return
         }
+        glassesState.commandSent()
         scheduleGlassesStartTimeout()
         statusText = L10n.t("正在开启眼镜麦克风…", "Enabling glasses mic…")
     }
@@ -249,8 +322,13 @@ final class ConversationTranslationController: ObservableObject {
         statusText = L10n.t("正在录音…", "Recording…")
         schedulePhoneAutoStop()
         do {
+            manager?.setPhoneMicrophoneCaptureEnabled(true)
             try GlassesAudioRouteController.activate(.playAndRecord)
-            try AVAudioSession.sharedInstance().setPreferredSampleRate(16_000)
+            let session = AVAudioSession.sharedInstance()
+            if let microphone = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+                try session.setPreferredInput(microphone)
+            }
+            try session.setPreferredSampleRate(16_000)
             let engine = AVAudioEngine()
             let input = engine.inputNode
             let inputFormat = input.outputFormat(forBus: 0)
@@ -270,6 +348,7 @@ final class ConversationTranslationController: ObservableObject {
             try engine.start()
         } catch {
             phoneRecording = false
+            stopPhoneAudio()
             manager?.markLocalRecordingStopped(reason: "phone audio start failed")
             alertMessage = error.localizedDescription
             statusText = error.localizedDescription
@@ -295,14 +374,17 @@ final class ConversationTranslationController: ObservableObject {
         }
         guard error == nil, converted.frameLength > 0, let samples = converted.int16ChannelData?[0] else { return }
         let pcm = Data(bytes: samples, count: Int(converted.frameLength) * MemoryLayout<Int16>.size)
+        let recordingManager = manager
         Task { @MainActor [weak self] in
-            guard let self, self.phoneRecording, self.manager?.canSendAudio() == true else { return }
-            _ = self.manager?.sendPCM(pcm)
+            guard let self, self.isActive, self.phoneRecording,
+                  self.manager === recordingManager, recordingManager?.canSendAudio() == true else { return }
+            _ = recordingManager?.sendPCM(pcm)
         }
     }
 
     private func stopPhoneRecording() {
         guard phoneRecording || waitingPhoneSocketReady else { return }
+        cancelSocketReadyTimeout()
         phoneAutoStopTask?.cancel()
         phoneAutoStopTask = nil
         waitingPhoneSocketReady = false
@@ -314,6 +396,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     private func stopPhoneAudio() {
+        manager?.setPhoneMicrophoneCaptureEnabled(false)
         if let engine = audioEngine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
@@ -323,6 +406,13 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     private func stopAllRecording(resetSocket: Bool) {
+        cancelSocketReadyTimeout()
+        glassesDrainTask?.cancel()
+        glassesDrainTask = nil
+        glassesStopTask?.cancel()
+        glassesStopTask = nil
+        glassesStopPending = false
+        glassesOpusDecoder.close()
         glassesConnecting = false
         waitingPhoneSocketReady = false
         cancelProcessingStatusFallback()
@@ -332,6 +422,7 @@ final class ConversationTranslationController: ObservableObject {
         if glassesRecording || activeSide == .glasses {
             manager?.markLocalRecordingStopped(reason: "conversation stopAll glasses")
             _ = ble?.stopTranslateRecording()
+            ble?.resetTranslateRecordingState()
         }
         if phoneRecording {
             manager?.markLocalRecordingStopped(reason: "conversation stopAll phone")
@@ -339,6 +430,7 @@ final class ConversationTranslationController: ObservableObject {
             stopPhoneAudio()
         }
         glassesRecording = false
+        glassesState.reset()
         if resetSocket {
             manager?.close()
             manager = nil
@@ -349,48 +441,161 @@ final class ConversationTranslationController: ObservableObject {
     // MARK: - Glasses BLE
 
     private func handleGlassesNotify(command: String, packet: Data) {
-        guard activeSide == .glasses else { return }
+        guard isActive, activeSide == .glasses, glassesState.hasSentCommand else { return }
         switch command {
         case "trslatests":
-            guard let status = AstraA1BleProtocol.parseTranslateRecordStatus(packet) else { return }
-            print("[ConversationTranslation] translate status=\(status)")
+            guard let status = AstraA1BleProtocol.parseTranslateRecordStatus(packet) else {
+                print("[ConversationTranslation] invalid translate status bytes=\(packet.count)")
+                return
+            }
+            print("[ConversationTranslation] translate status=\(status) phase=\(glassesState.phase)")
             switch status {
             case 1:
-                cancelGlassesStartTimeout()
-                guard manager?.markLocalRecordingStarted() == true else {
-                    print("[ConversationTranslation] translate status=1 but input gate closed")
-                    _ = ble?.stopTranslateRecording()
-                    glassesConnecting = false
-                    glassesRecording = false
-                    return
-                }
-                glassesConnecting = false
-                glassesRecording = true
-                statusText = L10n.t("正在录音…", "Recording…")
+                _ = confirmGlassesStarted(reason: "device START", resetDecoder: true)
             case 0, 2:
-                cancelGlassesStartTimeout()
-                glassesConnecting = false
-                glassesRecording = false
-                manager?.markLocalRecordingStopped(reason: "conversation translate status=\(status)")
-                manager?.finish()
-                enterProcessingStatus(reason: "translate status=\(status)")
+                let failedToStart = glassesState.isWaitingForDevice
+                    || (ble?.deviceGeneration == .gen1G5K61 && status == 2)
+                finishGlassesStream(reason: "translate status=\(status)")
+                if failedToStart {
+                    cancelProcessingStatusFallback()
+                    statusText = L10n.t("眼镜录音开启失败", "Failed to start glasses recording")
+                }
+            case 3:
+                failGlassesStart(reason: "device rejected translation START")
             default:
                 break
             }
         case "trslatedat":
-            guard isGlassesStreamingActive(), manager?.canSendAudio() == true else { return }
+            // A valid decoded audio frame is stronger start evidence than an ACK.
+            // Gen1 still requires its typed AE3D START; its DATA comes via gen1trdat0.
+            guard ble?.deviceGeneration == .gen2,
+                  glassesState.isWaitingForDevice || glassesState.acceptsAudio else { return }
             let frames = AstraA1BleProtocol.parseTranslateRecordFrames(packet)
             guard !frames.isEmpty else { return }
-            guard let pcm = try? AIVoiceM4aConverter.decodeOpusFramesToPCM(frames) else { return }
-            guard isGlassesStreamingActive(), manager?.canSendAudio() == true else { return }
-            _ = manager?.sendPCM(pcm)
+            var pcm = Data()
+            for frame in frames {
+                if let chunk = try? glassesOpusDecoder.decode(frame) { pcm.append(chunk) }
+            }
+            guard !pcm.isEmpty else { return }
+            if glassesState.isWaitingForDevice {
+                guard confirmGlassesStarted(reason: "valid Opus DATA before ACK", resetDecoder: false) else { return }
+            }
+            sendGlassesPCM(pcm)
+        case "gen1trdat0":
+            guard isGlassesStreamingActive(), !packet.isEmpty else { return }
+            if glassesStopPending { scheduleGlassesDrainCheck() }
+            do {
+                let pcm = try glassesOpusDecoder.decode(packet)
+                if !pcm.isEmpty { sendGlassesPCM(pcm) }
+            } catch {
+                print("[ConversationTranslation] dropped invalid first-generation Opus frame: \(error.localizedDescription)")
+            }
         default:
             break
         }
     }
 
+    @discardableResult
+    private func confirmGlassesStarted(reason: String, resetDecoder: Bool) -> Bool {
+        if glassesState.acceptsAudio { return true }
+        guard glassesState.isWaitingForDevice else { return false }
+        guard manager?.markLocalRecordingStarted() == true else {
+            failGlassesStart(reason: "input gate closed after \(reason)")
+            return false
+        }
+        guard glassesState.confirmStarted() else { return false }
+        cancelGlassesStartTimeout()
+        glassesConnecting = false
+        glassesRecording = true
+        if resetDecoder { glassesOpusDecoder.reset() }
+        statusText = L10n.t("正在录音…", "Recording…")
+        print("[ConversationTranslation] glasses input started reason=\(reason)")
+        return true
+    }
+
+    private func sendGlassesPCM(_ pcm: Data) {
+        guard isGlassesStreamingActive(), manager?.canSendAudio() == true else { return }
+        let sent = manager?.sendPCM(pcm) ?? false
+        if sent, !loggedFirstGlassesPCM {
+            loggedFirstGlassesPCM = true
+            print("[ConversationTranslation] first glasses PCM accepted bytes=\(pcm.count)")
+        }
+    }
+
+    private func failGlassesStart(reason: String) {
+        print("[ConversationTranslation] glasses start failed reason=\(reason) phase=\(glassesState.phase)")
+        // Match Android: only Gen1 sends a failure-stop. For Gen2, a missing
+        // start ACK must not itself inject trslate000=0 after three seconds.
+        if ble?.deviceGeneration == .gen1G5K61, glassesState.hasSentCommand {
+            _ = ble?.stopTranslateRecording()
+        }
+        ble?.resetTranslateRecordingState()
+        glassesState.reset()
+        cancelSocketReadyTimeout()
+        cancelGlassesStartTimeout()
+        glassesStopTask?.cancel()
+        glassesStopTask = nil
+        glassesDrainTask?.cancel()
+        glassesDrainTask = nil
+        glassesStopPending = false
+        glassesOpusDecoder.close()
+        manager?.markLocalRecordingStopped(reason: reason)
+        manager?.finish()
+        manager?.close()
+        glassesConnecting = false
+        glassesRecording = false
+        statusText = L10n.t("眼镜录音开启失败", "Failed to start glasses recording")
+    }
+
+    private func finishGlassesStream(reason: String) {
+        glassesState.reset()
+        ble?.resetTranslateRecordingState()
+        glassesDrainTask?.cancel()
+        glassesDrainTask = nil
+        cancelGlassesStartTimeout()
+        glassesStopTask?.cancel()
+        glassesStopTask = nil
+        glassesStopPending = false
+        glassesConnecting = false
+        glassesRecording = false
+        glassesOpusDecoder.close()
+        manager?.markLocalRecordingStopped(reason: "conversation \(reason)")
+        manager?.finish()
+        enterProcessingStatus(reason: reason)
+    }
+
+    private func scheduleGlassesDrainCheck() {
+        glassesDrainTask?.cancel()
+        glassesDrainTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled, let self, self.glassesStopPending else { return }
+            self.finishGlassesStream(reason: "first-generation 5s stream drained")
+        }
+    }
+
+    private func scheduleSocketReadyTimeout() {
+        cancelSocketReadyTimeout()
+        let side = activeSide
+        socketReadyTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            guard !Task.isCancelled, let self, self.isActive, self.activeSide == side else { return }
+            if side == .glasses, self.glassesState.shouldSendStart {
+                self.failGlassesStart(reason: "20s waiting for translation service ready")
+            } else if side == .phone, self.waitingPhoneSocketReady {
+                self.waitingPhoneSocketReady = false
+                self.manager?.close()
+                self.statusText = L10n.t("翻译服务连接超时，请重试", "Translation service timed out. Try again.")
+            }
+        }
+    }
+
+    private func cancelSocketReadyTimeout() {
+        socketReadyTask?.cancel()
+        socketReadyTask = nil
+    }
+
     private func isGlassesStreamingActive() -> Bool {
-        activeSide == .glasses && glassesRecording
+        activeSide == .glasses && glassesRecording && glassesState.acceptsAudio
     }
 
     private func scheduleGlassesStartTimeout() {
@@ -398,14 +603,9 @@ final class ConversationTranslationController: ObservableObject {
         glassesStartTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: self?.glassesStartTimeoutNs ?? 3_000_000_000)
             guard let self, !Task.isCancelled else { return }
-            guard self.glassesConnecting, !self.glassesRecording, self.activeSide == .glasses else { return }
-            print("[ConversationTranslation] translate start timeout")
-            _ = self.ble?.stopTranslateRecording()
-            self.manager?.markLocalRecordingStopped(reason: "conversation translate start timeout")
-            self.manager?.finish()
-            self.glassesConnecting = false
-            self.activeSide = nil
-            self.statusText = L10n.t("眼镜录音开启失败", "Failed to start glasses recording")
+            guard self.isActive, self.glassesState.isWaitingForDevice,
+                  self.glassesConnecting, !self.glassesRecording, self.activeSide == .glasses else { return }
+            self.failGlassesStart(reason: "3s elapsed without START or valid Opus DATA")
         }
     }
 
@@ -690,89 +890,81 @@ final class ConversationTranslationController: ObservableObject {
 }
 
 extension ConversationTranslationController: RealtimeTranslationManager.Callback {
-    nonisolated func onReady() {
-        Task { @MainActor in
-            statusText = L10n.t("翻译服务已就绪", "Translation service ready")
-            if activeSide == .glasses, !glassesRecording {
-                glassesConnecting = true
-                startGlassesCommand()
-            } else if activeSide == .phone, waitingPhoneSocketReady {
-                beginPhoneAudioRecord()
-            }
+    func onReady() {
+        guard isActive else { return }
+        cancelSocketReadyTimeout()
+        statusText = glassesRecording || phoneRecording
+            ? L10n.t("正在录音…", "Recording…")
+            : L10n.t("翻译服务已就绪", "Translation service ready")
+        if activeSide == .glasses, glassesConnecting, !glassesRecording, glassesState.shouldSendStart {
+            startGlassesCommand()
+        } else if activeSide == .phone, waitingPhoneSocketReady {
+            beginPhoneAudioRecord()
         }
     }
 
-    nonisolated func onTaskStarted() {
-        Task { @MainActor in statusText = L10n.t("翻译任务已开始", "Translation task started") }
+    func onTaskStarted() {
+        statusText = L10n.t("翻译任务已开始", "Translation task started")
     }
 
-    nonisolated func onTranscript(_ text: String) {
-        Task { @MainActor in appendSource(text) }
+    func onTranscript(_ text: String) {
+        appendSource(text)
     }
 
-    nonisolated func onTranscriptCompleted(_ text: String) {
-        Task { @MainActor in
-            appendSource(text)
-            enterProcessingStatus(reason: "transcript completed")
+    func onTranscriptCompleted(_ text: String) {
+        appendSource(text)
+        enterProcessingStatus(reason: "transcript completed")
+    }
+
+    func onTranslation(_ text: String) {
+        appendTranslation(text)
+    }
+
+    func onTranslationFinal(_ text: String) {
+        appendTranslation(text)
+    }
+
+    func onTranslationCompleted() {
+        settleProcessingStatus(reason: "translation completed")
+    }
+
+    func onSpeech(_ data: Data) {
+        cancelProcessingStatusFallback()
+        let side = activeSide ?? currentTurnSide
+        if side == .glasses {
+            manager?.playSpeechOnPhone(data)
+            statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
+        } else if side == .phone {
+            let routed = manager?.playSpeechOnGlasses(data) ?? false
+            statusText = routed ? L10n.t("正在播放译文语音…", "Playing translation audio…") : L10n.t("眼镜音频不可用", "Glasses audio unavailable")
         }
+        upsertMessage(sourceText: nil, translatedText: nil, speech: data, hasSpeech: true)
     }
 
-    nonisolated func onTranslation(_ text: String) {
-        Task { @MainActor in appendTranslation(text) }
+    func onRecoverableError(_ message: String) {
+        statusText = message.isEmpty ? L10n.t("正在处理上一句翻译…", "Processing previous translation…") : message
     }
 
-    nonisolated func onTranslationFinal(_ text: String) {
-        Task { @MainActor in appendTranslation(text) }
+    func onError(_ message: String) {
+        guard isActive else { return }
+        cancelProcessingStatusFallback()
+        lastBackendErrorMessage = message.isEmpty ? L10n.t("翻译服务异常", "Translation service error") : message
+        glassesConnecting = false
+        waitingPhoneSocketReady = false
+        stopAllRecording(resetSocket: false)
+        statusText = lastBackendErrorMessage
+        alertMessage = lastBackendErrorMessage
     }
 
-    nonisolated func onTranslationCompleted() {
-        Task { @MainActor in settleProcessingStatus(reason: "translation completed") }
-    }
-
-    nonisolated func onSpeech(_ data: Data) {
-        Task { @MainActor in
-            cancelProcessingStatusFallback()
-            let side = activeSide ?? currentTurnSide
-            if side == .glasses {
-                manager?.playSpeechOnPhone(data)
-                statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
-            } else if side == .phone {
-                let routed = manager?.playSpeechOnGlasses(data) ?? false
-                statusText = routed ? L10n.t("正在播放译文语音…", "Playing translation audio…") : L10n.t("眼镜音频不可用", "Glasses audio unavailable")
-            }
-            upsertMessage(sourceText: nil, translatedText: nil, speech: data, hasSpeech: true)
-        }
-    }
-
-    nonisolated func onRecoverableError(_ message: String) {
-        Task { @MainActor in
-            statusText = message.isEmpty ? L10n.t("正在处理上一句翻译…", "Processing previous translation…") : message
-        }
-    }
-
-    nonisolated func onError(_ message: String) {
-        Task { @MainActor in
-            cancelProcessingStatusFallback()
-            lastBackendErrorMessage = message.isEmpty ? L10n.t("翻译服务异常", "Translation service error") : message
-            glassesConnecting = false
-            waitingPhoneSocketReady = false
-            stopAllRecording(resetSocket: false)
+    func onClosed() {
+        if !lastBackendErrorMessage.isEmpty {
             statusText = lastBackendErrorMessage
-            alertMessage = lastBackendErrorMessage
+            return
         }
-    }
-
-    nonisolated func onClosed() {
-        Task { @MainActor in
-            if !lastBackendErrorMessage.isEmpty {
-                statusText = lastBackendErrorMessage
-                return
-            }
-            if statusText == L10n.t("正在处理翻译…", "Processing translation…") {
-                settleProcessingStatus(reason: "socket closed")
-            } else if !glassesRecording, !phoneRecording, latestTranslation.isEmpty, latestTranscript.isEmpty {
-                statusText = L10n.t("点击下方按钮开始录音", "Tap a button below to start recording")
-            }
+        if statusText == L10n.t("正在处理翻译…", "Processing translation…") {
+            settleProcessingStatus(reason: "socket closed")
+        } else if !glassesRecording, !phoneRecording, latestTranslation.isEmpty, latestTranscript.isEmpty {
+            statusText = L10n.t("点击下方按钮开始录音", "Tap a button below to start recording")
         }
     }
 }

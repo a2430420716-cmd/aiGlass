@@ -95,6 +95,14 @@ final class AIRecordingImportManager: ObservableObject {
         expectedFileCount: Int = 0
     ) {
         guard !isImporting, importTask == nil else { return }
+        guard ble.isDeviceAvailable else {
+            state = .failed(L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first"))
+            return
+        }
+        guard ble.deviceGeneration != .gen1G5K61 else {
+            state = .failed(L10n.t("一代眼镜录音已通过蓝牙保存到手机，无需 Wi-Fi 导入", "First-generation recordings are saved to your phone over Bluetooth; Wi-Fi import is not needed"))
+            return
+        }
         if MediaImportManager.shared.isImporting {
             state = .failed(L10n.t("相册正在导入，请稍后再试", "Album import in progress, try again later"))
             return
@@ -111,8 +119,8 @@ final class AIRecordingImportManager: ObservableObject {
         expectedFileCount: Int
     ) async {
         guard !isImporting else { return }
-        guard ble.isReady else {
-            state = .failed(L10n.t("请先连接眼镜设备", "Please connect glasses first"))
+        guard ble.isDeviceAvailable else {
+            state = .failed(L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first"))
             return
         }
         guard !ble.isBatteryTooLowForMedia else {
@@ -120,7 +128,8 @@ final class AIRecordingImportManager: ObservableObject {
             return
         }
 
-        DebugLogStore.logWiFi(
+        let diagnostics = ImportDiagnosticContext(kind: "recording", ble: ble)
+        diagnostics.log(
             "录音导入：开始 Wi-Fi 流程",
             detail: "expectedFileCount=\(expectedFileCount)\nbleReady=\(ble.isReady)"
         )
@@ -131,25 +140,30 @@ final class AIRecordingImportManager: ObservableObject {
             let wifi = try await resolveWifiCredential(ble: ble)
             connectedSSID = wifi.ssid
             print("\(logTag) wifi ssid=\(wifi.ssid) http=\(wifi.httpAddress)")
-            DebugLogStore.logWiFi(
+            diagnostics.log(
                 "录音导入：热点配置就绪",
                 detail: "ssid=\(wifi.ssid)\npasswordEmpty=\(wifi.password.isEmpty)\nhttp=\(wifi.httpAddress)",
                 direction: .received
             )
 
+            try await requireAvailableDevice(ble)
             state = .connectingWifi
             print("\(logTag) Step2: join hotspot")
             try await DeviceWifiManager.connect(
                 ssid: wifi.ssid,
                 password: wifi.password,
-                probeBaseURL: wifi.httpAddress
+                probeBaseURL: wifi.httpAddress,
+                diagnosticContext: diagnostics.connectionContext,
+                diagnosticID: diagnostics.id,
+                deviceEvidence: { diagnostics.deviceEvidence }
             )
-            DebugLogStore.logWiFi(
+            diagnostics.log(
                 "录音导入：热点连接成功",
                 detail: "ssid=\(wifi.ssid)\nhttp=\(wifi.httpAddress)",
                 direction: .received
             )
 
+            try await requireAvailableDevice(ble)
             state = .fetchingList
             var baseURL = wifi.httpAddress
             if baseURL.isEmpty {
@@ -161,7 +175,9 @@ final class AIRecordingImportManager: ObservableObject {
             print("\(logTag) work path=\(baseURL) list=\(listURL)")
 
             print("\(logTag) Step3: GET airecord/ list")
-            let fileNames = try await fetchAACFileList(baseURL: listURL, expectedCount: expectedFileCount)
+            diagnostics.log("录音导入：开始读取目录", detail: "url=\(listURL)", direction: .sent)
+            let fileNames = try await fetchAACFileList(ble: ble, baseURL: listURL, expectedCount: expectedFileCount)
+            diagnostics.log("录音导入：目录读取完成", detail: "url=\(listURL) fileCount=\(fileNames.count)", direction: .received)
             print("\(logTag) aac files=\(fileNames)")
 
             var importedNames: [String] = []
@@ -177,13 +193,15 @@ final class AIRecordingImportManager: ObservableObject {
                 }
                 state = .completed(imported: 0, failed: 0)
                 print("\(logTag) done empty list")
+                diagnostics.log("录音导入：Wi-Fi 流程结束", detail: "imported=0 failed=0 listed=0")
                 return
             }
 
             for (index, name) in fileNames.enumerated() {
+                try await requireAvailableDevice(ble)
                 state = .downloading(current: index + 1, total: fileNames.count, fileName: name)
                 do {
-                    let data = try await downloadFile(baseURL: listURL, fileName: name)
+                    let data = try await downloadFile(ble: ble, baseURL: listURL, fileName: name)
                     let savedURL = try saveAACFile(data: data, fileName: name, store: store)
                     let durationMs = await Self.readDurationMs(url: savedURL)
                     if store.addRecording(
@@ -241,7 +259,7 @@ final class AIRecordingImportManager: ObservableObject {
 
             state = .completed(imported: importedNames.count, failed: failedCount)
             print("\(logTag) done imported=\(importedNames.count) failed=\(failedCount) deleteOK=\(deleteSucceeded)")
-            DebugLogStore.logWiFi(
+            diagnostics.log(
                 "录音导入：Wi-Fi 流程结束",
                 detail: "imported=\(importedNames.count)\nfailed=\(failedCount)\ndeleteSucceeded=\(deleteSucceeded)"
             )
@@ -249,14 +267,16 @@ final class AIRecordingImportManager: ObservableObject {
             let failedStage = String(describing: state)
             state = .failed(error.localizedDescription)
             print("\(logTag) FAILED: \(error.localizedDescription)")
-            DebugLogStore.logWiFi(
+            let nsError = error as NSError
+            diagnostics.log(
                 "录音导入：Wi-Fi 流程失败",
-                detail: "stage=\(failedStage)\nssid=\(connectedSSID ?? "nil")\nerror=\(error.localizedDescription)",
+                detail: "stage=\(failedStage)\nssid=\(connectedSSID ?? "nil")\nerrorDomain=\(nsError.domain) errorCode=\(nsError.code)\nerror=\(error.localizedDescription)\ncallerTaskCancelled=\(Task.isCancelled) phase=before-device-cleanup",
                 direction: .received
             )
             try? await ble.closeWifi()
             disconnectHotspot()
             ble.syncDeviceStatusAfterImport(reason: "recording-import-failed")
+            diagnostics.log("录音导入：失败清理结束", detail: "deviceCleanupAttempted=true; close_result_is_recorded_in_BLE_and_WiFi_logs")
         }
     }
 
@@ -301,6 +321,8 @@ final class AIRecordingImportManager: ObservableObject {
 
     /// 进录音页：有删除残留则恢复 pending，保证导入条能出来。
     func restoreLeftoverPendingIfNeeded(ble: AstraA1BleManager) {
+        guard ble.isDeviceAvailable else { return }
+        guard ble.deviceGeneration != .gen1G5K61 else { return }
         let leftover = leftoverDeviceFileNames
         guard !leftover.isEmpty else { return }
         if ble.pendingRecordingImportFileCount < leftover.count {
@@ -352,9 +374,10 @@ final class AIRecordingImportManager: ObservableObject {
 
     // MARK: - HTTP / files
 
-    private func fetchAACFileList(baseURL: String, expectedCount: Int) async throws -> [String] {
+    private func fetchAACFileList(ble: AstraA1BleManager, baseURL: String, expectedCount: Int) async throws -> [String] {
         var lastError: Error?
         for attempt in 1...8 {
+            try await requireAvailableDevice(ble)
             do {
                 let html = try await GlassesHTTPClient.fetchText(baseURL: baseURL)
                 print("\(logTag) html length=\(html.count)")
@@ -389,9 +412,10 @@ final class AIRecordingImportManager: ObservableObject {
         throw lastError ?? AIRecordingImportError.message(L10n.t("获取录音列表失败", "Failed to fetch recording list"))
     }
 
-    private func downloadFile(baseURL: String, fileName: String) async throws -> Data {
+    private func downloadFile(ble: AstraA1BleManager, baseURL: String, fileName: String) async throws -> Data {
         var lastError: Error?
         for attempt in 1...3 {
+            try await requireAvailableDevice(ble)
             do {
                 return try await GlassesHTTPClient.fetchData(baseURL: baseURL, fileName: fileName)
             } catch GlassesHTTPError.emptyBody {
@@ -411,6 +435,8 @@ final class AIRecordingImportManager: ObservableObject {
     }
 
     private static func isWifiConnectivityFailure(_ error: Error) -> Bool {
+        if case AIRecordingImportError.deviceUnavailable = error { return true }
+        if error is CancellationError { return true }
         if error is DeviceWifiError { return true }
         return (error as? GlassesHTTPError)?.isConnectivityFailure == true
     }
@@ -429,15 +455,24 @@ final class AIRecordingImportManager: ObservableObject {
         return target
     }
 
+    private func requireAvailableDevice(_ ble: AstraA1BleManager) async throws {
+        try Task.checkCancellation()
+        guard await waitUntilBLEReady(ble, timeout: 20) else {
+            throw AIRecordingImportError.deviceUnavailable
+        }
+        try Task.checkCancellation()
+    }
+
     private func waitUntilBLEReady(_ ble: AstraA1BleManager, timeout: TimeInterval) async -> Bool {
-        if ble.isReady { return true }
+        if ble.isReady { return ble.isDeviceAvailable }
         let deadline = Date().addingTimeInterval(timeout)
         print("\(logTag) waiting BLE ready, timeout=\(timeout)s")
         while Date() < deadline {
-            if ble.isReady { return true }
+            if Task.isCancelled { return false }
+            if ble.isReady { return ble.isDeviceAvailable }
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
-        return ble.isReady
+        return ble.isDeviceAvailable
     }
 
     private func deleteDeviceFilesWithRetry(
@@ -454,10 +489,7 @@ final class AIRecordingImportManager: ObservableObject {
         ]
         for names in candidates {
             for attempt in 1...3 {
-                guard ble.isReady else {
-                    _ = await waitUntilBLEReady(ble, timeout: 10)
-                    continue
-                }
+                guard await waitUntilBLEReady(ble, timeout: 10) else { return false }
                 do {
                     try await ble.deleteImportedFiles(names)
                     print("\(logTag) deleted device files ok count=\(names.count) attempt=\(attempt) sample=\(names.first ?? "")")
@@ -523,9 +555,11 @@ final class AIRecordingImportManager: ObservableObject {
 }
 
 private enum AIRecordingImportError: LocalizedError {
+    case deviceUnavailable
     case message(String)
     var errorDescription: String? {
         switch self {
+        case .deviceUnavailable: return L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
         case .message(let text): return text
         }
     }

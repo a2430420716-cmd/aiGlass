@@ -1,6 +1,7 @@
 import Combine
 import CoreBluetooth
 import Foundation
+import UIKit
 
 /// 配对扫描阶段展示在列表中的 BLE 设备。
 struct DiscoveredBLEDevice: Identifiable, Equatable {
@@ -57,6 +58,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @Published private(set) var deviceVersion6350: String?
     @Published private(set) var isQueryingAboutDeviceInfo = false
     @Published private(set) var isQueryingDeviceVersionsAndStorage = false
+    @Published private(set) var deviceVersionQueryFailed = false
     /// 眼镜端待导入手机的媒体文件数量（hasnewfile, file_type≠1）。
     @Published private(set) var pendingImportFileCount = 0
     /// 眼镜端待导入 AI 录音数量（hasnewfile, file_type=1）。
@@ -65,6 +67,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @Published private(set) var isAIRecording = false
     /// 全局设备运行状态（蓝牙 getdevstat / devstatus0 / actionrsp0 一上报就改）。
     @Published private(set) var deviceRuntimeStatus: AstraA1BleProtocol.DeviceRuntimeStatus = .unknown
+    private(set) var deviceRuntimeStatusReportSequence = 0
+    private(set) var lastReportedDeviceRuntimeStatus: AstraA1BleProtocol.DeviceRuntimeStatus = .unknown
     /// 上一次设备运行状态；每次上报前写入，用于判断 PHOTO_TAKING/VIDEO_RECORDING → STANDBY。
     @Published private(set) var previousDeviceRuntimeStatus: AstraA1BleProtocol.DeviceRuntimeStatus = .unknown
     /// 首页拍照/录像按钮状态（由全局状态跳变驱动）。
@@ -90,6 +94,65 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 已拿到绑定所需的设备信息（或超时降级）。
     @Published private(set) var isDeviceInfoReady = false
 
+    @Published private(set) var deviceGeneration: DeviceGeneration = .unknown
+    @Published private(set) var settingsRecordDurationSeconds: Int?
+    @Published private(set) var deviceSystemName: String?
+    @Published private(set) var deviceHardwareAddress: String?
+    var deviceCapabilities: DeviceCapabilities { DeviceCapabilities.forGeneration(deviceGeneration) }
+    var capabilities: DeviceCapabilities { deviceCapabilities }
+    let gen1ControlSubject = PassthroughSubject<Gen1ControlFrame, Never>()
+    private var gen1APImportIdentity: Gen1APImportIdentity?
+    struct Gen1FirmwareUpgradeIdentity: Equatable {
+        let targetID: UUID
+        let accountID: String
+        let hardwareSN: String?
+        let authorizationID: UUID
+        let token = UUID()
+    }
+    private var gen1FirmwareUpgradeIdentity: Gen1FirmwareUpgradeIdentity?
+    private var gen1HotspotReplyTarget: UUID?
+    private var gen1HotspotReplyQuarantineUntil: TimeInterval = 0
+    private lazy var gen1HotspotCleanup = Gen1HotspotCleanup(
+        isAuthorized: { [weak self] identity in
+            guard let self else { return false }
+            return identity.matches(savedID: self.savedPeripheralID(), connectedID: self.connectedPeripheral?.identifier)
+                && identity.matchesAccount(self.gen1ImportAccountProvider?(identity.targetID, identity.hardwareSN))
+        },
+        canSend: { [weak self] targetID in
+            guard let self else { return false }
+            return self.isReady && self.deviceGeneration == .gen1G5K61
+                && self.connectedPeripheral?.identifier == targetID
+        },
+        send: { [weak self] targetID, command in
+            guard let self, self.connectedPeripheral?.identifier == targetID else { return false }
+            return self.sendGen1Command(command: command, payload: Data(), hotspotCleanup: true)
+        },
+        log: { DebugLogStore.logWiFi($0, detail: $1) }
+    )
+    private var gen1MediaListAccumulator = Gen1MediaListAccumulator()
+    var gen1GuideEventSessionID: UUID?
+    var gen1GuideEventTargetID: UUID?
+    var gen1GuideEventHandler: ((UUID, Date, Int, Int) -> Void)?
+    var gen1GuideMediaHandler: ((UUID, Date, UInt8) -> Void)?
+    private var gen1VoiceCharacteristic: CBCharacteristic?
+    private let gen1ControlDecoder = Gen1ControlStreamDecoder()
+    private let gen1VoiceDecoder = Gen1VoiceStreamDecoder()
+    private let gen1SequenceTracker = Gen1VoiceSequenceTracker()
+    private let gen1TranslationRouter = Gen1TranslationAudioRouter()
+    private var gen1FactoryResetGeneration = 0
+    private var gen1RecordingStopTimeout: DispatchWorkItem?
+    /// Desired step for the owned page; retain across a failed enqueue/reconnect.
+    /// Zero also records completion even if the exit packet could not be queued.
+    private var gen1GuideStep = 0
+    private var gen1GuidePeripheralID: UUID?
+    private var gen1OTAPeripheralID: UUID?
+    private static let gen1ServiceUUID = CBUUID(string: "AE3A")
+    private static let gen1WriteUUID = CBUUID(string: "AE3B")
+    private static let gen1ControlUUID = CBUUID(string: "AE3C")
+    private static let gen1VoiceUUID = CBUUID(string: "AE3D")
+    private static var supportedServiceUUIDs: [CBUUID] {
+        [AstraA1BleProtocol.serviceUUID, gen1ServiceUUID]
+    }
     private var centralManager: CBCentralManager!
     private var voiceSettingsResponseSequence = 0
     private var connectedPeripheral: CBPeripheral?
@@ -107,6 +170,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var hasStartedConnect = false
     private var pendingStart = false
     private var pendingCharacteristicDiscoveries = 0
+    private var pendingCharacteristicServices: [CBService] = []
     private var isProbingService = false
     /// 首页刷新电量：仅连接并读电量，不走绑定流程。
     private var isBatteryRefreshMode = false
@@ -159,10 +223,21 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var dllUpdateContinuation: CheckedContinuation<AstraA1BleProtocol.DLLUpdateResult, Error>?
     private var dllProgressHandler: ((Int) -> Void)?
     /// withoutResponse 写队列：iOS 缓冲满时直接 write 会静默丢包。
-    private var pendingBLEWrites: [Data] = []
+    private struct PendingBLEWrite {
+        let data: Data
+        let packetID: UUID
+        let requiresAvailableDevice: Bool
+        let redactPayload: Bool
+    }
+    private var pendingBLEWrites: [PendingBLEWrite] = []
+    private var activeBLEWritePacketID: UUID?
     private let maxPendingBLEWrites = 64
-    /// notify 被 MTU 截断时，主动 read 通知特征以取完整载荷。
+    /// 通知不足声明长度时尝试补读；仅凭半包不能区分截断与后续分片。
     private var notifyReadInFlight = false
+    private var notifyReadRequestID = UUID()
+    private var notifyReadWasIssued = false
+    /// 限制每条链路的原始诊断数量，避免音频流挤满调试日志。
+    private var rawNotifyDiagnosticBudget = BLERawDiagnosticBudget(limit: 256)
     private var notifyReadAttempts = 0
     /// 当前正在补读的命令；换命令要重新计次，避免上一条命令用光重试额度。
     private var notifyReadCommand: String?
@@ -178,10 +253,14 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var aboutDeviceInfoPendingTypes: [AstraA1BleProtocol.DevInfoType] = []
     private var aboutDeviceInfoQueryTimeout: DispatchWorkItem?
     private let aboutDeviceInfoQueryTimeoutSeconds: TimeInterval = 2.5
-    /// getdevinfo 连续发送间隔（对齐安卓 DeviceInfoManager ~200ms；曾用 3s 导致电量约 9s 才到）。
-    private static let getDevInfoSendIntervalSeconds: TimeInterval = 0.2
+    /// 二代 getdevinfo 间隔对齐 Android；一代串行查询保留原 200ms 间隔。
+    private static let gen2GetDevInfoSendIntervalSeconds: TimeInterval = 3.0
+    private var getDevInfoSendIntervalSeconds: TimeInterval {
+        deviceGeneration == .gen1G5K61 ? 0.2 : Self.gen2GetDevInfoSendIntervalSeconds
+    }
     private var versionsStoragePendingTypes: [AstraA1BleProtocol.DevInfoType] = []
     private var versionsStorageQueryTimeout: DispatchWorkItem?
+    private var deviceVersionQueryGate = DeviceVersionQueryGate()
     private let versionsStorageQueryTimeoutSeconds: TimeInterval = 2.5
     private var deferredBatteryQuery = false
     private var deferredPendingImportQuery = false
@@ -196,6 +275,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private(set) var isAIVisionTransferBusy = false
     /// 对齐 Android DeviceUpgradeStateManager：整个 OTA（含 DLL 前置）期间禁止例行 BLE 查询插入升级命令流。
     private(set) var isFirmwareUpgradeFlowBusy = false
+    private var gen2OtaRecovery = Gen2OtaRecoveryState()
 
     private var isSerialGetDevInfoInProgress: Bool {
         isQueryingAboutDeviceInfo
@@ -213,6 +293,19 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var scanTimeoutWorkItem: DispatchWorkItem?
     private var probeStartWorkItem: DispatchWorkItem?
     private var connectWatchdogWorkItem: DispatchWorkItem?
+    private var gattWatchdogPolicy = GATTWatchdogPolicy()
+    private var failedGATTRetryGate = GATTRecoveryRetryGate()
+    /// A failed attempt may still finish subscribing. Keep its object identities separate
+    /// from active handles so an old central or another device cannot restore READY.
+    private struct FailedGATTContext {
+        let central: CBCentralManager
+        let peripheral: CBPeripheral
+        let generation: DeviceGeneration
+        let write: CBCharacteristic?
+        let notify: CBCharacteristic?
+        let voice: CBCharacteristic?
+    }
+    private var failedGATTContext: FailedGATTContext?
     private var discoverServicesWorkItem: DispatchWorkItem?
     /// 自动恢复必须先等旧链路真正断开，再发下一次 connect；防止旧 didDisconnect 打掉新连接。
     private var automaticGATTRecoveryWorkItem: DispatchWorkItem?
@@ -235,6 +328,17 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var systemTransportGracePeripheralIDs = Set<UUID>()
     /// 已由 retrieveConnectedPeripherals / peerConnected 明确认定为系统层已连接的目标。
     private var systemTransportConnectedPeripheralIDs = Set<UUID>()
+    private var connectionDiagnosticLimiters: [String: ConnectionDiagnosticRateLimiter] = [:]
+    private struct PeerEventDiagnosticObservation {
+        let event: String
+        let date: Date
+        let uptime: TimeInterval
+        let centralID: ObjectIdentifier
+    }
+    private var peerEventDiagnosticObservations: [UUID: PeerEventDiagnosticObservation] = [:]
+    private var disconnectDiagnosticID = UUID()
+    private var diagnosticConnectionGeneration: UInt64 = 0
+    private var diagnosticReadyObservation: (id: UUID, uptime: TimeInterval)?
     private var didRegisterConnectionEvents = false
     private var gattDiscoveryAttempt = 0
     private var loggedPeripheralIDs = Set<UUID>()
@@ -276,7 +380,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private let scanTimeoutSeconds: TimeInterval = 30
     private let probeStartDelaySeconds: TimeInterval = 1.5
-    /// 对齐 Android HomeFragment：单次 GATT 建链最多等待 15 秒。
+    /// Each GATT phase gets its own budget; discovery must not consume notification time.
     private let connectWatchdogSeconds: TimeInterval = 15
     /// Android 可 close 后创建全新 BluetoothGatt；iOS 复用同一 CoreBluetooth 外设，需更长恢复时间。
     private let standingConnectRetryIntervalSeconds: TimeInterval = 15
@@ -352,6 +456,153 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         @unknown default: return "unknown(\(state.rawValue))"
         }
     }
+    /// 与实际门禁使用同一查询结果。历史事件标记、音频路由都不单独证明目标当前已连接。
+    private func logConnectionGateSnapshot(
+        source: String,
+        targetID: UUID?,
+        retrieved: [CBPeripheral],
+        cached: CBPeripheral?,
+        decision: String,
+        queryPerformed: Bool = true
+    ) {
+        let targetRetrieved = targetID.map { id in retrieved.contains { $0.identifier == id } } ?? false
+        let targetAppConnected = cached?.identifier == targetID && cached?.state == .connected
+        let targetAppReady = isReady && connectedPeripheral?.identifier == targetID && targetID != nil
+        let audio = GlassesAudioRouteController.connectionDiagnosticSnapshot
+        let assessment = ConnectionDiagnosticAssessment.assess(
+            centralPoweredOn: centralManager.state == .poweredOn,
+            hasTarget: targetID != nil,
+            targetRetrieved: targetRetrieved,
+            targetAppConnected: targetAppConnected,
+            targetAppReady: targetAppReady,
+            bluetoothAudioPresent: audio.bluetoothPresent
+        )
+        let returned = retrieved.map {
+            "id=\($0.identifier.uuidString) name=\(($0.name ?? "unknown").debugDescription) state=\(peripheralStateDescription($0.state))"
+        }.sorted().joined(separator: "; ")
+        let historicalEvent = targetID.map { systemTransportConnectedPeripheralIDs.contains($0) } ?? false
+        let detail = """
+        diagnosticVersion=1 source=\(source) decision=\(decision)
+        assessment=\(assessment.rawValue): \(assessment.explanation)
+        centralState=\(centralManager.state) (\(centralManager.state.rawValue)) authorization=\(CBManager.authorization.rawValue) appState=\(connectStateDescription(connectionState))
+        targetID=\(targetID?.uuidString ?? "none") targetName=\((cached?.name ?? deviceName ?? "unknown").debugDescription)
+        serviceFilter=\(AstraA1BleProtocol.serviceUUID.uuidString) queryPerformed=\(queryPerformed) retrievedCount=\(retrieved.count) targetMatched=\(targetRetrieved)
+        retrievedPeripherals=[\(returned)]
+        cachedTargetState=\(cached.map { peripheralStateDescription($0.state) } ?? "not_cached") observedSystemConnectionFlag=\(historicalEvent) flagIsHistorical=true
+        autoReconnect=\(autoReconnectEnabled) userDisconnect=\(userInitiatedDisconnect) standingAllowed=\(standingConnectAllowed) standingRequest=\(standingConnectPeripheralID?.uuidString ?? "none")
+        manualRetryRequired=\(manualHardReconnectPeripheralID != nil) recoveryInProgress=\(isAutomaticGATTRecoveryInProgress) recoveryAttempt=\(standingConnectRecoveryCount)
+        \(audio.detail)
+        """
+        var limiter = connectionDiagnosticLimiters[source] ?? ConnectionDiagnosticRateLimiter()
+        let emission = limiter.record(signature: detail, uptime: ProcessInfo.processInfo.systemUptime)
+        connectionDiagnosticLimiters[source] = limiter
+        guard let emission else { return }
+        connectLog(
+            "connection gate snapshot",
+            detail: detail + "\nunchangedSeconds=\(emission.unchangedSeconds) suppressedSnapshots=\(emission.suppressedSnapshots)"
+        )
+    }
+
+    /// This diagnostic never changes connection flags or starts a BLE connection.
+    /// Capture both sides of the callback race, then recheck once after one second.
+    private func recordDisconnectDiagnostics(
+        central: CBCentralManager,
+        peripheral: CBPeripheral,
+        error: NSError?,
+        callbackDate: Date,
+        callbackUptime: TimeInterval,
+        callbackPeripheralState: CBPeripheralState
+    ) {
+        let incidentID = UUID()
+        disconnectDiagnosticID = incidentID
+        let generation = diagnosticConnectionGeneration
+        let savedID = savedPeripheralID()
+        let callbackAppState = "\(UIApplication.shared.applicationState.rawValue)"
+        let callbackGATTState = connectStateDescription(connectionState)
+        let callbackDetail = """
+        callbackAt=\(ISO8601DateFormatter().string(from: callbackDate)) callbackUptime=\(callbackUptime) callbackPeripheralState=\(peripheralStateDescription(callbackPeripheralState))
+        errorDomain=\(error?.domain ?? "none") errorCode=\(error.map { String($0.code) } ?? "none") errorDescription=\((error?.localizedDescription ?? "none").debugDescription)
+        callbackHandlerAppLifecycleRaw=\(callbackAppState) callbackGATTState=\(callbackGATTState) callbackReadyIsPreCleanup=true
+        userInitiated=\(userInitiatedDisconnect) autoReconnect=\(autoReconnectEnabled) otaFlowBusy=\(isFirmwareUpgradeFlowBusy)
+        """
+        emitDisconnectDiagnosticSnapshot(
+            central: central, peripheral: peripheral, incidentID: incidentID,
+            callbackUptime: callbackUptime, generation: generation,
+            callbackDetail: callbackDetail, isFollowUp: false
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, weak central, weak peripheral] in
+            guard let self, let central, let peripheral,
+                  self.disconnectDiagnosticID == incidentID else { return }
+            let currentSavedID = self.savedPeripheralID()
+            let targetChanged = self.connectedPeripheral.map { $0.identifier != peripheral.identifier } == true
+                || self.pendingUserPairingPeripheral.map { $0.identifier != peripheral.identifier } == true
+                || (currentSavedID != savedID && currentSavedID != peripheral.identifier)
+            guard central === self.centralManager, !targetChanged else {
+                self.connectLog("disconnect diagnostic follow-up skipped", detail: "incident=\(incidentID.uuidString) id=\(peripheral.identifier.uuidString) assessment=superseded reason=central-or-target-changed")
+                return
+            }
+            self.emitDisconnectDiagnosticSnapshot(
+                central: central, peripheral: peripheral, incidentID: incidentID,
+                callbackUptime: callbackUptime, generation: generation,
+                callbackDetail: callbackDetail, isFollowUp: true
+            )
+        }
+    }
+
+    private func emitDisconnectDiagnosticSnapshot(
+        central: CBCentralManager,
+        peripheral: CBPeripheral,
+        incidentID: UUID,
+        callbackUptime: TimeInterval,
+        generation: UInt64,
+        callbackDetail: String,
+        isFollowUp: Bool
+    ) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let queryPerformed = central.state == .poweredOn
+        let retrieved = queryPerformed
+            ? central.retrieveConnectedPeripherals(withServices: Self.supportedServiceUUIDs) : []
+        let targetRetrieved = retrieved.contains { $0.identifier == peripheral.identifier }
+        let targetReady = isReady && connectedPeripheral?.identifier == peripheral.identifier
+            && connectedPeripheral?.state == .connected
+        let readyAfterDisconnect = diagnosticReadyObservation.map {
+            $0.id == peripheral.identifier && $0.uptime > callbackUptime
+        } ?? false
+        let audio = GlassesAudioRouteController.connectionDiagnosticSnapshot
+        let historicalFlag = systemTransportConnectedPeripheralIDs.contains(peripheral.identifier)
+        let currentTargetMatches = connectedPeripheral.map { $0.identifier == peripheral.identifier } ?? true
+        let assessment = DisconnectDiagnosticAssessment.assess(.init(
+            isCurrentContext: central === centralManager && currentTargetMatches,
+            isFollowUp: isFollowUp,
+            centralPoweredOn: central.state == .poweredOn,
+            systemQueryPerformed: queryPerformed,
+            targetRetrieved: targetRetrieved,
+            appReady: targetReady,
+            readyObservedAfterDisconnect: readyAfterDisconnect,
+            sessionChanged: diagnosticConnectionGeneration != generation,
+            historicalSystemConnected: historicalFlag,
+            bluetoothAudioPresent: audio.bluetoothPresent
+        ))
+        let returned = retrieved.map {
+            "id=\($0.identifier.uuidString) state=\(peripheralStateDescription($0.state))"
+        }.sorted().joined(separator: "; ")
+        let peer = peerEventDiagnosticObservations[peripheral.identifier].map {
+            "event=\($0.event) at=\(ISO8601DateFormatter().string(from: $0.date)) ageSeconds=\(String(format: "%.3f", max(0, now - $0.uptime))) sameCentral=\($0.centralID == ObjectIdentifier(central)) historicalOnly=true"
+        } ?? "none"
+        connectLog("disconnect evidence snapshot", detail: """
+        diagnosticVersion=2 incident=\(incidentID.uuidString) phase=\(isFollowUp ? "after-1s" : "callback") elapsedSeconds=\(String(format: "%.3f", max(0, now - callbackUptime)))
+        assessment=\(assessment.rawValue): \(assessment.explanation)
+        targetID=\(peripheral.identifier.uuidString) centralState=\(central.state.rawValue) appLifecycleRaw=\(UIApplication.shared.applicationState.rawValue) lifecycleMap=0:active,1:inactive,2:background
+        \(callbackDetail)
+        currentPeripheralState=\(peripheralStateDescription(peripheral.state)) currentGATTState=\(connectStateDescription(connectionState)) currentReady=\(targetReady) readyObservedAfterDisconnect=\(readyAfterDisconnect)
+        callbackSession=\(generation) currentSession=\(diagnosticConnectionGeneration)
+        systemQueryPerformed=\(queryPerformed) serviceFilter=\(Self.supportedServiceUUIDs.map(\.uuidString).joined(separator: ",")) targetMatched=\(targetRetrieved) retrievedPeripherals=[\(returned)]
+        observedSystemConnectionFlag=\(historicalFlag) flagIsHistorical=true lastPeerEvent=[\(peer)]
+        \(audio.detail)
+        evidenceLimit=system_query_is_a_point_in_time_and_service_filtered; audio_is_separate_and_target_unverified; no_public_API_proof_of_all_physical_Bluetooth_links
+        """, direction: .received)
+    }
+
     /// 当前会话身份对应的外设；换外设或断开时清空 getdevinfo 缓存，避免首页卡片对错眼镜。
     private var identityPeripheralID: UUID?
 
@@ -382,6 +633,48 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     var isReady: Bool {
         if case .ready = connectionState { return true }
         return false
+    }
+
+    /// Business commands require the current BLE device to have a real home device card.
+    /// The app injects the card lookup; an unconfigured manager must deny operations.
+    var deviceCardPresenceProvider: (() -> Bool)?
+    /// Import identity lookup must survive BLE dropping, but not logout or unbinding.
+    var gen1ImportAccountProvider: ((UUID, String?) -> String?)?
+    private(set) var gen1ImportAuthorizationID = UUID()
+
+    func gen1ImportAccount(for targetID: UUID) -> String? {
+        guard savedPeripheralID() == targetID else { return nil }
+        let sn = connectedPeripheral?.identifier == targetID ? deviceSN : nil
+        return gen1ImportAccountProvider?(targetID, sn ?? cachedHardwareSN(forSerialNumber: targetID.uuidString))
+    }
+
+    var isDeviceAvailable: Bool {
+        DeviceAvailabilityPolicy.canOperate(
+            isBluetoothReady: isReady,
+            hasCorrespondingCard: deviceCardPresenceProvider?() ?? false
+        )
+    }
+
+    func matchesCurrentDevice(serialNumber: String?, hardwareSN: String?) -> Bool {
+        DeviceAvailabilityPolicy.matches(
+            serialNumber: serialNumber,
+            hardwareSN: hardwareSN,
+            currentPeripheralID: connectedPeripheral?.identifier.uuidString,
+            currentHardwareSN: deviceSN
+        )
+    }
+
+    @discardableResult
+    private func ensureDeviceAvailable(for operation: String) -> Bool {
+        let hasDeviceCard = deviceCardPresenceProvider?() ?? false
+        guard isReady, hasDeviceCard else {
+            connectLog(
+                "device operation rejected",
+                detail: "operation=\(operation) bleReady=\(isReady) matchingDeviceCard=\(hasDeviceCard)"
+            )
+            return false
+        }
+        return true
     }
 
     /// Android DeviceStatusManager.isIdleStatus：STANDBY、UNKNOWN 都允许开始新动作。
@@ -435,6 +728,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 首页进入：系统蓝牙已连接才接管 GATT；否则只监听系统连接事件。
     func ensureConnected(reason: String = "") {
+        guard gen1OTAPeripheralID == nil else { return }
+        if reason == "gen1-ota-version-verification", !isReady,
+           !isConnectionInProgress, !centralManager.isScanning, let id = savedPeripheralID() {
+            _ = reconnectBoundDevice(boundSerialNumbers: [id.uuidString], reason: reason)
+            return
+        }
         if savedPeripheralID() != nil, !userInitiatedDisconnect {
             // 进 App/回前台恢复监听；系统连接事件到达前不主动 connect。
             autoReconnectEnabled = true
@@ -462,8 +761,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
 
         // 系统蓝牙已连接时，优先直接接管 GATT（connect 回调可能不会触发）
-        if attachToAlreadyConnectedPeripheralIfPossible() {
-            connectLog("ensureConnected attached system-connected peripheral", detail: "reason=\(reason)")
+        if attachToAlreadyConnectedPeripheralIfPossible(source: "ensureConnected") {
+            connectLog("ensureConnected evaluated system connection", detail: "reason=\(reason) state=\(connectStateDescription(connectionState))")
             return
         }
 
@@ -478,6 +777,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 首页显示时刷新电量：系统已连接则查询，否则只等待系统连接事件。
     func refreshBatteryLevel() {
+        guard gen1OTAPeripheralID == nil else { return }
         guard !isManualHardReconnectCentralTransitionInProgress else {
             connectLog("refreshBatteryLevel deferred: rebuilding central")
             return
@@ -490,8 +790,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             return
         }
 
-        // 系统已连接：直接发现服务，不要再 connect（否则可能永远等不到 didConnect）
-        if attachToAlreadyConnectedPeripheralIfPossible() {
+        // 优先尝试接管系统已连接的目标，再完成 App 的 GATT 初始化。
+        if attachToAlreadyConnectedPeripheralIfPossible(source: "refreshBatteryLevel") {
             connectLog("refreshBatteryLevel attached system-connected peripheral")
             return
         }
@@ -534,7 +834,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 return
             }
 
-            // 系统当前未连接：保留身份并监听，不主动发起 GATT connect。
+            // 未取得目标的系统连接证据：保留身份并监听，不主动发起 GATT connect。
             isBatteryRefreshMode = false
             standingConnectAllowed = false
             updateState(.disconnected)
@@ -577,7 +877,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             )
             return
         }
-        // 已进入人工确认点后，系统连接事件、页面刷新等自动入口都不能绕过用户点击。
+        // Failed sessions are revalidated separately; do not start an unbounded connect loop.
         guard manualHardReconnectPeripheralID == nil || isManualHardReconnectAttemptInProgress else {
             connectLog(
                 "standing connect skipped: waiting for manual hard reconnect",
@@ -708,22 +1008,40 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private func systemConnectedPeripheral(matching id: UUID) -> CBPeripheral? {
         guard let centralManager, centralManager.state == .poweredOn else { return nil }
         let connected = centralManager.retrieveConnectedPeripherals(
-            withServices: [AstraA1BleProtocol.serviceUUID]
+            withServices: Self.supportedServiceUUIDs
         )
         if let peripheral = connected.first(where: { $0.identifier == id }) {
             systemTransportConnectedPeripheralIDs.insert(id)
+            logConnectionGateSnapshot(
+                source: "systemConnectionGate", targetID: id, retrieved: connected,
+                cached: peripheral, decision: "allow_target_in_system_query"
+            )
             return peripheral
         }
-        guard systemTransportConnectedPeripheralIDs.contains(id) else { return nil }
-        return centralManager.retrievePeripherals(withIdentifiers: [id]).first
+        let cached = centralManager.retrievePeripherals(withIdentifiers: [id]).first
             ?? reconnectPeripheral.flatMap { $0.identifier == id ? $0 : nil }
+        let observed = systemTransportConnectedPeripheralIDs.contains(id)
+        logConnectionGateSnapshot(
+            source: "systemConnectionGate", targetID: id, retrieved: connected, cached: cached,
+            decision: observed && cached != nil
+                ? "allow_using_historical_system_connection_flag"
+                : "block_no_system_connection_evidence"
+        )
+        guard observed else { return nil }
+        return cached
     }
 
     /// Manager 硬重建后必须由新 Manager 重新确认，不能沿用旧连接事件留下的标记。
     private func freshlyRetrievedSystemConnectedPeripheral(matching id: UUID) -> CBPeripheral? {
         guard let centralManager, centralManager.state == .poweredOn else { return nil }
         let connected = centralManager.retrieveConnectedPeripherals(
-            withServices: [AstraA1BleProtocol.serviceUUID]
+            withServices: Self.supportedServiceUUIDs
+        )
+        let cached = centralManager.retrievePeripherals(withIdentifiers: [id]).first
+        logConnectionGateSnapshot(
+            source: "freshCentralSystemQuery", targetID: id, retrieved: connected, cached: cached,
+            decision: connected.contains { $0.identifier == id }
+                ? "allow_fresh_system_connection" : "wait_fresh_system_connection"
         )
         guard let peripheral = connected.first(where: { $0.identifier == id }) else { return nil }
         systemTransportConnectedPeripheralIDs.insert(id)
@@ -737,6 +1055,69 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             detail: "reason=\(reason) id=\(manualHardReconnectPeripheralID?.uuidString ?? "nil")"
         )
         manualHardReconnectPeripheralID = nil
+    }
+
+    /// Reuse only a fully subscribed, still-current failed session. Otherwise retry GATT
+    /// initialization after a bounded cooldown, without rebuilding the central in a loop.
+    @discardableResult
+    private func recoverFailedGATTIfPossible(source: String, allowRetry: Bool) -> Bool {
+        guard case .failed = connectionState,
+              let context = failedGATTContext,
+              context.central === centralManager,
+              manualHardReconnectPeripheralID == context.peripheral.identifier,
+              savedPeripheralID() == context.peripheral.identifier,
+              autoReconnectEnabled, !userInitiatedDisconnect,
+              gen1OTAPeripheralID == nil, !isFirmwareUpgradeFlowBusy,
+              !isPairingSessionActive, !isManualHardReconnectAttemptInProgress,
+              !isManualHardReconnectCentralTransitionInProgress,
+              !isAutomaticGATTRecoveryInProgress,
+              let peripheral = freshlyRetrievedSystemConnectedPeripheral(matching: context.peripheral.identifier) else { return false }
+
+        if peripheral.state == .connected, peripheral === context.peripheral,
+           context.generation != .unknown,
+           let write = context.write, let notify = context.notify,
+           let service = write.service,
+           (peripheral.services ?? []).contains(where: { $0 === service }),
+           Self.supportedServiceUUIDs.contains(service.uuid),
+           (service.characteristics ?? []).contains(where: { $0 === write }),
+           (service.characteristics ?? []).contains(where: { $0 === notify }),
+           notify.isNotifying,
+           context.generation != .gen1G5K61 || context.voice.map({ voice in
+               voice.isNotifying && (service.characteristics ?? []).contains(where: { $0 === voice })
+           }) == true {
+            connectedPeripheral = peripheral
+            reconnectPeripheral = peripheral
+            peripheral.delegate = self
+            assignCharacteristics(from: peripheral.services ?? [])
+            guard writeCharacteristic === write, notifyCharacteristic === notify,
+                  deviceGeneration == context.generation, protocolNotificationsReady else {
+                resetConnectionHandles(preserveFailedRecoveryBudget: true)
+                failedGATTContext = context
+                return false
+            }
+            isServiceDiscovered = true
+            isProtocolNotificationEnabled = true
+            isNotificationEnabled = true
+            connectLog("failed GATT recovered from verified subscriptions", detail: "source=\(source) id=\(peripheral.identifier.uuidString)")
+            markReadyIfNeeded()
+            return true
+        }
+
+        guard allowRetry, failedGATTRetryGate.claimRetry(now: ProcessInfo.processInfo.systemUptime) else { return false }
+        connectLog("failed GATT retry after cooldown", detail: "source=\(source) id=\(peripheral.identifier.uuidString) retry=\(failedGATTRetryGate.attempts)")
+        clearManualHardReconnectRequirement(reason: "fresh system connection revalidated")
+        resetConnectionHandles(preserveFailedRecoveryBudget: true)
+        connectedPeripheral = peripheral
+        reconnectPeripheral = peripheral
+        peripheral.delegate = self
+        standingConnectAllowed = true
+        if peripheral.state == .connected {
+            beginDiscoverServices(on: peripheral, reason: "failed-session-recheck")
+        } else {
+            armSystemAutoConnect(peripheral, force: true, systemTransportObserved: true)
+        }
+        startSystemReconnectMonitor()
+        return true
     }
 
     private func shouldRequireTemporaryManualHardReconnect(for peripheral: CBPeripheral) -> Bool {
@@ -778,6 +1159,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func cancelManualHardReconnectState(reason: String) {
+        failedGATTContext = nil
+        failedGATTRetryGate.reset()
         let hadState = manualHardReconnectPeripheralID != nil
             || pendingManualHardReconnectPeripheralID != nil
             || isManualHardReconnectAttemptInProgress
@@ -1040,7 +1423,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private func startSystemReconnectMonitor() {
         stopSystemReconnectMonitor()
         guard autoReconnectEnabled, !userInitiatedDisconnect else { return }
-        guard manualHardReconnectPeripheralID == nil else { return }
+        guard manualHardReconnectPeripheralID == nil || failedGATTContext != nil else { return }
         if case .ready = connectionState { return }
         let work = DispatchWorkItem { [weak self] in
             self?.tickSystemReconnectMonitor()
@@ -1057,7 +1440,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private func scheduleNextSystemReconnectMonitor(after seconds: TimeInterval) {
         stopSystemReconnectMonitor()
         guard autoReconnectEnabled, !userInitiatedDisconnect else { return }
-        guard manualHardReconnectPeripheralID == nil else { return }
+        guard manualHardReconnectPeripheralID == nil || failedGATTContext != nil else { return }
         if case .ready = connectionState { return }
         let work = DispatchWorkItem { [weak self] in
             self?.tickSystemReconnectMonitor()
@@ -1072,20 +1455,26 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         guard !isAutomaticGATTRecoveryInProgress else { return }
         if case .ready = connectionState { return }
 
+        if case .failed = connectionState, manualHardReconnectPeripheralID != nil {
+            _ = recoverFailedGATTIfPossible(source: "systemReconnectMonitor", allowRetry: true)
+            scheduleNextSystemReconnectMonitor(after: 5)
+            return
+        }
+
         // GATT 发现进行中：不打断，稍后再看是否已 ready / 是否卡住需重 attach。
         if isGATTDiscoveryInProgress {
             scheduleNextSystemReconnectMonitor(after: 2.5)
             return
         }
 
-        if attachToAlreadyConnectedPeripheralIfPossible() {
+        if attachToAlreadyConnectedPeripheralIfPossible(source: "systemReconnectMonitor") {
             connectLog("system reconnect monitor: attached system-connected peripheral")
             // attach 会进入 connecting；ready 后 updateState 停轮询。发现中再盯一眼。
             scheduleNextSystemReconnectMonitor(after: 3.0)
             return
         }
 
-        // 系统未连接：只监听/轮询，不允许拿缓存 CBPeripheral 主动 connect，也不累计失败次数。
+        // 未取得目标的系统连接证据：只轮询，不发 connect，也不累计失败次数。
         scheduleNextSystemReconnectMonitor(after: 2.5)
     }
 
@@ -1094,25 +1483,36 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         guard !didRegisterConnectionEvents else { return }
         didRegisterConnectionEvents = true
         centralManager.registerForConnectionEvents(options: [
-            CBConnectionEventMatchingOption.serviceUUIDs: [AstraA1BleProtocol.serviceUUID]
+            CBConnectionEventMatchingOption.serviceUUIDs: Self.supportedServiceUUIDs
         ])
         print("\(logTag) registered for system connection events")
-        connectLog("registered for system connection events")
+        connectLog(
+            "registered for system connection events",
+            detail: "serviceFilter=\(AstraA1BleProtocol.serviceUUID.uuidString) saved=\(savedPeripheralID()?.uuidString ?? "none"); registration_does_not_confirm_connection"
+        )
     }
 
     /// 接管系统已连接的外设并完成服务发现。成功返回 true。
     /// 只接管「已保存」那副眼镜，禁止系统已连的其它同型号眼镜抢身份。
     @discardableResult
-    private func attachToAlreadyConnectedPeripheralIfPossible() -> Bool {
+    private func attachToAlreadyConnectedPeripheralIfPossible(source: String = "attach") -> Bool {
+        guard gen1OTAPeripheralID == nil else { return false }
         if isManualHardReconnectCentralTransitionInProgress {
             connectLog("attach deferred: rebuilding central")
             return true
         }
-        guard centralManager.state == .poweredOn else { return false }
+        guard centralManager.state == .poweredOn else {
+            logConnectionGateSnapshot(
+                source: source, targetID: savedPeripheralID(), retrieved: [], cached: nil,
+                decision: "wait_bluetooth_powered_on", queryPerformed: false
+            )
+            return false
+        }
         if case .ready = connectionState { return true }
         if case .failed = connectionState, manualHardReconnectPeripheralID != nil {
+            if recoverFailedGATTIfPossible(source: source, allowRetry: true) { return true }
             connectLog(
-                "attach skipped: waiting for manual hard reconnect",
+                "failed GATT rechecked: waiting for valid handles or retry cooldown",
                 detail: "id=\(manualHardReconnectPeripheralID?.uuidString ?? "nil")"
             )
             return true
@@ -1129,9 +1529,23 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
         let savedID = savedPeripheralID()
         let systemConnected = centralManager.retrieveConnectedPeripherals(
-            withServices: [AstraA1BleProtocol.serviceUUID]
+            withServices: Self.supportedServiceUUIDs
         )
         systemTransportConnectedPeripheralIDs.formUnion(systemConnected.map(\.identifier))
+
+        let cachedTarget = savedID.flatMap { centralManager.retrievePeripherals(withIdentifiers: [$0]).first }
+        let heldTarget = (connectedPeripheral ?? reconnectPeripheral).flatMap {
+            $0.identifier == savedID ? $0 : nil
+        }
+        let targetReturned = savedID.map { id in systemConnected.contains { $0.identifier == id } } ?? false
+        let hasConnectedTarget = targetReturned || cachedTarget?.state == .connected || heldTarget?.state == .connected
+        logConnectionGateSnapshot(
+            source: source, targetID: savedID, retrieved: systemConnected,
+            cached: heldTarget?.state == .connected ? heldTarget : cachedTarget,
+            decision: savedID == nil ? "no_saved_target"
+                : hasConnectedTarget ? "evaluate_system_connected_target"
+                : "wait_no_matching_system_peripheral; connect_not_sent; failure_count_unchanged; poll_interval=2.5s"
+        )
 
         // 0) 当前持有的外设在系统层已是 connected，且必须是已保存目标
         if let peripheral = connectedPeripheral ?? reconnectPeripheral,
@@ -1175,7 +1589,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 }
                 return true
             }
-            if let peripheral = centralManager.retrievePeripherals(withIdentifiers: [savedID]).first,
+            if let peripheral = cachedTarget,
                peripheral.state == .connected {
                 connectLog("attach saved peripheral already connected", detail: "id=\(savedID.uuidString)")
                 attachToConnectedPeripheral(peripheral)
@@ -1309,6 +1723,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if case .ready = connectionState { return }
         if isServiceDiscovered { return }
 
+        pendingCharacteristicServices.removeAll()
+        pendingCharacteristicDiscoveries = 0
         gattDiscoveryAttempt += 1
         peripheral.delegate = self
         updateState(.discoveringServices)
@@ -1317,36 +1733,33 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             detail: "reason=\(reason) attempt=\(gattDiscoveryAttempt) peripheralState=\(peripheralStateDescription(peripheral.state))"
         )
         peripheral.discoverServices(nil)
+        startConnectWatchdog(for: peripheral)
     }
 
     /// 从已连接外设恢复写/通知特征并读电量。
     private func recoverCharacteristics(from peripheral: CBPeripheral) {
         let services = peripheral.services ?? []
         assignCharacteristics(from: services)
-        if writeCharacteristic != nil {
+        if writeCharacteristic != nil, notifyCharacteristic != nil,
+           deviceGeneration != .gen1G5K61 || gen1VoiceCharacteristic != nil {
             isServiceDiscovered = true
-            if let notifyCharacteristic {
-                if notifyCharacteristic.isNotifying {
-                    isProtocolNotificationEnabled = true
-                    isNotificationEnabled = true
-                    handleRecoveredReady(preferBatteryOnly: isDeviceInfoReady)
-                } else {
-                    // 等协议 notify 订阅成功后再 ready + getdevstat，避免回包丢失。
-                    updateState(.enablingNotifications)
-                    peripheral.setNotifyValue(true, for: notifyCharacteristic)
-                }
-            } else {
-                isProtocolNotificationEnabled = true
-                isNotificationEnabled = true
+            isProtocolNotificationEnabled = protocolNotificationsReady
+            isNotificationEnabled = isProtocolNotificationEnabled
+            if protocolNotificationsReady {
                 handleRecoveredReady(preferBatteryOnly: isDeviceInfoReady)
+            } else {
+                beginNotificationSetup(on: peripheral)
             }
-        } else if let protocolService = services.first(where: { $0.uuid == AstraA1BleProtocol.serviceUUID }) {
+        } else if let service = services.first(where: { Self.supportedServiceUUIDs.contains($0.uuid) }) {
             updateState(.discoveringServices)
             pendingCharacteristicDiscoveries = 1
-            peripheral.discoverCharacteristics(nil, for: protocolService)
+            pendingCharacteristicServices = [service]
+            peripheral.discoverCharacteristics(nil, for: service)
+            startConnectWatchdog(for: peripheral)
         } else {
             updateState(.discoveringServices)
             peripheral.discoverServices(nil)
+            startConnectWatchdog(for: peripheral)
         }
     }
 
@@ -1538,6 +1951,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 查询眼镜端待导入媒体文件数量。
     func queryPendingImportFiles() {
+        if deviceGeneration == .gen1G5K61, gen1APImportIdentity != nil {
+            deferredPendingImportQuery = true
+            return
+        }
         guard isReady else {
             print("\(logTag) queryPendingImportFiles skipped: not ready")
             return
@@ -1569,9 +1986,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         print("\(logTag) noteImportedMediaFiles -\(count) pending \(before) -> \(pendingImportFileCount)")
     }
 
-    /// 升级检测：优先等初连 getdevinfo 回包；仍缺则串行补查（对齐安卓连上就查 ver28/ver63）。
+    /// 升级检测：优先等初连 getdevinfo 队列结束；仍缺则串行补查。
     func queryUpgradeDeviceInfo() {
-        guard case .ready = connectionState else { return }
+        guard case .ready = connectionState, let peripheral = connectedPeripheral,
+              !isFirmwareUpgradeFlowBusy, !isAIVisionTransferBusy else { return }
         let needSN = (deviceSN ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let needBle = (deviceVersion2800 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let needFw = (deviceVersion6350 ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1583,11 +2001,18 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             print("\(logTag) queryUpgradeDeviceInfo deferred: getdevinfo in progress")
             return
         }
-        // 初连约 1.2s 发完；再等一会，缺啥补啥，避免与 queryInitialDeviceInfo 叠发。
+        // Query completion also refreshes the UI. Reserve one fill-in per connection
+        // so missing/truncated replies cannot start an endless loading/retry loop.
+        guard let token = deviceVersionQueryGate.reserveAutomaticQuery() else { return }
+        // 初连队列结束后再给回包留 2 秒；查询进行中时已在上方返回，避免叠发。
         print("\(logTag) queryUpgradeDeviceInfo will retry fill-in after 2.0s if still missing")
         let generation = initialDeviceInfoQueryGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            guard let self, case .ready = self.connectionState else { return }
+            guard let self else { return }
+            defer { self.deviceVersionQueryGate.cancelPendingQuery(token) }
+            guard case .ready = self.connectionState,
+                  self.connectedPeripheral === peripheral,
+                  !self.isFirmwareUpgradeFlowBusy, !self.isAIVisionTransferBusy else { return }
             guard self.initialDeviceInfoQueryGeneration == generation else {
                 print("\(self.logTag) queryUpgradeDeviceInfo fill-in skipped: connection/query generation changed")
                 return
@@ -1603,6 +2028,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 print("\(self.logTag) queryUpgradeDeviceInfo fill-in deferred: getdevinfo in progress")
                 return
             }
+            guard self.deviceVersionQueryGate.claimAutomaticQuery(token) else { return }
             self.refreshDeviceVersionsAndStorage(includeSerialNumber: stillNeedSN, clearExisting: false)
         }
     }
@@ -1617,6 +2043,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             ensureConnected(reason: "aboutDevice")
             return
         }
+        deviceVersionQueryGate.cancelPendingQuery()
         cancelVersionsAndStorageQuery()
         cancelAboutDeviceInfoQuery()
         // 不先清空版本：查失败时仍可显示上次成功值（安卓 DeviceInfo 也是字段级覆盖）。
@@ -1639,6 +2066,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             ensureConnected(reason: "refreshVersionsAndStorage")
             return
         }
+        // Explicit page refreshes remain available after a failure, but their
+        // completion must not authorize another automatic query in this session.
+        deviceVersionQueryGate.beginExplicitQuery()
+        deviceVersionQueryFailed = false
         cancelAboutDeviceInfoQuery()
         isQueryingAboutDeviceInfo = false
         cancelVersionsAndStorageQuery()
@@ -1692,15 +2123,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func sendNextVersionsAndStorageQuery() {
         guard isQueryingDeviceVersionsAndStorage else { return }
+        // 初连也在发送 getdevinfo，等待其结束后再推进页面刷新，保持二代发送间隔。
+        guard !isInitialDeviceInfoQueryInProgress else { return }
         // 已有值的项跳过（补缺查询时避免重复打通道）。
         while let type = versionsStoragePendingTypes.first, cachedValue(for: type) != nil {
             print("\(logTag) refreshDeviceVersionsAndStorage skip cached type=0x\(String(format: "%02X", type.rawValue))")
             versionsStoragePendingTypes.removeFirst()
         }
         guard let type = versionsStoragePendingTypes.first else {
-            isQueryingDeviceVersionsAndStorage = false
-            print("\(logTag) refreshDeviceVersionsAndStorage finished")
-            runDeferredRoutineQueriesIfNeeded()
+            completeVersionsAndStorageQuery()
             return
         }
         notifyReadAttempts = 0
@@ -1710,6 +2141,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func armVersionsAndStorageTimeout(for type: AstraA1BleProtocol.DevInfoType) {
+        guard !isInitialDeviceInfoQueryInProgress else { return }
         versionsStorageQueryTimeout?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.isQueryingDeviceVersionsAndStorage else { return }
@@ -1735,6 +2167,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func finishVersionsAndStorageQueryStep() {
+        // 初连回包可更新缓存，但不能推进尚未发送的页面查询或启动其超时。
+        guard !isInitialDeviceInfoQueryInProgress else { return }
         versionsStorageQueryTimeout?.cancel()
         versionsStorageQueryTimeout = nil
         notifyReadAttempts = 0
@@ -1742,14 +2176,25 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             versionsStoragePendingTypes.removeFirst()
         }
         if versionsStoragePendingTypes.isEmpty {
-            isQueryingDeviceVersionsAndStorage = false
-            print("\(logTag) refreshDeviceVersionsAndStorage finished ver28=\(deviceVersion2800 ?? "nil") ver63=\(deviceVersion6350 ?? "nil")")
-            runDeferredRoutineQueriesIfNeeded()
+            completeVersionsAndStorageQuery()
         } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.getDevInfoSendIntervalSeconds) { [weak self] in
+            let work = DispatchWorkItem { [weak self] in
                 self?.sendNextVersionsAndStorageQuery()
             }
+            versionsStorageQueryTimeout = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + getDevInfoSendIntervalSeconds, execute: work)
         }
+    }
+
+    private func completeVersionsAndStorageQuery() {
+        deviceVersionQueryFailed = cachedValue(for: .version2800) == nil
+            || cachedValue(for: .version6350) == nil
+        isQueryingDeviceVersionsAndStorage = false
+        DebugLogStore.logBLEEvent(
+            "device version query completed",
+            detail: "failed=\(deviceVersionQueryFailed) ver28=\(deviceVersion2800 ?? "nil") ver63=\(deviceVersion6350 ?? "nil") automaticRetry=false; reconnect or explicitly retry if incomplete"
+        )
+        runDeferredRoutineQueriesIfNeeded()
     }
 
     private func cancelAboutDeviceInfoQuery() {
@@ -1760,6 +2205,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func sendNextAboutDeviceInfoQuery() {
         guard isQueryingAboutDeviceInfo else { return }
+        guard !isInitialDeviceInfoQueryInProgress else { return }
         // 关于页：名称/型号/SN 可跳过已有；版本与存储始终重查。
         while let type = aboutDeviceInfoPendingTypes.first {
             let skippable: Bool = {
@@ -1788,6 +2234,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func armAboutDeviceInfoTimeout(for type: AstraA1BleProtocol.DevInfoType) {
+        guard !isInitialDeviceInfoQueryInProgress else { return }
         aboutDeviceInfoQueryTimeout?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.isQueryingAboutDeviceInfo else { return }
@@ -1811,6 +2258,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func finishAboutDeviceInfoQueryStep() {
+        guard !isInitialDeviceInfoQueryInProgress else { return }
         aboutDeviceInfoQueryTimeout?.cancel()
         aboutDeviceInfoQueryTimeout = nil
         notifyReadAttempts = 0
@@ -1822,9 +2270,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             print("\(logTag) queryAboutDeviceInfo finished ver28=\(deviceVersion2800 ?? "nil") ver63=\(deviceVersion6350 ?? "nil")")
             runDeferredRoutineQueriesIfNeeded()
         } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.getDevInfoSendIntervalSeconds) { [weak self] in
+            let work = DispatchWorkItem { [weak self] in
                 self?.sendNextAboutDeviceInfoQuery()
             }
+            aboutDeviceInfoQueryTimeout = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + getDevInfoSendIntervalSeconds, execute: work)
         }
     }
 
@@ -2081,8 +2531,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         purpose: AstraA1BleProtocol.OpenWifiPurpose,
         timeout: TimeInterval
     ) async throws -> AstraA1BleProtocol.WifiConfig {
-        guard isReady else {
-            wifiLog("无法开启热点：BLE 未就绪", detail: "purpose=\(purpose.rawValue)", direction: .received)
+        guard ensureDeviceAvailable(for: "openWifiAndWaitConfigOnce") else {
+            wifiLog("无法开启热点：当前没有可用设备", detail: "purpose=\(purpose.rawValue)", direction: .received)
             throw ImportBLEError.notReady
         }
         await waitWifiReopenCooldown()
@@ -2115,7 +2565,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 仅发 toopenwifi 并等待状态回包（13 字节）。
     func openWifiAwaitStatus(purpose: AstraA1BleProtocol.OpenWifiPurpose) async throws {
-        guard isReady else { throw ImportBLEError.notReady }
+        guard ensureDeviceAvailable(for: "openWifiAwaitStatus") else { throw ImportBLEError.notReady }
         notifyReadAttempts = 0
         _ = try await waitStatusResponse(command: "toopenwifi") {
             self.sendCommand(AstraA1BleProtocol.buildToOpenWifiCommand(purpose: purpose))
@@ -2158,6 +2608,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 首次配对后曾用于预缓存热点；现改为每次从 wificonfig 取凭据，此预热不再执行。
     private func seedWifiCredentialIfNeeded() {
+        guard deviceGeneration == .gen2 else { return }
         // no-op：导入/OTA 统一 toopenwifi → wificonfig。
     }
 
@@ -2213,7 +2664,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         timeout: TimeInterval = 120,
         onProgress: ((Int) -> Void)? = nil
     ) async throws -> AstraA1BleProtocol.DLLUpdateResult {
-        guard isReady else { throw ImportBLEError.notReady }
+        guard ensureDeviceAvailable(for: "waitForDLLInstall") else { throw ImportBLEError.notReady }
         guard let command = AstraA1BleProtocol.buildDLLUploadCommand(items: items) else {
             throw ImportBLEError.failed(L10n.t("算法文件安装参数无效", "Invalid algorithm install parameters"))
         }
@@ -2225,6 +2676,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 dllProgressHandler = nil
                 continuation.resume(throwing: ImportBLEError.sendFailed)
                 return
+            }
+            if let id = connectedPeripheral?.identifier {
+                gen2OtaRecovery.markAlgorithmInstallSubmitted(to: id)
             }
             scheduleImportTimeout(seconds: timeout) { [weak self] in
                 guard let self, let cont = self.dllUpdateContinuation else { return }
@@ -2255,25 +2709,27 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 发送 otaupload0，启动蓝牙固件升级。
     func startBluetoothOtaUpgrade(fileName: String) throws {
-        guard isReady else { throw ImportBLEError.notReady }
+        guard ensureDeviceAvailable(for: "startBluetoothOtaUpgrade") else { throw ImportBLEError.notReady }
         guard isDeviceRuntimeIdle || deviceRuntimeStatus == .firmwareUpgrading else {
             throw ImportBLEError.failed(deviceRuntimeStatus.busyMessage)
         }
         guard sendCommand(AstraA1BleProtocol.buildOtaUploadBluetoothCommand(fileName: fileName)) else {
             throw ImportBLEError.sendFailed
         }
+        if let id = connectedPeripheral?.identifier { gen2OtaRecovery.markUpgradeSubmitted(to: id) }
         print("\(logTag) otaupload0 sent file=\(fileName)")
     }
 
     /// 发送 otaupload1，启动主固件升级。
     func startFirmwareOtaUpgrade(fileName: String) throws {
-        guard isReady else { throw ImportBLEError.notReady }
+        guard ensureDeviceAvailable(for: "startFirmwareOtaUpgrade") else { throw ImportBLEError.notReady }
         guard isDeviceRuntimeIdle || deviceRuntimeStatus == .firmwareUpgrading else {
             throw ImportBLEError.failed(deviceRuntimeStatus.busyMessage)
         }
         guard sendCommand(AstraA1BleProtocol.buildOtaUploadFirmwareCommand(fileName: fileName)) else {
             throw ImportBLEError.sendFailed
         }
+        if let id = connectedPeripheral?.identifier { gen2OtaRecovery.markUpgradeSubmitted(to: id) }
         print("\(logTag) otaupload1 sent file=\(fileName)")
     }
 
@@ -2284,7 +2740,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         onProgress: ((Int) -> Void)? = nil,
         sendUpgradeCommand: () throws -> Void
     ) async throws {
-        guard isReady else { throw ImportBLEError.notReady }
+        guard ensureDeviceAvailable(for: "waitForOtaUpgradeCompletion") else { throw ImportBLEError.notReady }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             otaUpgradeContinuation = continuation
             otaUpgradeProgressHandler = onProgress
@@ -2306,6 +2762,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func completeOtaUpgradeIfNeeded(percent: Int) {
+        // Progress is evidence of device-side flashing even if the initiating command
+        // or its reply was missed. Do not cancel such a session during later cleanup.
+        if deviceGeneration == .gen2, let id = connectedPeripheral?.identifier {
+            gen2OtaRecovery.markUpgradeSubmitted(to: id)
+        }
         print("\(logTag) OTA progress=\(percent)% waiter=\(otaUpgradeContinuation != nil)")
         otaUpgradeProgressHandler?(percent)
         guard percent >= 100, let cont = otaUpgradeContinuation else { return }
@@ -2321,7 +2782,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 同步眼镜时间（开始 AI 录音前调用）。
     @discardableResult
     func syncAIRecordTime() -> Bool {
-        guard isReady else { return false }
+        guard ensureDeviceAvailable(for: "syncAIRecordTime") else { return false }
         let sent = sendCommand(AstraA1BleProtocol.buildSyncTimeCommand())
         print("\(logTag) synctime00 sent=\(sent)")
         return sent
@@ -2330,7 +2791,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 开始眼镜 AI 录音：空闲校验 → 对时 → 延迟约 180ms → airecord00=1。
     @discardableResult
     func startAIRecord() -> Bool {
-        guard isReady else {
+        guard ensureDeviceAvailable(for: "startAIRecord") else {
             mediaActionAlertMessage = L10n.t("设备未连接", "Not connected")
             return false
         }
@@ -2345,11 +2806,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if isAIRecording {
             return true
         }
+        let recordingPeripheralID = deviceBluetoothIdentifier
         _ = syncAIRecordTime()
         // 对齐 Android AiRecordingActivity：对时后短暂等待再开录。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
             guard let self else { return }
-            guard self.isReady else {
+            guard self.ensureDeviceAvailable(for: "startAIRecord-delayed"), self.deviceBluetoothIdentifier == recordingPeripheralID else {
                 self.mediaActionAlertMessage = L10n.t("设备未连接", "Not connected")
                 return
             }
@@ -2380,6 +2842,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             return false
         }
         let sent = sendCommand(AstraA1BleProtocol.buildAIRecordCommand(enable: false))
+        if deviceGeneration == .gen1G5K61 { return sent }
         print("\(logTag) airecord00 stop sent=\(sent)")
         isAIRecording = false
         if sent {
@@ -2438,7 +2901,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 设置设备音效；UI 状态以 eqmodersp0 回包为准。
     @discardableResult
     func setSoundEffectMode(_ mode: UInt8) -> Bool {
-        guard isReady else {
+        guard ensureDeviceAvailable(for: "setSoundEffectMode") else {
             mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
             return false
         }
@@ -2453,7 +2916,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     @discardableResult
     func startAIVoice(continuous: Bool = true) -> Bool {
-        guard isReady else {
+        guard ensureDeviceAvailable(for: "startAIVoice") else {
             mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
             return false
         }
@@ -2490,7 +2953,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     @discardableResult
     func setAIVoiceListeningDuration(seconds: Int) -> Bool {
-        guard isReady else {
+        guard deviceGeneration == .gen2 else { return false }
+        guard ensureDeviceAvailable(for: "setAIVoiceListeningDuration") else {
             mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
             return false
         }
@@ -2504,6 +2968,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     @discardableResult
     func queryAIVoiceListeningDuration() -> Bool {
+        guard deviceGeneration == .gen2 else { return false }
         guard isReady else { return false }
         let sent = sendCommand(AstraA1BleProtocol.buildGetAIVoiceListeningDurationCommand())
         print("\(logTag) getaivsil0 sent=\(sent)")
@@ -2512,7 +2977,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     @discardableResult
     func setVoiceWakeupEnabled(_ enabled: Bool) -> Bool {
-        guard isReady else {
+        guard deviceGeneration == .gen2 else { return false }
+        guard ensureDeviceAvailable(for: "setVoiceWakeupEnabled") else {
             mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
             return false
         }
@@ -2523,6 +2989,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     @discardableResult
     func queryVoiceWakeupEnabled() -> Bool {
+        guard deviceGeneration == .gen2 else { return false }
         guard isReady else { return false }
         let sent = sendCommand(AstraA1BleProtocol.buildGetVoiceWakeupCommand())
         print("\(logTag) getwakeup0 sent=\(sent)")
@@ -2531,7 +2998,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     @discardableResult
     func resumeAIVoiceListening() -> Bool {
-        guard isReady else { return false }
+        guard deviceGeneration == .gen2 else { return false }
+        guard ensureDeviceAvailable(for: "resumeAIVoiceListening") else { return false }
         let sent = sendCommand(AstraA1BleProtocol.buildResumeAIVoiceListeningCommand())
         print("\(logTag) aivlisten0 sent=\(sent)")
         return sent
@@ -2539,7 +3007,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     @discardableResult
     func startTranslateRecording() -> Bool {
-        guard isReady else {
+        guard ensureDeviceAvailable(for: "startTranslateRecording") else {
             mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
             return false
         }
@@ -2599,7 +3067,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 发送拍照指令；业务是否接受以 actionrsp0 为准。
     @discardableResult
     func takePhoto() -> Bool {
-        guard isReady else { return false }
+        guard ensureDeviceAvailable(for: "takePhoto") else { return false }
         guard !isBatteryTooLowForMedia else {
             mediaActionAlertMessage = lowBatteryMediaMessage
             return false
@@ -2610,7 +3078,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 开始录像；业务是否接受以 actionrsp0 为准。
     @discardableResult
     func startVideo() -> Bool {
-        guard isReady else { return false }
+        guard ensureDeviceAvailable(for: "startVideo") else { return false }
         guard !isBatteryTooLowForMedia else {
             mediaActionAlertMessage = lowBatteryMediaMessage
             return false
@@ -2681,7 +3149,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private func stopVideoRecordingFromHome() {
         guard ensureMediaActionAllowed(
             busy: isVideoStopping,
-            allowedRuntimeStatuses: [.videoRecording]
+            allowedRuntimeStatuses: [.videoRecording],
+            requiresAvailableDevice: false
         ) else { return }
         cancelHomeVideoAutoStop()
         isVideoStopping = true
@@ -2698,9 +3167,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func ensureMediaActionAllowed(
         busy: Bool,
-        allowedRuntimeStatuses: Set<AstraA1BleProtocol.DeviceRuntimeStatus> = []
+        allowedRuntimeStatuses: Set<AstraA1BleProtocol.DeviceRuntimeStatus> = [],
+        requiresAvailableDevice: Bool = true
     ) -> Bool {
-        guard isReady else {
+        guard requiresAvailableDevice ? ensureDeviceAvailable(for: "home-media-action") : isReady else {
             mediaActionAlertMessage = L10n.t("设备未连接", "Not connected")
             return false
         }
@@ -2717,7 +3187,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     /// 蓝牙一上报状态就进这里：先记 previous，再改 current，再看跳变。
-    private func applyDeviceRuntimeStatus(_ status: AstraA1BleProtocol.DeviceRuntimeStatus, source: String) {
+    private func applyDeviceRuntimeStatus(
+        _ status: AstraA1BleProtocol.DeviceRuntimeStatus,
+        source: String,
+        receivedFromDevice: Bool = false
+    ) {
+        if receivedFromDevice {
+            deviceRuntimeStatusReportSequence += 1
+            lastReportedDeviceRuntimeStatus = status
+        }
         let previous = deviceRuntimeStatus
         previousDeviceRuntimeStatus = previous
         deviceRuntimeStatus = status
@@ -2784,7 +3262,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func handleActionResponse(_ response: AstraA1BleProtocol.DeviceActionResponse) {
         // actionrsp0 里的 current_status 也走同一套全局状态更新。
-        applyDeviceRuntimeStatus(response.currentStatus, source: "actionrsp0")
+        applyDeviceRuntimeStatus(response.currentStatus, source: "actionrsp0", receivedFromDevice: true)
 
         switch response.action {
         case .takePhoto:
@@ -2965,8 +3443,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// Android 从固件包下载前 markBusy；这里同步暂停例行电量和待导入查询。
     func beginFirmwareUpgradeFlow() {
+        guard ensureDeviceAvailable(for: "beginFirmwareUpgradeFlow") else { return }
         guard !isFirmwareUpgradeFlowBusy else { return }
         isFirmwareUpgradeFlowBusy = true
+        deviceVersionQueryGate.cancelPendingQuery()
+        if deviceGeneration == .gen2, let id = connectedPeripheral?.identifier {
+            gen2OtaRecovery.begin(targetID: id)
+        } else {
+            gen2OtaRecovery.finish()
+        }
         routineRefreshWorkItem?.cancel()
         routineRefreshWorkItem = nil
         cancelInitialDeviceInfoQuery(reason: "firmware-upgrade")
@@ -2978,17 +3463,39 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     /// 无论成功、失败或取消都恢复 Android 同等的例行查询。
-    func endFirmwareUpgradeFlow(reason: String) {
+    func endFirmwareUpgradeFlow(reason: String, preserveRuntimeStatus: Bool = false) {
+        gen2OtaRecovery.finish()
         guard isFirmwareUpgradeFlowBusy else {
-            finishFirmwareUpgradeRuntime(reason: reason)
+            if !preserveRuntimeStatus { finishFirmwareUpgradeRuntime(reason: reason) }
             return
         }
         isFirmwareUpgradeFlowBusy = false
-        finishFirmwareUpgradeRuntime(reason: reason)
+        if !preserveRuntimeStatus { finishFirmwareUpgradeRuntime(reason: reason) }
         print("\(logTag) firmware upgrade flow busy=false reason=\(reason)")
         guard isReady else { return }
         startBatteryPolling()
         scheduleRoutineDeviceRefresh()
+    }
+
+    /// Cancellation is allowed only for an accepted preparation owned by this flow,
+    /// before either otaupload command has been queued. Never infer ownership from busy=6.
+    func canCancelGen2OtaPreparation(for targetID: UUID) -> Bool {
+        isFirmwareUpgradeFlowBusy && gen2OtaRecovery.canCancelPreparation(for: targetID)
+    }
+
+    @discardableResult
+    func cancelGen2OtaPreparation(for targetID: UUID) -> Bool {
+        guard canCancelGen2OtaPreparation(for: targetID), isReady,
+              deviceGeneration == .gen2, connectedPeripheral?.identifier == targetID else { return false }
+        let sent = sendCommand(AstraA1BleProtocol.buildOtaCancelCommand())
+        wifiLog("退出本次 OTA 准备", detail: "peripheral=\(targetID) command=otacancel0 queued=\(sent); queued does not confirm device exit", direction: .sent)
+        return sent
+    }
+
+    func queryGen2OtaRuntimeStatus(for targetID: UUID) {
+        guard isReady, deviceGeneration == .gen2,
+              connectedPeripheral?.identifier == targetID else { return }
+        forceQueryDeviceStatus(reason: "ota-preparation-cleanup")
     }
 
     private func showPhotoCompletedFeedback() {
@@ -3106,7 +3613,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     func deleteImportedFiles(_ fileNames: [String], timeout: TimeInterval = 10) async throws {
-        guard isReady else { throw ImportBLEError.notReady }
+        guard ensureDeviceAvailable(for: "deleteImportedFiles") else { throw ImportBLEError.notReady }
         guard !fileNames.isEmpty else { return }
 
         // 按实际写 MTU 切批：固定 200 在 iOS 常超 maxWrite → 包被截断 → 眼镜回拒绝。
@@ -3121,7 +3628,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         print("\(logTag) deletefile total=\(remaining.count) maxWrite=\(maxWrite) maxPayload=\(maxPayload)")
 
         while !remaining.isEmpty {
-            guard isReady else { throw ImportBLEError.notReady }
+            guard ensureDeviceAvailable(for: "deleteImportedFiles") else { throw ImportBLEError.notReady }
             let batches = AstraA1BleProtocol.splitDeleteFileBatches(remaining, maxPayloadBytes: maxPayload)
             guard let batch = batches.first else { break }
 
@@ -3197,6 +3704,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// deletefile 优先 withResponse，避免 withoutResponse 大包被静默截断。
     @discardableResult
     private func sendDeleteFileCommand(fileNames: [String]) -> Bool {
+        guard ensureDeviceAvailable(for: "deletefile") else { return false }
         let data = AstraA1BleProtocol.buildDeleteFileCommand(fileNames: fileNames)
         guard case .ready = connectionState,
               let peripheral = connectedPeripheral,
@@ -3210,7 +3718,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             return false
         }
         if characteristic.properties.contains(.write) {
-            peripheral.writeValue(data, for: characteristic, type: .withResponse)
+            guard data.count <= peripheral.maximumWriteValueLength(for: .withResponse) else {
+            print("[BLE] Packet exceeds negotiated write length")
+            return false
+        }
+        peripheral.writeValue(data, for: characteristic, type: .withResponse)
             print("\(logTag) deletefile \(data.count) bytes withResponse")
             DebugLogStore.logBLESent(data)
             return true
@@ -3231,12 +3743,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             direction: .sent
         )
         do {
-            _ = try await waitStatusResponse(
+            let accepted = try await waitStatusResponse(
                 command: "closewifi",
                 aliases: ["closewifi0"],
                 timeout: timeout
             ) {
                 self.sendCommand(AstraA1BleProtocol.buildCloseWifiCommand())
+            }
+            guard accepted else {
+                throw ImportBLEError.failed(L10n.t("眼镜拒绝关闭热点", "Glasses rejected hotspot shutdown"))
             }
             wifiLog("眼镜热点关闭成功", direction: .received)
         } catch {
@@ -3305,35 +3820,60 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: handler)
     }
 
-    /// 眼镜端 notify 默认 MTU 仅 ~20 字节；通知特征支持 read，可读完整 wificonfig / getworkpat。
+    /// 通知不足声明长度时尝试读特征。固件可能不支持读，结果必须进入可导出的日志。
     private func requestFullNotifyPayload(for command: String) {
-        guard let peripheral = connectedPeripheral, let char = notifyCharacteristic else { return }
-        guard !notifyReadInFlight else { return }
+        guard let peripheral = connectedPeripheral, let char = notifyCharacteristic else {
+            DebugLogStore.logBLEEvent("notify read skipped", detail: "command=\(command) reason=no-current-characteristic")
+            return
+        }
+        guard !notifyReadInFlight else {
+            DebugLogStore.logBLEEvent("notify read already pending", detail: "command=\(command) pending=\(notifyReadCommand ?? "nil") issued=\(notifyReadWasIssued)")
+            return
+        }
         if notifyReadCommand != command {
             notifyReadCommand = command
             notifyReadAttempts = 0
         }
         guard !notifyReadUnsupported else {
-            print("\(logTag) notify read unsupported by firmware, give up command=\(command)")
+            DebugLogStore.logBLEEvent("notify read unavailable", detail: "command=\(command) reason=firmware-request-not-supported")
             failWaitersOnTruncation(command: command)
             return
         }
         guard notifyReadAttempts < maxNotifyReadAttempts else {
-            print("\(logTag) notify read exceeded max attempts=\(maxNotifyReadAttempts) command=\(command)")
+            DebugLogStore.logBLEEvent("notify read exhausted", detail: "command=\(command) attempts=\(notifyReadAttempts)")
             failWaitersOnTruncation(command: command)
             return
         }
         notifyReadInFlight = true
+        notifyReadWasIssued = false
+        notifyReadRequestID = UUID()
+        let requestID = notifyReadRequestID
         notifyReadAttempts += 1
-        print("\(logTag) read notify characteristic attempt \(notifyReadAttempts)/\(maxNotifyReadAttempts) command=\(command)")
+        DebugLogStore.logBLEEvent(
+            "notify read scheduled",
+            detail: "request=\(requestID) command=\(command) attempt=\(notifyReadAttempts)/\(maxNotifyReadAttempts) delay=\(notifyReadRetryDelay)s peripheral=\(peripheral.identifier)"
+        )
         DispatchQueue.main.asyncAfter(deadline: .now() + notifyReadRetryDelay) { [weak self] in
-            guard let self, self.notifyReadInFlight else { return }
+            guard let self else { return }
+            guard self.notifyReadRequestID == requestID,
+                  self.connectedPeripheral === peripheral,
+                  self.notifyCharacteristic === char else {
+                DebugLogStore.logBLEEvent("notify read cancelled", detail: "request=\(requestID) reason=superseded-or-connection-changed")
+                return
+            }
+            guard self.notifyReadInFlight else {
+                DebugLogStore.logBLEEvent("notify read cancelled", detail: "request=\(requestID) reason=value-callback-before-read")
+                return
+            }
+            self.notifyReadWasIssued = true
+            DebugLogStore.logBLEEvent("notify read issued", detail: "request=\(requestID) command=\(command) characteristic=\(char.uuid)")
             peripheral.readValue(for: char)
         }
     }
 
     /// 补读无望时立刻让等待方失败，别让调用方干等到超时。
     private func failWaitersOnTruncation(command: String) {
+        DebugLogStore.logBLEEvent("incomplete packet recovery ended", detail: "command=\(command) attempts=\(notifyReadAttempts) unsupported=\(notifyReadUnsupported)")
         notifyReadCommand = nil
         if let cont = wifiConfigContinuation {
             wifiConfigContinuation = nil
@@ -3491,6 +4031,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             isServiceDiscovered = false
             isNotificationEnabled = false
             pendingCharacteristicDiscoveries = 0
+            pendingCharacteristicServices.removeAll()
         }
 
         hasStartedConnect = false
@@ -3579,6 +4120,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         isNotificationEnabled = false
         pendingCharacteristicDiscoveries = 0
         hasStartedConnect = false
+        pendingCharacteristicServices.removeAll()
         gattDiscoveryAttempt = 0
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
@@ -3626,6 +4168,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 退出登录时断开 BLE，并清除已保存的设备标识。
     func disconnectAndClearSession() {
+        gen2OtaRecovery.finish()
+        // A suspended vendor OTA must not restore an explicitly removed binding.
+        gen1OTAPeripheralID = nil
         cancelPairing()
         isPairingSessionActive = false
         isManualPairingScan = false
@@ -3667,19 +4212,21 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 设置单次录像最大时长（recordtime）。
     @discardableResult
     func setRecordTime(seconds: Int) -> Bool {
-        guard isReady else { return false }
+        guard ensureDeviceAvailable(for: "setRecordTime") else { return false }
         return sendCommand(AstraA1BleProtocol.buildRecordTimeCommand(seconds: seconds))
     }
 
     /// 设置/查询录像分辨率（setvidres0/getvidres0）。
     @discardableResult
     func setVideoResolution(profile: UInt8) -> Bool {
-        guard isReady else { return false }
+        guard deviceGeneration == .gen2 else { return false }
+        guard ensureDeviceAvailable(for: "setVideoResolution") else { return false }
         return sendCommand(AstraA1BleProtocol.buildSetVideoResolutionCommand(profile: profile))
     }
 
     @discardableResult
     func queryVideoResolution() -> Bool {
+        guard deviceGeneration == .gen2 else { return false }
         guard isReady else { return false }
         return sendCommand(AstraA1BleProtocol.buildGetVideoResolutionCommand())
     }
@@ -3687,7 +4234,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 设置/查询摘下休眠（setweardet/getweardet）。
     @discardableResult
     func setWearDetection(enabled: Bool) -> Bool {
-        guard isReady else { return false }
+        guard ensureDeviceAvailable(for: "setWearDetection") else { return false }
         return sendCommand(AstraA1BleProtocol.buildSetWearDetectionCommand(enabled: enabled))
     }
 
@@ -3700,29 +4247,64 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 同步识图质量档位（imgrecset0）。
     @discardableResult
     func syncAIVisionLevel(_ level: UInt8) -> Bool {
-        guard isReady else { return false }
+        guard ensureDeviceAvailable(for: "syncAIVisionLevel") else { return false }
         return sendCommand(AstraA1BleProtocol.buildAIVisionSetLevelCommand(level: level))
     }
 
     /// 恢复出厂设置（factreset0）。
     @discardableResult
     func factoryResetDevice() -> Bool {
-        guard isReady else { return false }
+        guard ensureDeviceAvailable(for: "factoryResetDevice") else { return false }
         factoryResetResult = nil
-        return sendCommand(AstraA1BleProtocol.buildFactoryResetCommand())
+        let sent = sendCommand(AstraA1BleProtocol.buildFactoryResetCommand())
+        if sent, deviceGeneration == .gen1G5K61 {
+            gen1FactoryResetGeneration += 1
+            let generation = gen1FactoryResetGeneration
+            for attempt in 1...2 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(attempt * 2)) { [weak self] in
+                    guard let self, self.gen1FactoryResetGeneration == generation,
+                          self.factoryResetResult == nil else { return }
+                    _ = self.sendGen1Command(command: Gen1Commands.factoryReset)
+                }
+            }
+        }
+        return sent
     }
 
     /// 进入/退出新手引导模式（guidectrl0）。
     @discardableResult
     func setGuideModeEnabled(_ enabled: Bool) -> Bool {
+        if enabled, !ensureDeviceAvailable(for: "setGuideModeEnabled") { return false }
+        if deviceGeneration == .gen1G5K61 {
+            let canResume = gen1GuidePeripheralID == connectedPeripheral?.identifier && gen1GuideStep > 0
+            return setGuideStep(enabled ? (canResume ? gen1GuideStep : 1) : 0)
+        }
         let sent = sendCommand(AstraA1BleProtocol.buildGuideModeCommand(enable: enabled))
         print("\(logTag) guidectrl0 enable=\(enabled) sent=\(sent)")
         return sent
     }
 
-    /// 向设备发送 BLE 命令（仅 ready 后可用）。
+    /// Identity/status queries and cleanup need BLE ready; business commands also need a device card.
     @discardableResult
     func sendCommand(_ data: Data) -> Bool {
+        guard let sharedCommand = DeviceCommandAvailabilityPolicy.sharedCommand(in: data) else { return false }
+        let requiresAvailableDevice = DeviceCommandAvailabilityPolicy.requiresAvailableDevice(
+            sharedCommand: sharedCommand.name,
+            payload: sharedCommand.payload
+        )
+        if requiresAvailableDevice, !ensureDeviceAvailable(for: sharedCommand.name) { return false }
+        if deviceGeneration == .gen1G5K61 {
+            guard let command = Gen1CommandAdapter.translate(data) else {
+                print("[Gen1] Unsupported shared command; no bytes sent")
+                return false
+            }
+            return sendGen1Command(command: command.code, payload: command.payload)
+        }
+        guard deviceGeneration == .gen2 else { return false }
+        return writeProtocolPacket(data, requiresAvailableDevice: requiresAvailableDevice)
+    }
+
+    private func writeProtocolPacket(_ data: Data, requiresAvailableDevice: Bool, redactPayload: Bool = false) -> Bool {
         guard case .ready = connectionState,
               let peripheral = connectedPeripheral,
               let characteristic = writeCharacteristic else {
@@ -3732,18 +4314,29 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
         let preferWithoutResponse = characteristic.properties.contains(.writeWithoutResponse)
         if preferWithoutResponse {
-            if pendingBLEWrites.count >= maxPendingBLEWrites {
+            let chunkSize = max(1, peripheral.maximumWriteValueLength(for: .withoutResponse))
+            let chunks = stride(from: 0, to: data.count, by: chunkSize).map {
+                data.subdata(in: $0..<min(data.count, $0 + chunkSize))
+            }
+            if pendingBLEWrites.count + chunks.count > maxPendingBLEWrites {
                 print("\(logTag) sendCommand dropped: write queue full (\(maxPendingBLEWrites))")
                 return false
             }
-            pendingBLEWrites.append(data)
+            let packetID = UUID()
+            pendingBLEWrites.append(contentsOf: chunks.map {
+                PendingBLEWrite(data: $0, packetID: packetID, requiresAvailableDevice: requiresAvailableDevice, redactPayload: redactPayload)
+            })
             flushPendingBLEWrites()
             return true
         }
 
         peripheral.writeValue(data, for: characteristic, type: .withResponse)
         print("\(logTag) sendCommand \(data.count) bytes to \(characteristic.uuid) withResponse")
-        DebugLogStore.logBLESent(data)
+        if redactPayload {
+            DebugLogStore.logBLEEvent("Gen1 Wi-Fi credentials sent", detail: "bytes=\(data.count) payload=<redacted>")
+        } else {
+            DebugLogStore.logBLESent(data)
+        }
         return true
     }
 
@@ -3752,6 +4345,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         guard let peripheral = connectedPeripheral,
               let characteristic = writeCharacteristic else {
             pendingBLEWrites.removeAll()
+            activeBLEWritePacketID = nil
             return
         }
         while !pendingBLEWrites.isEmpty {
@@ -3759,17 +4353,462 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 print("\(logTag) write queue pause remaining=\(pendingBLEWrites.count)")
                 return
             }
-            let data = pendingBLEWrites.removeFirst()
-            peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
-            print("\(logTag) sendCommand \(data.count) bytes to \(characteristic.uuid)")
-            DebugLogStore.logBLESent(data)
+            let write = pendingBLEWrites[0]
+            if write.requiresAvailableDevice,
+               activeBLEWritePacketID != write.packetID,
+               !ensureDeviceAvailable(for: "queued-device-command") {
+                pendingBLEWrites.removeAll { $0.packetID == write.packetID }
+                continue
+            }
+            // Finish fragments of an already-started packet to preserve framing; do not
+            // start another business packet after its corresponding card disappears.
+            activeBLEWritePacketID = write.packetID
+            pendingBLEWrites.removeFirst()
+            peripheral.writeValue(write.data, for: characteristic, type: .withoutResponse)
+            print("\(logTag) sendCommand \(write.data.count) bytes to \(characteristic.uuid)")
+            if write.redactPayload {
+                DebugLogStore.logBLEEvent("Gen1 Wi-Fi credential fragment sent", detail: "bytes=\(write.data.count) payload=<redacted>")
+            } else {
+                DebugLogStore.logBLESent(write.data)
+            }
         }
+        activeBLEWritePacketID = nil
     }
 
     private func clearPendingBLEWrites(reason: String) {
         guard !pendingBLEWrites.isEmpty else { return }
         print("\(logTag) clear write queue count=\(pendingBLEWrites.count) reason=\(reason)")
         pendingBLEWrites.removeAll()
+        activeBLEWritePacketID = nil
+    }
+
+    // MARK: - First-generation G5K61
+
+    /// Claim only the current account's Gen1 main-firmware flow. AP import and
+    /// firmware provisioning must never compete for the glasses' network state.
+    func beginGen1FirmwareUpgrade() throws -> Gen1FirmwareUpgradeIdentity {
+        if let targetID = connectedPeripheral?.identifier {
+            try requireGen1HotspotCleanupFinished(for: targetID)
+        }
+        guard deviceGeneration == .gen1G5K61, isDeviceAvailable,
+              let targetID = connectedPeripheral?.identifier, savedPeripheralID() == targetID,
+              gen1APImportIdentity == nil, gen1FirmwareUpgradeIdentity == nil,
+              !isFirmwareUpgradeFlowBusy, !isAIRecording, !isTakingPhoto, !isVideoRecording,
+              isDeviceRuntimeIdle || deviceRuntimeStatus == .networkOperating,
+              let accountID = gen1ImportAccount(for: targetID), !accountID.isEmpty else {
+            throw Gen1FirmwareUpdateSession.Failure.unavailable
+        }
+        let identity = Gen1FirmwareUpgradeIdentity(targetID: targetID, accountID: accountID,
+            hardwareSN: deviceSN, authorizationID: gen1ImportAuthorizationID)
+        gen1FirmwareUpgradeIdentity = identity
+        beginFirmwareUpgradeFlow()
+        return identity
+    }
+
+    func isGen1FirmwareUpgradeCurrent(_ identity: Gen1FirmwareUpgradeIdentity) -> Bool {
+        gen1FirmwareUpgradeIdentity == identity
+            && identity.authorizationID == gen1ImportAuthorizationID
+            && savedPeripheralID() == identity.targetID
+            && (connectedPeripheral == nil || connectedPeripheral?.identifier == identity.targetID)
+            && (!isReady || deviceGeneration == .gen1G5K61)
+            && gen1ImportAccountProvider?(identity.targetID, identity.hardwareSN) == identity.accountID
+    }
+
+    func endGen1FirmwareUpgrade(_ identity: Gen1FirmwareUpgradeIdentity) {
+        guard gen1FirmwareUpgradeIdentity == identity else { return }
+        let stillCurrent = isGen1FirmwareUpgradeCurrent(identity)
+        gen1FirmwareUpgradeIdentity = nil
+        endFirmwareUpgradeFlow(reason: "gen1-main-ota-finished", preserveRuntimeStatus: !stillCurrent)
+    }
+
+    func beginGen1MediaImport(targetID: UUID) throws -> Gen1APImportIdentity {
+        try requireGen1HotspotCleanupFinished(for: targetID)
+        guard deviceGeneration == .gen1G5K61, isDeviceAvailable,
+              connectedPeripheral?.identifier == targetID, savedPeripheralID() == targetID,
+              gen1APImportIdentity == nil, !isFirmwareUpgradeFlowBusy,
+              !isAIRecording, !isTakingPhoto, !isVideoRecording,
+              isDeviceRuntimeIdle || deviceRuntimeStatus == .networkOperating,
+              let accountID = gen1ImportAccountProvider?(targetID, deviceSN), !accountID.isEmpty else { throw Gen1APImportError.unavailable }
+        let identity = Gen1APImportIdentity(targetID: targetID, token: UUID(), accountID: accountID, hardwareSN: deviceSN)
+        gen1APImportIdentity = identity
+        return identity
+    }
+
+    func isGen1MediaImportCurrent(_ identity: Gen1APImportIdentity) -> Bool {
+        (!isReady || deviceGeneration == .gen1G5K61) && gen1APImportIdentity == identity && identity.matchesAccount(gen1ImportAccountProvider?(identity.targetID, identity.hardwareSN)) && identity.matches(
+            savedID: savedPeripheralID(), connectedID: connectedPeripheral?.identifier
+        )
+    }
+
+    func invalidateGen1MediaImportForLogout() {
+        gen1APImportIdentity = nil
+        gen1ImportAuthorizationID = UUID()
+    }
+
+    func endGen1MediaImport(_ identity: Gen1APImportIdentity, remainingFileCount: Int?) {
+        guard gen1APImportIdentity == identity else { return }
+        if isGen1MediaImportCurrent(identity), let remainingFileCount {
+            pendingImportFileCount = max(0, remainingFileCount)
+        }
+        gen1APImportIdentity = nil
+        // Late start-code replies must not be interpreted as recording start/stop ACKs.
+        gen1HotspotReplyQuarantineUntil = ProcessInfo.processInfo.systemUptime + 5
+    }
+
+    func requireGen1HotspotCleanupFinished(for targetID: UUID) throws {
+        guard gen1HotspotCleanup.isPending(targetID) else { return }
+        gen1HotspotCleanup.resume(targetID)
+        DebugLogStore.logWiFi("一代：上次热点尚未收尾，阻止新操作", detail: "target=\(targetID)")
+        throw Gen1APImportError.hotspotCleanupPending
+    }
+
+    func closeGen1Hotspot(_ identity: Gen1APImportIdentity) async -> Gen1HotspotCleanup.Outcome {
+        await gen1HotspotCleanup.close(identity)
+    }
+
+    @discardableResult
+    func sendGen1Command(command: UInt8, payload: Data = Data()) -> Bool {
+        sendGen1Command(command: command, payload: payload, hotspotCleanup: false)
+    }
+
+    @discardableResult
+    private func sendGen1Command(command: UInt8, payload: Data, hotspotCleanup: Bool) -> Bool {
+        let cleanupPending = connectedPeripheral.map { gen1HotspotCleanup.isPending($0.identifier) } ?? false
+        // Shared Gen2 cleanup paths must not enqueue an unowned/duplicate Gen1
+        // shutdown after the user switches devices. Only the coordinator sends 0x38.
+        if command == Gen1Commands.closeHotspot, !hotspotCleanup {
+            DebugLogStore.logBLEEvent("Gen1 unowned hotspot close blocked", detail: "use_owned_AP_cleanup")
+            return false
+        }
+        let isRecordingCommand = Gen1APImportProtocol.isRecordingRequest(command: command, payload: payload)
+        if Gen1APImportProtocol.blocksRecording(command: command, payload: payload,
+                                               apActive: gen1APImportIdentity != nil,
+                                               quarantined: cleanupPending || ProcessInfo.processInfo.systemUptime < gen1HotspotReplyQuarantineUntil) {
+            mediaActionAlertMessage = L10n.t("相册导入刚结束或仍在进行，请稍后开始录音", "Album import is active or just ended. Wait before starting a recording")
+            return false
+        }
+        let requiresAvailableDevice = DeviceCommandAvailabilityPolicy.requiresAvailableDevice(
+            gen1Command: command,
+            payload: payload
+        )
+        if cleanupPending, requiresAvailableDevice {
+            mediaActionAlertMessage = Gen1APImportError.hotspotCleanupPending.localizedDescription
+            DebugLogStore.logBLEEvent("Gen1 command blocked during hotspot cleanup", detail: "command=\(String(format: "0x%02X", command))")
+            return false
+        }
+        if command == Gen1Commands.openHotspot, payload.isEmpty,
+           gen1APImportIdentity?.targetID != connectedPeripheral?.identifier || gen1APImportIdentity == nil {
+            return false
+        }
+        if gen1FirmwareUpgradeIdentity != nil, requiresAvailableDevice,
+           ![Gen1Commands.wifiProvision, Gen1Commands.firmwareOTA, Gen1Commands.restart].contains(command) {
+            DebugLogStore.logBLEEvent("Gen1 command deferred during firmware upgrade", detail: "command=\(String(format: "0x%02X", command))")
+            return false
+        }
+        if requiresAvailableDevice,
+           !ensureDeviceAvailable(for: "gen1-\(String(format: "%02X", command))") { return false }
+        guard deviceGeneration == .gen1G5K61, isReady,
+              let packet = try? Gen1ControlCodec.buildCommand(command: command, payload: payload) else { return false }
+        if let importIdentity = gen1APImportIdentity,
+           importIdentity.targetID == connectedPeripheral?.identifier,
+           requiresAvailableDevice,
+           !(command == Gen1Commands.openHotspot && payload.isEmpty) {
+            DebugLogStore.logBLEEvent("Gen1 command deferred during AP import", detail: "command=\(String(format: "0x%02X", command))")
+            return false
+        }
+        if command == Gen1Commands.openHotspot, payload.isEmpty {
+            gen1HotspotReplyTarget = connectedPeripheral?.identifier
+            gen1HotspotReplyQuarantineUntil = ProcessInfo.processInfo.systemUptime + 25
+        } else if isRecordingCommand, payload.first == 1 {
+            gen1HotspotReplyQuarantineUntil = 0
+        }
+        if command == Gen1Commands.fileList { gen1MediaListAccumulator.begin() }
+        if command == Gen1Commands.translateRecord {
+            if payload.first == 1 { gen1TranslationRouter.onStartRequested() }
+            else { gen1TranslationRouter.onStopRequested() }
+        }
+        if isRecordingCommand, payload.first == 1 {
+            gen1RecordingStopTimeout?.cancel()
+            guard Gen1AiRecordingManager.shared.start() else {
+                mediaActionAlertMessage = Gen1AiRecordingManager.shared.lastError
+                return false
+            }
+        }
+        let sent = writeProtocolPacket(packet, requiresAvailableDevice: requiresAvailableDevice,
+                                       redactPayload: command == Gen1Commands.wifiProvision)
+        if command == Gen1Commands.translateRecord, !sent { gen1TranslationRouter.onStartFailed() }
+        if isRecordingCommand {
+            if !sent { finishGen1Recording() }
+            else if payload.first == 1 { isAIRecording = true }
+            else {
+                // Keep tail PCM until the device's stop ACK; bound a lost ACK.
+                gen1RecordingStopTimeout?.cancel()
+                let timeout = DispatchWorkItem { [weak self] in self?.finishGen1Recording() }
+                gen1RecordingStopTimeout = timeout
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: timeout)
+            }
+        }
+        return sent
+    }
+
+    @discardableResult
+    func queryRecordDuration() -> Bool {
+        sendGen1Command(command: Gen1Commands.recordDurationQuery)
+    }
+
+    @discardableResult
+    func setGuideStep(_ step: Int) -> Bool {
+        DebugLogStore.logBLEEvent("Gen1 guide step requested", detail: "session=\(gen1GuideEventSessionID?.uuidString ?? "nil") target=\(connectedPeripheral?.identifier.uuidString ?? "nil") requestedStep=\(step) previousStep=\(gen1GuideStep)")
+        guard (0...9).contains(step) else {
+            DebugLogStore.logBLEEvent("Gen1 guide step rejected", detail: "step=\(step) reason=out_of_range")
+            return false
+        }
+        if let owner = gen1GuideEventTargetID, gen1GuideEventSessionID != nil,
+           owner == savedPeripheralID(), owner == connectedPeripheral?.identifier {
+            gen1GuideStep = step
+            gen1GuidePeripheralID = owner
+        }
+        if step > 0, !ensureDeviceAvailable(for: "setGuideStep") {
+            DebugLogStore.logBLEEvent("Gen1 guide step rejected", detail: "step=\(step) reason=device_unavailable")
+            return false
+        }
+        let sent = sendGen1Command(command: Gen1Commands.tutorial, payload: Data([UInt8(step), 0]))
+        if sent { gen1GuideStep = step; gen1GuidePeripheralID = connectedPeripheral?.identifier }
+        DebugLogStore.logBLEEvent("Gen1 guide step send result", detail: "step=\(step) queued=\(sent) ready=\(isReady) available=\(isDeviceAvailable); queued_is_not_device_ack")
+        return sent
+    }
+
+    func resetTranslateRecordingState() {
+        gen1TranslationRouter.discardPendingStream()
+    }
+
+    /// Give the vendor RCSP client exclusive ownership without deleting binding identity.
+    func suspendNormalConnectionForGen1OTA() {
+        gen1OTAPeripheralID = connectedPeripheral?.identifier ?? savedPeripheralID()
+        cancelPairing()
+        stopSystemReconnectMonitor()
+    }
+
+    func resumeNormalConnectionAfterGen1OTA() {
+        guard let id = gen1OTAPeripheralID else { return }
+        gen1OTAPeripheralID = nil
+        guard savedPeripheralID() == id else { return }
+        userInitiatedDisconnect = false
+        autoReconnectEnabled = true
+        _ = reconnectBoundDevice(boundSerialNumbers: [id.uuidString], reason: "gen1-bluetooth-ota-completed")
+    }
+
+    private func finishGen1Recording() {
+        gen1RecordingStopTimeout?.cancel()
+        gen1RecordingStopTimeout = nil
+        Gen1AiRecordingManager.shared.stop()
+        isAIRecording = false
+        if let error = Gen1AiRecordingManager.shared.lastError { mediaActionAlertMessage = error }
+    }
+
+    private func resetGen1Session() {
+        gen1HotspotCleanup.connectionInterrupted()
+        gen1MediaListAccumulator.begin()
+        gen1ControlDecoder.reset()
+        gen1VoiceDecoder.reset()
+        gen1SequenceTracker.reset()
+        gen1TranslationRouter.reset()
+        gen1FactoryResetGeneration += 1
+        settingsRecordDurationSeconds = nil
+        deviceSystemName = nil
+        deviceHardwareAddress = nil
+        settingsVideoResolutionProfile = nil
+        settingsWearDetectionEnabled = nil
+        aiVoiceListeningDurationResponse = nil
+        voiceWakeupResponse = nil
+        factoryResetResult = nil
+        finishGen1Recording()
+    }
+
+    private func handleGen1ControlData(_ data: Data, capturedAt: Date) {
+        let decoded = gen1ControlDecoder.appendWithDiagnostics(data)
+        if gen1GuideEventSessionID != nil {
+            DebugLogStore.logBLEEvent("Gen1 guide control decode", detail: "session=\(gen1GuideEventSessionID!.uuidString) target=\(connectedPeripheral?.identifier.uuidString ?? "nil") \(decoded.diagnosticSummary)", capturedAt: capturedAt)
+        }
+        for frame in decoded.frames {
+            let guideRelated = frame.command == Gen1Commands.tutorial || Gen1GuideStepState.MediaAction(command: frame.command) != nil
+            if guideRelated {
+                let raw = frame.raw.prefix(96).map { String(format: "%02X", $0) }.joined(separator: " ")
+                DebugLogStore.logBLEEvent("Gen1 guide control frame received", detail: "session=\(gen1GuideEventSessionID?.uuidString ?? "nil") target=\(connectedPeripheral?.identifier.uuidString ?? "nil") command=\(String(format: "0x%02X", frame.command)) sender=\(frame.sender) receiver=\(frame.receiver) payloadBytes=\(frame.payload.count) waitingStep=\(gen1GuideStep) guideHandler=\(gen1GuideEventHandler != nil) mediaHandler=\(gen1GuideMediaHandler != nil) rawTruncated=\(frame.raw.count > 96)\n\(raw)", capturedAt: capturedAt)
+            }
+            guard frame.sender == 3, frame.receiver == 2 else {
+                if guideRelated { DebugLogStore.logBLEEvent("Gen1 guide frame ignored", detail: "reason=wrong_sender_or_receiver", capturedAt: capturedAt) }
+                continue
+            }
+            let cleanupPending = connectedPeripheral.map { gen1HotspotCleanup.isPending($0.identifier) } ?? false
+            if let targetID = connectedPeripheral?.identifier {
+                gen1HotspotCleanup.receive(targetID: targetID, command: frame.command, payload: frame.payload)
+            }
+            gen1ControlSubject.send(frame)
+            let payload = frame.payload
+            if Gen1APImportProtocol.ownsReply(command: frame.command,
+                                              sameTarget: cleanupPending || gen1HotspotReplyTarget == connectedPeripheral?.identifier,
+                                              apActive: gen1APImportIdentity != nil,
+                                              quarantined: cleanupPending || ProcessInfo.processInfo.systemUptime < gen1HotspotReplyQuarantineUntil) {
+                let detail = payload.count == 1
+                    ? "startCode=\(String(format: "0x%02X", payload.first!))"
+                    : "credentialPayloadBytes=\(payload.count)"
+                DebugLogStore.logBLEEvent("Gen1 AP reply routed separately from recording", detail: detail)
+                continue
+            }
+            if frame.isBusy {
+                if guideRelated { DebugLogStore.logBLEEvent("Gen1 guide frame ignored", detail: "reason=device_busy command=\(String(format: "0x%02X", frame.command))", capturedAt: capturedAt) }
+                mediaActionToastMessage = L10n.t("眼镜正忙，请稍后重试", "Glasses are busy. Try again later.")
+                if frame.command == Gen1Commands.aiImage {
+                    aiVisionNotifyHandler?("gen1busy0", payload)
+                }
+                if frame.command == Gen1Commands.translateRecord {
+                    gen1TranslationRouter.onStartFailed()
+                    emitGen1TranslationStatus(2)
+                }
+                if frame.command == Gen1Commands.aiRecord {
+                    Gen1AiRecordingManager.shared.stop()
+                    isAIRecording = false
+                }
+                if [Gen1Commands.takePhoto, Gen1Commands.startVideo, Gen1Commands.stopVideo].contains(frame.command) {
+                    resetHomeMediaCaptureState()
+                }
+                if frame.command == Gen1Commands.factoryReset { factoryResetResult = 0 }
+                continue
+            }
+            switch frame.command {
+            case Gen1Commands.battery, Gen1Commands.batteryChanged:
+                guard let level = payload.first, level <= 100 else { continue }
+                let charging = payload.dropFirst().first == 1
+                applyGen1DeviceInfo(key: "batt0", payload: Data("\(level),\(charging ? 1 : 0)".utf8))
+                scheduleNextBatteryPoll(after: batteryPollingInterval)
+            case Gen1Commands.deviceName: applyGen1DeviceInfo(key: "name0", payload: payload)
+            case Gen1Commands.deviceType: applyGen1DeviceInfo(key: "model", payload: payload)
+            case Gen1Commands.snAuth: applyGen1DeviceInfo(key: "sn000", payload: payload)
+            case Gen1Commands.systemName:
+                deviceSystemName = String(decoding: payload, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
+            case Gen1Commands.bleMac:
+                deviceHardwareAddress = String(decoding: payload, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
+            case Gen1Commands.bluetoothVersion: applyGen1DeviceInfo(key: "ver28", payload: payload, version: true)
+            case Gen1Commands.firmwareVersion: applyGen1DeviceInfo(key: "ver63", payload: payload, version: true)
+            case Gen1Commands.storage:
+                if let value = Gen1StorageParser.parse(payload) {
+                    applyGen1DeviceInfo(key: "stor0", payload: Data(value.utf8))
+                }
+            case Gen1Commands.newFileCount:
+                queryPendingImportFiles()
+            case Gen1Commands.fileList:
+                let count = gen1MediaListAccumulator.append(payload)
+                emitGen1Canonical("hasnewfile", Data([count > 0 ? 1 : 0, UInt8(truncatingIfNeeded: count), UInt8(truncatingIfNeeded: count >> 8), 0]))
+            case Gen1Commands.deviceStatusQuery, Gen1Commands.deviceStatusChanged:
+                guard let raw = payload.first else { continue }
+                let status = Gen1DeviceStatusMapper.toDomainStatus(raw).rawValue
+                let statusName = AstraA1BleProtocol.DeviceRuntimeStatus(rawValue: status)?.name ?? "UNKNOWN"
+                DebugLogStore.logBLEEvent(
+                    "Gen1 runtime status mapping",
+                    detail: "command=\(String(format: "0x%02X", frame.command)) rawStatus=\(raw) domainStatus=\(status) \(statusName)"
+                )
+                emitGen1Canonical("devstatus0", Data([status]))
+            case Gen1Commands.takePhoto: emitGen1Canonical("actionrsp0", Data([1, 0, 1]))
+            case Gen1Commands.startVideo: emitGen1Canonical("actionrsp0", Data([2, 0, 2]))
+            case Gen1Commands.stopVideo: emitGen1Canonical("actionrsp0", Data([3, 0, 0]))
+            case Gen1Commands.factoryReset:
+                gen1FactoryResetGeneration += 1
+                if let state = payload.first { emitGen1Canonical("testresult", Data([0x13, state])) }
+            case Gen1Commands.eqSet, Gen1Commands.eqQuery:
+                if let mode = payload.last, mode <= 2 { emitGen1Canonical("eqmodersp0", Data([0, mode])) }
+            case Gen1Commands.wearingSet, Gen1Commands.wearingQuery:
+                if let enabled = payload.last, enabled <= 1 { emitGen1Canonical("weardetrsp", Data([0, enabled])) }
+            case Gen1Commands.recordDurationQuery, Gen1Commands.recordDurationSet:
+                if let value = payload.first, value < 5 { settingsRecordDurationSeconds = [15, 60, 180, 300, 600][Int(value)] }
+            case Gen1Commands.tutorial:
+                guard payload.count >= 2 else {
+                    DebugLogStore.logBLEEvent("Gen1 guide acknowledgement ignored", detail: "reason=payload_too_short bytes=\(payload.count)", capturedAt: capturedAt)
+                    continue
+                }
+                if let source = connectedPeripheral?.identifier, let handler = gen1GuideEventHandler {
+                    handler(source, capturedAt, Int(payload[0]), Int(payload[1]))
+                } else {
+                    DebugLogStore.logBLEEvent("Gen1 guide acknowledgement ignored", detail: "reason=no_active_guide step=\(payload[0]) result=\(payload[1])", capturedAt: capturedAt)
+                }
+            case Gen1Commands.mediaPlay, Gen1Commands.mediaPause, Gen1Commands.mediaNext, Gen1Commands.mediaPrevious:
+                if let source = connectedPeripheral?.identifier, let handler = gen1GuideMediaHandler {
+                    handler(source, capturedAt, frame.command)
+                } else {
+                    DebugLogStore.logBLEEvent("Gen1 media event not consumed", detail: "command=\(String(format: "0x%02X", frame.command)) reason=no_active_guide; no_cross_app_forwarding", capturedAt: capturedAt)
+                }
+            case Gen1Commands.aiImage:
+                aiVisionNotifyHandler?("gen1image0", payload)
+            case Gen1Commands.aiVoiceStatus:
+                aiVoiceNotifyHandler?("gen1voiceStatus", payload)
+            case Gen1Commands.voiceWakeup:
+                // Firmware reports utterance boundaries here when transport=BLE.
+                if payload.count >= 2, payload[1] == 1 { aiVoiceNotifyHandler?("gen1voiceStatus", payload) }
+            case Gen1Commands.translateRecord:
+                if let status = payload.first { routeGen1Voice(gen1TranslationRouter.onAck(status)) }
+            case Gen1Commands.aiRecord:
+                guard let status = payload.first else { continue }
+                if status == 1 { isAIRecording = Gen1AiRecordingManager.shared.start() }
+                else if status == 0 || status == 2 { finishGen1Recording() }
+            case Gen1Commands.pcmAudio:
+                if !Gen1AiRecordingManager.shared.appendPCM(payload), isAIRecording {
+                    isAIRecording = false
+                    mediaActionAlertMessage = Gen1AiRecordingManager.shared.lastError
+                    _ = sendGen1Command(command: Gen1Commands.aiRecord, payload: Data([0]))
+                }
+            case Gen1Commands.closeHotspot:
+                emitGen1Canonical("closewifi", payload)
+            default: break // All vendor-specific events also reach gen1ControlSubject.
+            }
+        }
+    }
+
+    private func emitGen1Canonical(_ command: String, _ payload: Data) {
+        handleNotifyData(AstraA1BleProtocol.buildPacket(command: command, payload: payload))
+    }
+
+    private func applyGen1DeviceInfo(key: String, payload: Data, version: Bool = false) {
+        var value = String(decoding: payload, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
+        if version {
+            guard let range = value.range(of: #"\d+(?:\.\d+){1,3}"#, options: .regularExpression) else { return }
+            value = String(value[range])
+        }
+        guard !value.isEmpty else { return }
+        let valueData = Data(value.utf8)
+        guard valueData.count <= 65535 else { return }
+        var body = Data(key.utf8)
+        body.append(contentsOf: [UInt8(truncatingIfNeeded: valueData.count), UInt8(truncatingIfNeeded: valueData.count >> 8)])
+        body.append(valueData)
+        emitGen1Canonical("getdevinfo", body)
+    }
+
+    private func handleGen1VoiceData(_ data: Data) {
+        for frame in gen1VoiceDecoder.append(data) {
+            if case .duplicateOrLate = gen1SequenceTracker.onFrame(frame) { continue }
+            routeGen1Voice(gen1TranslationRouter.onFrame(frame))
+        }
+    }
+
+    private func emitGen1TranslationStatus(_ status: UInt8) {
+        translationVoiceNotifyHandler?("trslatests", AstraA1BleProtocol.buildPacket(command: "trslatests", payload: Data([status])))
+    }
+
+    private func routeGen1Voice(_ route: Gen1VoiceRoute) {
+        switch route {
+        case .ai(let frame):
+            switch frame.type {
+            case .start: aiVoiceNotifyHandler?("gen1voiceStart", Data())
+            case .data: aiVoiceNotifyHandler?("gen1opus00", frame.payload)
+            case .end:
+                if frame.flags == 0x80 { aiVoiceNotifyHandler?("gen1voiceEnd", Data()) }
+            }
+        case .translationStarted: emitGen1TranslationStatus(1)
+        case .translationData(_, let opus): translationVoiceNotifyHandler?("gen1trdat0", opus)
+        case .translationStopped: emitGen1TranslationStatus(0)
+        case .translationStartFailed, .translationStreamError: emitGen1TranslationStatus(2)
+        case .ignore: break
+        }
     }
 
     // MARK: - Private
@@ -3783,7 +4822,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             // 首页电量刷新等非配对场景：只接管已保存设备，禁止盲接其它同型号眼镜。
             if let savedID = savedPeripheralID() {
                 let connected = centralManager.retrieveConnectedPeripherals(
-                    withServices: [AstraA1BleProtocol.serviceUUID]
+                    withServices: Self.supportedServiceUUIDs
                 )
                 if let peripheral = connected.first(where: { $0.identifier == savedID }) {
                     print("\(logTag) found already-connected saved peripheral")
@@ -3877,7 +4916,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + probeStartDelaySeconds, execute: workItem)
     }
 
-    private func resetConnectionHandles() {
+    private func resetConnectionHandles(preserveFailedRecoveryBudget: Bool = false) {
+        pendingCharacteristicServices.removeAll()
+        failedGATTContext = nil
+        if !preserveFailedRecoveryBudget { failedGATTRetryGate.reset() }
+        cancelConnectWatchdog()
+        clearPendingBLEWrites(reason: "connection handles reset")
+        resetGen1Session()
+        deviceGeneration = .unknown
+        gen1VoiceCharacteristic = nil
         connectedPeripheral = nil
         systemTransportGracePeripheralIDs.removeAll()
         writeCharacteristic = nil
@@ -3901,8 +4948,16 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if !isRelinkingForLongPackets { hasRelinkedForLongPackets = false }
         notifyReadUnsupported = false
         notifyReadInFlight = false
+        notifyReadWasIssued = false
+        notifyReadRequestID = UUID()
+        rawNotifyDiagnosticBudget.reset()
         notifyReadCommand = nil
         notifyReadAttempts = 0
+        deviceVersionQueryGate.reset()
+        cancelVersionsAndStorageQuery()
+        cancelAboutDeviceInfoQuery()
+        isQueryingAboutDeviceInfo = false
+        deviceVersionQueryFailed = false
     }
 
     /// 断开或换外设时清掉 getdevinfo 缓存，避免首页仍显示上一副眼镜「已连接」。
@@ -3947,7 +5002,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         guard !candidates.isEmpty else { return }
 
         let systemConnected = centralManager.retrieveConnectedPeripherals(
-            withServices: [AstraA1BleProtocol.serviceUUID]
+            withServices: Self.supportedServiceUUIDs
         )
         systemTransportConnectedPeripheralIDs.formUnion(systemConnected.map(\.identifier))
         if let peripheral = systemConnected.first(where: { candidates.contains($0.identifier) }) {
@@ -4165,6 +5220,14 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func updateState(_ state: AstraA1ConnectionState) {
         let previous = connectionState
+        if (state == .connecting && previous != .connecting)
+            || (state == .discoveringServices && previous != .connecting
+                && previous != .discoveringServices && previous != .enablingNotifications) {
+            diagnosticConnectionGeneration &+= 1
+        }
+        if state == .ready, let id = connectedPeripheral?.identifier {
+            diagnosticReadyObservation = (id, ProcessInfo.processInfo.systemUptime)
+        }
         let becameReady: Bool = {
             if case .ready = state {
                 if case .ready = previous { return false }
@@ -4197,6 +5260,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         case .enablingNotifications:
             statusMessage = pairingStatusMessage(for: .enablingNotifications)
         case .ready:
+            failedGATTContext = nil
+            failedGATTRetryGate.reset()
             cancelAutomaticGATTRecovery(reason: "state-ready", resetAttempts: true)
             stopSystemReconnectMonitor()
             cancelManualReconnectScanTimeout()
@@ -4214,6 +5279,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             startBatteryPolling()
             // 设备一进入就绪（刚连上/接管 GATT）就查询运行状态；等 notify 稳定后再发。
             if becameReady {
+                if let peripheral = connectedPeripheral {
+                    connectLog(
+                        "BLE transport limits",
+                        detail: "peripheral=\(peripheral.identifier) maxWriteWithoutResponse=\(peripheral.maximumWriteValueLength(for: .withoutResponse)) maxWriteWithResponse=\(peripheral.maximumWriteValueLength(for: .withResponse)) notifyProperties=\(notifyCharacteristic?.properties.rawValue ?? 0) rawDiagnosticLimit=256; write limits do not prove incoming notification size"
+                    )
+                }
                 restoreCachedSoundEffectMode()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
                     guard let self else { return }
@@ -4221,7 +5292,16 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                     // 日常模式必须让固件直接发送 AVRCP/Absolute Volume 媒体键。
                     // App 异常退出或 BLE 重连后，防止 guidectrl0 遗留为开启状态，
                     // 导致双击、三击、滑动只上报 guideevt00 而不再控制系统媒体。
-                    _ = self.setGuideModeEnabled(self.guideEventHandler != nil)
+                    if self.deviceGeneration == .gen1G5K61 {
+                        let resume = self.gen1GuideEventHandler != nil
+                            && self.gen1GuideEventTargetID == self.connectedPeripheral?.identifier
+                            && self.gen1GuidePeripheralID == self.connectedPeripheral?.identifier
+                            && self.gen1GuideStep > 0
+                        DebugLogStore.logBLEEvent("Gen1 guide reconnect decision", detail: "session=\(self.gen1GuideEventSessionID?.uuidString ?? "nil") ownerTarget=\(self.gen1GuideEventTargetID?.uuidString ?? "nil") connectedTarget=\(self.connectedPeripheral?.identifier.uuidString ?? "nil") resume=\(resume) step=\(self.gen1GuideStep)")
+                        _ = self.setGuideModeEnabled(resume)
+                    } else {
+                        _ = self.setGuideModeEnabled(self.guideEventHandler != nil)
+                    }
                 }
             }
         case .failed(let message):
@@ -4360,7 +5440,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID],
             advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID]
         ]
-        return lists.compactMap { $0 }.contains { $0.contains(AstraA1BleProtocol.serviceUUID) }
+        return lists.compactMap { $0 }.contains { !Set($0).isDisjoint(with: Self.supportedServiceUUIDs) }
     }
 
     private func connect(to peripheral: CBPeripheral, probing: Bool) {
@@ -4395,6 +5475,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func cancelConnectWatchdog() {
+        gattWatchdogPolicy.cancel()
         connectWatchdogWorkItem?.cancel()
         connectWatchdogWorkItem = nil
     }
@@ -4456,14 +5537,20 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         isBatteryRefreshMode = false
         manualHardReconnectPeripheralID = peripheral.identifier
         reconnectPeripheral = peripheral
-        resetConnectionHandles()
-        // 此时停在用户确认点。不先主动断开，否则会把「系统仍已连接」
-        // 的唯一可靠证据也清掉，导致点击后反而无法硬重建。
+        let context = FailedGATTContext(
+            central: centralManager, peripheral: peripheral, generation: deviceGeneration,
+            write: writeCharacteristic, notify: notifyCharacteristic, voice: gen1VoiceCharacteristic
+        )
+        resetConnectionHandles(preserveFailedRecoveryBudget: true)
+        failedGATTContext = context
+        failedGATTRetryGate.noteFailure(now: ProcessInfo.processInfo.systemUptime)
+        // Keep the link available for a late subscription result or manual hard retry.
         updateState(.failed(L10n.t("连接失败，请点击重试", "Connection failed. Tap to retry.")))
         connectLog(
             "manual hard reconnect required",
             detail: "reason=\(reason) attempts=\(standingConnectRecoveryCount) id=\(peripheral.identifier.uuidString)"
         )
+        startSystemReconnectMonitor()
     }
 
     @discardableResult
@@ -4675,7 +5762,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             )
             return true
         }
-        guard connectedPeripheral?.identifier == peripheral.identifier else {
+        guard connectedPeripheral === peripheral else {
             connectLog(
                 "stale GATT callback ignored",
                 detail: "event=\(event) id=\(peripheral.identifier.uuidString)"
@@ -4685,18 +5772,33 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         return false
     }
 
+    private var gattRecoveryPhase: GATTRecoveryPhase? {
+        switch connectionState {
+        case .connecting: return .connecting
+        case .discoveringServices: return .discoveringServices
+        case .enablingNotifications: return .enablingNotifications
+        default: return nil
+        }
+    }
+
     /// 连接流水线看门狗：自动连接单轮超时后软重建；用户配对可继续重试服务发现。
     private func startConnectWatchdog(
         for peripheral: CBPeripheral,
         timeoutOverride: TimeInterval? = nil
     ) {
         cancelConnectWatchdog()
+        guard let phase = gattRecoveryPhase else { return }
         let isStandingAttempt = standingConnectPeripheralID == peripheral.identifier
         let standingTimeout = standingConnectRecoveryCount == 0
             ? systemTransportConnectGraceSeconds
             : standingConnectRetryIntervalSeconds
         let timeout = timeoutOverride
             ?? (isStandingAttempt ? standingTimeout : connectWatchdogSeconds)
+        let token = gattWatchdogPolicy.arm(
+            peripheralID: peripheral.identifier, phase: phase,
+            now: ProcessInfo.processInfo.systemUptime, timeout: timeout
+        )
+        connectLog("GATT phase watchdog armed", detail: "phase=\(phase) seconds=\(timeout) generation=\(token.generation) id=\(peripheral.identifier.uuidString)")
         if isStandingAttempt {
             connectLog(
                 "standing connect watchdog armed",
@@ -4704,7 +5806,13 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             )
         }
         let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
+            guard let self, self.connectedPeripheral === peripheral,
+                  let phase = self.gattRecoveryPhase,
+                  self.gattWatchdogPolicy.accepts(
+                    token, peripheralID: peripheral.identifier, phase: phase,
+                    now: ProcessInfo.processInfo.systemUptime
+                  ) else { return }
+            self.gattWatchdogPolicy.cancel()
             self.connectWatchdogWorkItem = nil
             if case .ready = self.connectionState { return }
             let isStandingConnect = self.standingConnectPeripheralID == peripheral.identifier
@@ -4845,7 +5953,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return false }
 
-        return name.localizedCaseInsensitiveContains(modelName)
+        if name.localizedCaseInsensitiveContains(modelName) { return true }
+        let selected = GlassDeviceModel(modelName: modelName)
+        if selected == .luminaL1 {
+            return DeviceGeneration.fromDeviceName(name) == .gen1G5K61
+        }
+        return false
     }
 
     private func registerNameMatchedPairingDevice(
@@ -4957,12 +6070,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             )
             print("\(logTag) writeCharacteristic: \(writeCharacteristic?.uuid.uuidString ?? "nil")")
             print("\(logTag) notifyCharacteristic: \(notifyCharacteristic?.uuid.uuidString ?? "nil")")
-            if let peripheral = connectedPeripheral {
-                let mtuNoResp = peripheral.maximumWriteValueLength(for: .withoutResponse)
-                let mtuResp = peripheral.maximumWriteValueLength(for: .withResponse)
-                print("\(logTag) MTU maxWrite withoutResponse=\(mtuNoResp) withResponse=\(mtuResp) (notify payload ≈ ATT_MTU-3)")
-            }
-
             // 成功连接后允许断线交给 iOS 常驻 connect 自动连回
             autoReconnectEnabled = true
             userInitiatedDisconnect = false
@@ -5024,12 +6131,14 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         let generation = initialDeviceInfoQueryGeneration
         isInitialDeviceInfoQueryInProgress = true
 
-        // 对齐安卓 DeviceInfoManager：连上就查 ver28/ver63（约 200ms 一枪）。
-        let types: [AstraA1BleProtocol.DevInfoType] = [
-            .battery, .name, .model, .sn, .version2800, .version6350
-        ]
+        // 连接就绪后主动查询基础信息及版本，二代按 Android 的 3 秒间隔发送。
+        let firstGeneration = deviceGeneration == .gen1G5K61
+        let interval = firstGeneration ? 0.35 : Self.gen2GetDevInfoSendIntervalSeconds
+        let types: [AstraA1BleProtocol.DevInfoType] = firstGeneration
+            ? [.sn, .name, .model, .storage, .version2800, .version6350, .battery]
+            : [.battery, .name, .model, .sn, .version2800, .version6350]
         for (index, type) in types.enumerated() {
-            let delay = Double(index) * Self.getDevInfoSendIntervalSeconds
+            let delay = Double(index) * interval
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
                 guard self.initialDeviceInfoQueryGeneration == generation else {
@@ -5039,11 +6148,26 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 _ = self.sendCommand(AstraA1BleProtocol.buildGetDevInfoCommand(type: type))
             }
         }
-        let pendingDelay = Double(types.count) * Self.getDevInfoSendIntervalSeconds
+        let extraCommands: [UInt8] = firstGeneration ? [Gen1Commands.systemName, Gen1Commands.bleMac] : []
+        for (index, command) in extraCommands.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(types.count + index) * interval) { [weak self] in
+                guard let self, self.initialDeviceInfoQueryGeneration == generation else { return }
+                _ = self.sendGen1Command(command: command)
+            }
+        }
+        let pendingDelay = Double(types.count + extraCommands.count) * interval
         DispatchQueue.main.asyncAfter(deadline: .now() + pendingDelay) { [weak self] in
             guard let self else { return }
             guard self.initialDeviceInfoQueryGeneration == generation else { return }
             self.isInitialDeviceInfoQueryInProgress = false
+            // 二代 SN 在约 9 秒才发出，早先的 2.5 秒身份检查可能尚未收到 SN。
+            self.markDeviceInfoReadyIfNeeded(force: true)
+            if self.isQueryingDeviceVersionsAndStorage {
+                self.sendNextVersionsAndStorageQuery()
+            } else if self.isQueryingAboutDeviceInfo {
+                self.sendNextAboutDeviceInfoQuery()
+            }
+            self.queryUpgradeDeviceInfo()
             if self.isAIVisionTransferBusy {
                 self.deferredPendingImportQuery = true
                 print("\(self.logTag) initial hasnewfile deferred: AI vision transfer busy")
@@ -5058,7 +6182,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 _ = self?.queryAIVoiceListeningDuration()
             }
         }
-        print("\(logTag) queryInitialDeviceInfo scheduled gen=\(generation) count=\(types.count) interval=\(Self.getDevInfoSendIntervalSeconds)s")
+        print("\(logTag) queryInitialDeviceInfo scheduled gen=\(generation) count=\(types.count) interval=\(interval)s")
     }
 
     private func cancelInitialDeviceInfoQuery(reason: String) {
@@ -5070,9 +6194,25 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func handleNotifyData(_ data: Data) {
+        let frames = AstraNotificationFramer.frames(in: data)
+        if frames.count > 1 {
+            print("\(logTag) split notification bytes=\(data.count) frames=\(frames.count)")
+        }
+        for frame in frames {
+            handleSingleNotifyFrame(frame)
+        }
+    }
+
+    private func handleSingleNotifyFrame(_ data: Data) {
         guard let command = AstraA1BleProtocol.parseCommandHeader(from: data) else {
             print("\(logTag) notify data (\(data.count) bytes): header parse failed")
             return
+        }
+
+        // These control replies return before the general packet logger below. Keep
+        // them in exported logs so missing UI state can be distinguished from a lost ACK.
+        if ["wakeuprsp0", "aivsilrsp0", "trslatests", "guideevt00", "aivoicests"].contains(command) {
+            DebugLogStore.logBLEReceived(data)
         }
 
         // 识图大数据包：对齐安卓，只记长度/命令，禁止整包 hex（主线程打满会拖垮收包）。
@@ -5155,7 +6295,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if command == "devstatus0" {
             if let status = AstraA1BleProtocol.parseDevStatus(data) {
                 print("[device_status] recv devstatus0 \(status.logDescription)")
-                applyDeviceRuntimeStatus(status, source: "devstatus0")
+                applyDeviceRuntimeStatus(status, source: "devstatus0", receivedFromDevice: true)
             } else {
                 print("[device_status] recv devstatus0 parse failed raw=\(data.map { String(format: "%02X", $0) }.joined(separator: " "))")
             }
@@ -5249,7 +6389,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             print("\(logTag) wificonfig raw (\(data.count) bytes): \(preview)\(data.count > 24 ? " ..." : "")")
             wifiLog(
                 "收到 wificonfig 数据",
-                detail: "bytes=\(data.count)\ndeclaredPayload=\(AstraA1BleProtocol.declaredPayloadLength(data) ?? -1)",
+                detail: "bytes=\(data.count)\ndeclaredPayload=\(AstraA1BleProtocol.declaredPayloadLength(data) ?? -1)\n\(WifiConnectionDiagnostics.credentialFields(in: data))",
                 direction: .received
             )
             if AstraA1BleProtocol.isTruncatedPacket(data) {
@@ -5280,7 +6420,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 print("\(logTag) wificonfig ssid=\(ssid) passwordEmpty=\((config.password ?? "").isEmpty) http=\(config.httpAddress ?? "<nil>")")
                 wifiLog(
                     "wificonfig 解析成功",
-                    detail: "ssid=\(ssid)\npasswordEmpty=\((config.password ?? "").isEmpty)\nhttp=\(config.httpAddress ?? "nil")",
+                    detail: "ssid=\(ssid)\nparsedSSID=\(config.ssid?.debugDescription ?? "nil")\nparsedPassword=\(config.password?.debugDescription ?? "nil")\npasswordUTF8Bytes=\(config.password?.utf8.count ?? 0)\npasswordEmpty=\((config.password ?? "").isEmpty)\nhttp=\(config.httpAddress ?? "nil")",
                     direction: .received
                 )
                 cacheWifiCredentialIfPossible(config)
@@ -5364,6 +6504,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 return
             }
             print("\(logTag) dllupdrsp0 status=\(result.status) done=\(result.doneCount) failID=\(result.failID)")
+            // Android defines 1=OK, 2/4/5/6=terminal failures. BUSY(3) and
+            // unknown statuses do not establish that device-side writes stopped.
+            if [1, 2, 4, 5, 6].contains(result.status), let id = connectedPeripheral?.identifier {
+                gen2OtaRecovery.markAlgorithmInstallFinished(from: id)
+            }
             if let cont = dllUpdateContinuation {
                 dllUpdateContinuation = nil
                 dllProgressHandler = nil
@@ -5376,6 +6521,13 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             || command == "deletefile"
             || command == "takephoto0" || command == "startvideo" || command == "stopvideo0" {
             let ok = AstraA1BleProtocol.parseStatusResponse(data) ?? false
+            if command == "toopenwifi", ok, isFirmwareUpgradeFlowBusy,
+               wifiConfigContinuation != nil || statusContinuationCommand == "toopenwifi",
+               deviceGeneration == .gen2, let id = connectedPeripheral?.identifier {
+                if gen2OtaRecovery.acceptPreparation(from: id) {
+                    wifiLog("本次 OTA 准备已被设备接受", detail: "peripheral=\(id)", direction: .received)
+                }
+            }
             print("\(logTag) \(command) status=\(ok)")
             if command == "toopenwifi" || command == "closewifi" || command == "closewifi0" {
                 wifiLog(
@@ -5415,7 +6567,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if command == "getdevinfo" {
             if AstraA1BleProtocol.isTruncatedPacket(data) {
                 let declared = AstraA1BleProtocol.declaredPayloadLength(data) ?? -1
-                print("\(logTag) getdevinfo truncated: received=\(data.count) declaredPayload=\(declared), reading notify char...")
+                let key = data.count >= 17 ? String(decoding: data[12..<17], as: UTF8.self) : "unknown"
+                DebugLogStore.logBLEEvent(
+                    "getdevinfo incomplete",
+                    detail: "key=\(key) receivedBytes=\(data.count) expectedBytes=\(12 + declared) missingBytes=\(max(0, 12 + declared - data.count)) next=read-fallback; raw callbacks determine whether continuation arrived"
+                )
                 requestFullNotifyPayload(for: command)
                 // ver28 等长包截断后要读完整特征：延长当前串行步骤超时。
                 if isQueryingDeviceVersionsAndStorage, let type = versionsStoragePendingTypes.first {
@@ -5428,7 +6584,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             }
             guard let result = AstraA1BleProtocol.parseGetDevInfoResponse(data) else {
                 let declaredLen = data.count >= 12 ? Int(data[10]) | (Int(data[11]) << 8) : -1
-                print("\(logTag) getdevinfo parse failed: received=\(data.count) declaredPayload=\(declaredLen)")
+                DebugLogStore.logBLEEvent("getdevinfo parse failed", detail: "receivedBytes=\(data.count) declaredPayload=\(declaredLen)")
                 if isQueryingAboutDeviceInfo {
                     finishAboutDeviceInfoQueryStep()
                 }
@@ -5457,6 +6613,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func applyGetDevInfoResult(_ result: (key: String, value: String, rawValue: Data)) {
+        defer {
+            // A delayed, complete response may still recover a previously failed query.
+            if cachedValue(for: .version2800) != nil, cachedValue(for: .version6350) != nil {
+                deviceVersionQueryFailed = false
+            }
+        }
         switch result.key {
         case "name0":
             deviceName = result.value
@@ -5497,10 +6659,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 deviceName = connectedPeripheral?.name ?? "MOCO AI Glasses"
             }
             if (deviceModel ?? "").isEmpty {
-                deviceModel = "Astra A1"
+                deviceModel = deviceGeneration == .gen1G5K61 ? "G5K61" : "Astra A1"
             }
             isDeviceInfoReady = true
-            print("\(logTag) device info ready name=\(deviceName ?? "") model=\(deviceModel ?? "") sn=\(deviceSN ?? "") ble=\(deviceBluetoothIdentifier ?? "nil")")
+            connectLog("device identity ready", detail: "peripheral=\(deviceBluetoothIdentifier ?? "nil") hasName=\(hasName) hasModel=\(hasModel) hasSN=\(hasSN)")
             // 断连后 deviceSN 会被清空，这里先落盘，保证解绑时还能拿到 sn。
             cacheHardwareSN(serialNumber: deviceBluetoothIdentifier, sn: deviceSN)
             // 首次配对（大 MTU）后按需缓存热点凭据，供后续导入直接命中，规避 MTU 截断。
@@ -5508,7 +6670,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 self?.seedWifiCredentialIfNeeded()
             }
         } else if force {
-            print("\(logTag) device info not ready on force timeout name=\(deviceName ?? "") model=\(deviceModel ?? "") sn=\(deviceSN ?? "")")
+            connectLog("device identity still incomplete", detail: "peripheral=\(deviceBluetoothIdentifier ?? "nil") hasName=\(hasName) hasModel=\(hasModel) hasSN=\(hasSN) readUnsupported=\(notifyReadUnsupported) readAttempts=\(notifyReadAttempts)")
         }
     }
 
@@ -5610,39 +6772,45 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private func assignCharacteristics(from services: [CBService]) {
         writeCharacteristic = nil
         notifyCharacteristic = nil
-
-        let protocolService = services.first { $0.uuid == AstraA1BleProtocol.serviceUUID }
-        let candidates = protocolService?.characteristics ?? []
-
-        for characteristic in candidates {
-            if characteristic.uuid == AstraA1BleProtocol.writeCharacteristicUUID {
-                writeCharacteristic = characteristic
-                print("\(logTag) matched write char: \(characteristic.uuid)")
-            }
-            if characteristic.uuid == AstraA1BleProtocol.notifyCharacteristicUUID {
-                notifyCharacteristic = characteristic
-                print("\(logTag) matched notify char: \(characteristic.uuid)")
-            }
+        gen1VoiceCharacteristic = nil
+        if let service = services.first(where: { $0.uuid == AstraA1BleProtocol.serviceUUID }) {
+            deviceGeneration = .gen2
+            let chars = service.characteristics ?? []
+            writeCharacteristic = chars.first { $0.uuid == AstraA1BleProtocol.writeCharacteristicUUID }
+                ?? chars.first { $0.properties.contains(.write) || $0.properties.contains(.writeWithoutResponse) }
+            notifyCharacteristic = chars.first { $0.uuid == AstraA1BleProtocol.notifyCharacteristicUUID }
+                ?? chars.first { $0.properties.contains(.notify) || $0.properties.contains(.indicate) }
+        } else if let service = services.first(where: { $0.uuid == Self.gen1ServiceUUID }) {
+            deviceGeneration = .gen1G5K61
+            let chars = service.characteristics ?? []
+            writeCharacteristic = chars.first { $0.uuid == Self.gen1WriteUUID }
+            notifyCharacteristic = chars.first { $0.uuid == Self.gen1ControlUUID }
+            gen1VoiceCharacteristic = chars.first { $0.uuid == Self.gen1VoiceUUID }
+        } else {
+            deviceGeneration = .unknown
         }
+    }
 
-        if let protocolChars = protocolService?.characteristics {
-            if writeCharacteristic == nil {
-                writeCharacteristic = protocolChars.first {
-                    $0.properties.contains(.write) || $0.properties.contains(.writeWithoutResponse)
-                }
-                if let writeCharacteristic {
-                    print("\(logTag) fallback write char in protocol service: \(writeCharacteristic.uuid)")
-                }
-            }
-            if notifyCharacteristic == nil {
-                notifyCharacteristic = protocolChars.first {
-                    $0.properties.contains(.notify) || $0.properties.contains(.indicate)
-                }
-                if let notifyCharacteristic {
-                    print("\(logTag) fallback notify char in protocol service: \(notifyCharacteristic.uuid)")
-                }
-            }
+    private var protocolNotificationsReady: Bool {
+        guard notifyCharacteristic?.isNotifying == true else { return false }
+        return deviceGeneration != .gen1G5K61 || gen1VoiceCharacteristic?.isNotifying == true
+    }
+
+    private func subscribeProtocolNotifications(on peripheral: CBPeripheral) {
+        if let notifyCharacteristic, !notifyCharacteristic.isNotifying {
+            peripheral.setNotifyValue(true, for: notifyCharacteristic)
         }
+        if deviceGeneration == .gen1G5K61, let gen1VoiceCharacteristic, !gen1VoiceCharacteristic.isNotifying {
+            peripheral.setNotifyValue(true, for: gen1VoiceCharacteristic)
+        }
+    }
+
+    private func beginNotificationSetup(on peripheral: CBPeripheral) {
+        updateState(.enablingNotifications)
+        startConnectWatchdog(for: peripheral, timeoutOverride: connectWatchdogSeconds)
+        subscribeProtocolNotifications(on: peripheral)
+        isProtocolNotificationEnabled = protocolNotificationsReady
+        if isProtocolNotificationEnabled { markReadyIfNeeded() }
     }
 
     private func finishCharacteristicDiscovery(for peripheral: CBPeripheral) {
@@ -5654,7 +6822,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         print("\(logTag) selected write=\(writeCharacteristic?.uuid.uuidString ?? "nil")")
         print("\(logTag) selected notify=\(notifyCharacteristic?.uuid.uuidString ?? "nil")")
 
-        if writeCharacteristic == nil {
+        if writeCharacteristic == nil || notifyCharacteristic == nil || (deviceGeneration == .gen1G5K61 && gen1VoiceCharacteristic == nil) {
             if isProbingService {
                 handleProbeFailed(reason: "协议服务内未找到写特征")
             } else {
@@ -5669,16 +6837,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
         isProbingService = false
         isServiceDiscovered = true
-        updateState(.enablingNotifications)
-
-        if let notifyCharacteristic {
-            peripheral.setNotifyValue(true, for: notifyCharacteristic)
-        } else {
-            print("\(logTag) no notify characteristic, continue without notify")
-            isNotificationEnabled = true
-            isProtocolNotificationEnabled = true
-            markReadyIfNeeded()
-        }
+        beginNotificationSetup(on: peripheral)
     }
 }
 
@@ -5757,7 +6916,7 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
                     refreshBatteryLevel()
                 }
                 if autoReconnectEnabled, !userInitiatedDisconnect, !isReady {
-                    if !attachToAlreadyConnectedPeripheralIfPossible() {
+                    if !attachToAlreadyConnectedPeripheralIfPossible(source: "centralPoweredOn") {
                         standingConnectAllowed = false
                         updateState(.disconnected)
                         startSystemReconnectMonitor()
@@ -5795,8 +6954,24 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
         connectionEventDidOccur event: CBConnectionEvent,
         for peripheral: CBPeripheral
     ) {
+        let eventDate = Date()
+        let eventUptime = ProcessInfo.processInfo.systemUptime
         Task { @MainActor in
             guard central === centralManager else { return }
+            if peerEventDiagnosticObservations.count >= 32,
+               peerEventDiagnosticObservations[peripheral.identifier] == nil,
+               let oldest = peerEventDiagnosticObservations.min(by: { $0.value.uptime < $1.value.uptime })?.key {
+                peerEventDiagnosticObservations.removeValue(forKey: oldest)
+            }
+            peerEventDiagnosticObservations[peripheral.identifier] = PeerEventDiagnosticObservation(
+                event: "\(event) raw=\(event.rawValue)", date: eventDate,
+                uptime: eventUptime, centralID: ObjectIdentifier(central)
+            )
+            connectLog(
+                "system connection event received",
+                detail: "event=\(event) raw=\(event.rawValue) id=\(peripheral.identifier.uuidString) name=\((peripheral.name ?? "unknown").debugDescription) peripheralState=\(peripheralStateDescription(peripheral.state)) saved=\(savedPeripheralID()?.uuidString ?? "none") savedMatch=\(savedPeripheralID() == peripheral.identifier) oldContext=\(isManualHardReconnectOldContext(central: central, peripheral: peripheral)) recoveryInProgress=\(isAutomaticGATTRecoveryInProgress)",
+                direction: .received
+            )
             if isManualHardReconnectOldContext(central: central, peripheral: peripheral) {
                 switch event {
                 case .peerConnected:
@@ -5846,10 +7021,8 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
                 }
                 if case .failed = connectionState,
                    manualHardReconnectPeripheralID == peripheral.identifier {
-                    connectLog(
-                        "connectionEvent peerConnected: waiting for user retry tap",
-                        detail: "id=\(peripheral.identifier.uuidString)"
-                    )
+                    _ = recoverFailedGATTIfPossible(source: "systemPeerConnected", allowRetry: true)
+                    startSystemReconnectMonitor()
                     return
                 }
                 clearManualHardReconnectRequirement(reason: "fresh system peerConnected")
@@ -5893,7 +7066,9 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
                 if manualHardReconnectPeripheralID == peripheral.identifier
                     || pendingManualHardReconnectPeripheralID == peripheral.identifier {
                     cancelManualHardReconnectState(reason: "system peerDisconnected")
+                    resetConnectionHandles()
                     updateState(.disconnected)
+                    startSystemReconnectMonitor()
                 }
                 if savedPeripheralID() == peripheral.identifier, isConnectionInProgress {
                     cancelAutomaticGATTRecovery(reason: "system peerDisconnected", resetAttempts: true)
@@ -5964,6 +7139,17 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
                     detail: "id=\(peripheral.identifier.uuidString)",
                     direction: .received
                 )
+                central.cancelPeripheralConnection(peripheral)
+                return
+            }
+            // A queued connect completion must not revive an unbound device or take
+            // ownership back from the dedicated Gen1 OTA central.
+            let isPairingTarget = isPairingSessionActive && (
+                connectedPeripheral === peripheral || userPairingTargetID == peripheral.identifier
+            )
+            guard !userInitiatedDisconnect, gen1OTAPeripheralID == nil,
+                  isPairingTarget || (autoReconnectEnabled && savedPeripheralID() == peripheral.identifier) else {
+                connectLog("didConnect ignored: target no longer authorized", detail: "id=\(peripheral.identifier.uuidString)")
                 central.cancelPeripheralConnection(peripheral)
                 return
             }
@@ -6103,8 +7289,17 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
         didDisconnectPeripheral peripheral: CBPeripheral,
         error: Error?
     ) {
+        let callbackDate = Date()
+        let callbackUptime = ProcessInfo.processInfo.systemUptime
+        let callbackPeripheralState = peripheral.state
+        let callbackError = error as NSError?
         Task { @MainActor in
             guard central === centralManager else { return }
+            recordDisconnectDiagnostics(
+                central: central, peripheral: peripheral, error: callbackError,
+                callbackDate: callbackDate, callbackUptime: callbackUptime,
+                callbackPeripheralState: callbackPeripheralState
+            )
             if consumeManualHardReconnectOldContextRelease(
                 central: central,
                 peripheral: peripheral,
@@ -6183,8 +7378,13 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
             }
 
             if case .failed = connectionState {
+                cancelManualHardReconnectState(reason: "failed session disconnected")
                 resetConnectionHandles()
                 clearLiveDeviceIdentity(reason: "didDisconnect-after-failure")
+                systemTransportConnectedPeripheralIDs.remove(peripheral.identifier)
+                standingConnectAllowed = false
+                updateState(.disconnected)
+                startSystemReconnectMonitor()
                 return
             }
 
@@ -6224,6 +7424,8 @@ extension AstraA1BleManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         Task { @MainActor in
             guard !shouldIgnoreGATTCallback(from: peripheral, event: "didDiscoverServices") else { return }
+            guard case .discoveringServices = connectionState,
+                  pendingCharacteristicServices.isEmpty else { return }
             cancelDiscoverServicesWorkItem()
             if let error {
                 print("\(logTag) didDiscoverServices error: \(error.localizedDescription)")
@@ -6247,7 +7449,7 @@ extension AstraA1BleManager: CBPeripheralDelegate {
                 print("\(logTag) found service: \(service.uuid.uuidString)")
             }
 
-            let hasProtocolService = services.contains { $0.uuid == AstraA1BleProtocol.serviceUUID }
+            let hasProtocolService = services.contains { Self.supportedServiceUUIDs.contains($0.uuid) }
             if !hasProtocolService {
                 if isProbingService {
                     handleProbeFailed(reason: "no protocol service \(AstraA1BleProtocol.serviceUUID.uuidString)")
@@ -6283,7 +7485,7 @@ extension AstraA1BleManager: CBPeripheralDelegate {
             isProbingService = false
 
             // 发现协议服务下的特征；若存在标准电池服务(0x180F)一并发现，用它读电量。
-            guard let protocolService = services.first(where: { $0.uuid == AstraA1BleProtocol.serviceUUID }) else {
+            guard let protocolService = services.first(where: { $0.uuid == AstraA1BleProtocol.serviceUUID }) ?? services.first(where: { $0.uuid == Self.gen1ServiceUUID }) else {
                 failOrRecoverConnectionPipeline(
                     peripheral,
                     reason: "protocol-service-lost",
@@ -6299,6 +7501,8 @@ extension AstraA1BleManager: CBPeripheralDelegate {
             }
 
             pendingCharacteristicDiscoveries = servicesToDiscover.count
+            pendingCharacteristicServices = servicesToDiscover
+            startConnectWatchdog(for: peripheral)
             for service in servicesToDiscover {
                 peripheral.discoverCharacteristics(nil, for: service)
             }
@@ -6312,9 +7516,15 @@ extension AstraA1BleManager: CBPeripheralDelegate {
     ) {
         Task { @MainActor in
             guard !shouldIgnoreGATTCallback(from: peripheral, event: "didDiscoverCharacteristics") else { return }
+            guard (peripheral.services ?? []).contains(where: { $0 === service }),
+                  let pendingIndex = pendingCharacteristicServices.firstIndex(where: { $0 === service }) else {
+                connectLog("stale or duplicate characteristic discovery ignored", detail: "service=\(service.uuid.uuidString)")
+                return
+            }
+            pendingCharacteristicServices.remove(at: pendingIndex)
             if let error {
                 print("\(logTag) didDiscoverCharacteristics error for \(service.uuid): \(error.localizedDescription)")
-                if service.uuid == AstraA1BleProtocol.serviceUUID {
+                if Self.supportedServiceUUIDs.contains(service.uuid) {
                     pendingCharacteristicDiscoveries = 0
                     if isPairingSessionActive && isUserInitiatedPairingConnect {
                         retryUserPairingConnect(reason: error.localizedDescription)
@@ -6376,6 +7586,16 @@ extension AstraA1BleManager: CBPeripheralDelegate {
         error: Error?
     ) {
         Task { @MainActor in
+            if case .failed = connectionState,
+               let context = failedGATTContext, context.peripheral === peripheral,
+               characteristic === context.notify || characteristic === context.voice {
+                if error == nil, characteristic.isNotifying {
+                    _ = recoverFailedGATTIfPossible(source: "lateNotificationSubscription", allowRetry: false)
+                }
+                // A partial Gen1 subscription is evidence, but not READY. The second
+                // notification or periodic validation can complete this same session.
+                if !isReady { return }
+            }
             guard !shouldIgnoreGATTCallback(from: peripheral, event: "didUpdateNotificationState") else { return }
             if let error {
                 print("\(logTag) notify enable failed for \(characteristic.uuid): \(error.localizedDescription)")
@@ -6383,12 +7603,13 @@ extension AstraA1BleManager: CBPeripheralDelegate {
                 print("\(logTag) notify enabled for \(characteristic.uuid), isNotifying=\(characteristic.isNotifying)")
             }
 
-            let isProtocolNotify =
-                characteristic.uuid == AstraA1BleProtocol.notifyCharacteristicUUID
-                || characteristic.uuid == notifyCharacteristic?.uuid
+            let isProtocolNotify = characteristic === notifyCharacteristic
+                || characteristic === gen1VoiceCharacteristic
 
             if isProtocolNotify {
-                isProtocolNotificationEnabled = (error == nil) && characteristic.isNotifying
+                // G5K61 is ready only after BOTH control and voice subscriptions.
+                if error == nil, characteristic.isNotifying, !protocolNotificationsReady { return }
+                isProtocolNotificationEnabled = (error == nil) && protocolNotificationsReady
                 isNotificationEnabled = isProtocolNotificationEnabled
                 print("[device_status] protocol notify ready=\(isProtocolNotificationEnabled)")
                 guard isProtocolNotificationEnabled else {
@@ -6420,17 +7641,54 @@ extension AstraA1BleManager: CBPeripheralDelegate {
         let uuid = characteristic.uuid
         let dataCopy = characteristic.value.map { Data($0) }
         let errorCopy = error
+        let capturedAt = Date()
         Task { @MainActor in
+            if uuid == Self.gen1ControlUUID, gen1GuideEventSessionID != nil || errorCopy != nil {
+                let nsError = errorCopy.map { $0 as NSError }
+                DebugLogStore.logBLEEvent("Gen1 guide GATT callback", detail: "session=\(gen1GuideEventSessionID?.uuidString ?? "nil") source=\(peripheral.identifier) characteristic=\(uuid) currentPeripheral=\(connectedPeripheral === peripheral) currentCharacteristic=\(notifyCharacteristic === characteristic) bytes=\(dataCopy?.count ?? 0) valuePresent=\(dataCopy != nil) error=\(nsError.map { "\($0.domain)/\($0.code): \($0.localizedDescription)" } ?? "none"); payload_logged_after_control_frame_validation", capturedAt: capturedAt)
+            }
+            // 必须在拆帧和旧连接过滤之前记录。无命令头的续包也应留下证据；
+            // CoreBluetooth 的 read 与 notify 共用此回调，不能凭等待标志断言来源。
+            if uuid == AstraA1BleProtocol.notifyCharacteristicUUID {
+                switch rawNotifyDiagnosticBudget.record() {
+                case .record:
+                    let nsError = errorCopy.map { $0 as NSError }
+                    DebugLogStore.logBLERawReceived(
+                        data: dataCopy,
+                        peripheralID: peripheral.identifier.uuidString,
+                        characteristicID: uuid.uuidString,
+                        context: "currentPeripheral=\(connectedPeripheral === peripheral) currentCharacteristic=\(notifyCharacteristic === characteristic) readPending=\(notifyReadInFlight) readIssued=\(notifyReadWasIssued) readCommand=\(notifyReadCommand ?? "nil") readRequest=\(notifyReadRequestID); callbackKind=read-or-notify",
+                        error: nsError.map { "domain=\($0.domain) code=\($0.code) message=\($0.localizedDescription)" },
+                        capturedAt: capturedAt
+                    )
+                case .limitReached:
+                    DebugLogStore.logBLEEvent("RAW capture limit reached", detail: "limit=256; further raw callbacks omitted until connection reset; parsed command logs continue", capturedAt: capturedAt)
+                case .suppress:
+                    break
+                }
+            }
+            guard !shouldIgnoreGATTCallback(from: peripheral, event: "didUpdateValue") else { return }
+            guard characteristic === notifyCharacteristic || characteristic === gen1VoiceCharacteristic
+                || characteristic === batteryLevelCharacteristic || characteristic === batteryLevelStatusCharacteristic else { return }
+            if deviceGeneration == .gen1G5K61,
+               uuid == Self.gen1ControlUUID || uuid == Self.gen1VoiceUUID {
+                guard errorCopy == nil, let data = dataCopy else { return }
+                if uuid == Self.gen1VoiceUUID { handleGen1VoiceData(data) }
+                else { handleGen1ControlData(data, capturedAt: capturedAt) }
+                return
+            }
             if let errorCopy {
-                print("\(logTag) didUpdateValue error: \(errorCopy.localizedDescription)")
+                let nsError = errorCopy as NSError
+                connectLog("characteristic value error", detail: "peripheral=\(peripheral.identifier) characteristic=\(uuid) domain=\(nsError.domain) code=\(nsError.code) message=\(nsError.localizedDescription) readPending=\(notifyReadInFlight) readIssued=\(notifyReadWasIssued)")
                 if uuid == AstraA1BleProtocol.notifyCharacteristicUUID {
+                    DebugLogStore.logBLEEvent("notify value error", detail: "command=\(notifyReadCommand ?? "nil") domain=\(nsError.domain) code=\(nsError.code) message=\(nsError.localizedDescription)", capturedAt: capturedAt)
                     notifyReadInFlight = false
-                    let nsError = errorCopy as NSError
+                    notifyReadWasIssued = false
                     if nsError.domain == CBATTErrorDomain,
                        nsError.code == CBATTError.requestNotSupported.rawValue {
                         // 固件不支持读通知特征：本次连接内不再尝试补读。
                         notifyReadUnsupported = true
-                        print("\(logTag) notify characteristic read unsupported (ATT 0x06), disable read fallback")
+                        DebugLogStore.logBLEEvent("notify read unsupported", detail: "ATT=0x06; read fallback disabled for current connection")
                     }
                     // 读失败也要收尾，否则等 wificonfig / getworkpat 的调用方只能干等超时。
                     if let command = notifyReadCommand {
@@ -6469,7 +7727,15 @@ extension AstraA1BleManager: CBPeripheralDelegate {
             }
 
             if uuid == AstraA1BleProtocol.notifyCharacteristicUUID {
+                if notifyReadInFlight {
+                    DebugLogStore.logBLEEvent(
+                        "notify value while read pending",
+                        detail: "request=\(notifyReadRequestID) command=\(notifyReadCommand ?? "nil") readIssued=\(notifyReadWasIssued) bytes=\(data.count); callback may be notification or read response",
+                        capturedAt: capturedAt
+                    )
+                }
                 notifyReadInFlight = false
+                notifyReadWasIssued = false
             }
             handleNotifyData(data)
         }

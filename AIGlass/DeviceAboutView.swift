@@ -25,6 +25,14 @@ struct DeviceAboutView: View {
         boundDevice?.cardImageName ?? "glass2"
     }
 
+    private var isAboutDeviceAvailable: Bool {
+        guard let boundDevice else { return false }
+        return ble.isDeviceAvailable && ble.matchesCurrentDevice(
+            serialNumber: boundDevice.serialNumber,
+            hardwareSN: boundDevice.hardwareSN
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             navigationBar
@@ -54,8 +62,8 @@ struct DeviceAboutView: View {
             ble.ensureConnected(reason: "aboutDevice")
             refreshDeviceInfo()
         }
-        .onChangeCompat(of: ble.isReady) { ready in
-            if ready {
+        .onChangeCompat(of: isAboutDeviceAvailable) { available in
+            if available {
                 refreshDeviceInfo()
             }
         }
@@ -120,7 +128,7 @@ struct DeviceAboutView: View {
     // MARK: - Display values
 
     private var displayName: String {
-        nonEmpty(ble.deviceName)
+        (isAboutDeviceAvailable ? nonEmpty(ble.deviceName) : nil)
             ?? nonEmpty(boundDevice?.deviceName)
             ?? nonEmpty(boundDevice?.displayName)
             ?? placeholder
@@ -128,26 +136,28 @@ struct DeviceAboutView: View {
 
     /// BLE `model` 为硬件型号（如 MCA010）；API `model_name` 为销售型号（如 G5T71）。
     private var displayHardwareModel: String {
-        nonEmpty(ble.deviceModel) ?? placeholder
+        isAboutDeviceAvailable ? (nonEmpty(ble.deviceModel) ?? placeholder) : placeholder
     }
 
     private var displaySerialNumber: String {
-        nonEmpty(ble.deviceSN)
+        (isAboutDeviceAvailable ? nonEmpty(ble.deviceSN) : nil)
+            ?? nonEmpty(boundDevice?.hardwareSN)
             ?? nonEmpty(boundDevice?.serialNumber)
             ?? placeholder
     }
 
     /// iOS 不向第三方 App 提供 BLE 真实 MAC；展示 CoreBluetooth 外设 UUID（绑定接口 serial_number 同值）。
     private var displayMACAddress: String {
-        nonEmpty(ble.deviceBluetoothIdentifier) ?? placeholder
+        isAboutDeviceAvailable ? (nonEmpty(ble.deviceBluetoothIdentifier) ?? placeholder) : placeholder
     }
 
     /// 协议未提供系统名称字段；MOCO 眼镜固件系统名为 MOS。
     private var displaySystemName: String {
-        ble.isReady ? "MOS" : placeholder
+        isAboutDeviceAvailable ? "MOS" : placeholder
     }
 
     private var displayBluetoothVersion: String {
+        guard isAboutDeviceAvailable else { return placeholder }
         if ble.isQueryingAboutDeviceInfo, ble.deviceVersion2800 == nil {
             return L10n.t("加载中...", "Loading...")
         }
@@ -155,6 +165,7 @@ struct DeviceAboutView: View {
     }
 
     private var displayFirmwareVersion: String {
+        guard isAboutDeviceAvailable else { return placeholder }
         if ble.isQueryingAboutDeviceInfo, ble.deviceVersion6350 == nil {
             return L10n.t("加载中...", "Loading...")
         }
@@ -162,6 +173,7 @@ struct DeviceAboutView: View {
     }
 
     private var displayStorage: String {
+        guard isAboutDeviceAvailable else { return placeholder }
         if ble.isQueryingAboutDeviceInfo, ble.deviceStorage == nil {
             return L10n.t("加载中...", "Loading...")
         }
@@ -185,7 +197,7 @@ struct DeviceAboutView: View {
     }
 
     private func refreshDeviceInfo() {
-        if ble.isReady {
+        if isAboutDeviceAvailable {
             ble.queryAboutDeviceInfo()
         }
     }

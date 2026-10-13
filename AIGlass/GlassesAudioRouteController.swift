@@ -126,6 +126,30 @@ enum GlassesAudioRouteController {
         }
     }
 
+    /// 被动读取，不激活 AudioSession、不切换音频路由。音频 UID 不能当作 CBPeripheral UUID。
+    static var connectionDiagnosticSnapshot: (bluetoothPresent: Bool, detail: String) {
+        let session = AVAudioSession.sharedInstance()
+        let route = session.currentRoute
+        let bluetoothPresent = (route.inputs + route.outputs).contains {
+            [.bluetoothA2DP, .bluetoothHFP, .bluetoothLE].contains($0.portType)
+        }
+        return (
+            bluetoothPresent,
+            """
+            audioCategory=\(session.category.rawValue) audioMode=\(session.mode.rawValue) audioOptions=\(session.categoryOptions.rawValue)
+            audioInputs=[\(diagnosticPorts(route.inputs))]
+            audioOutputs=[\(diagnosticPorts(route.outputs))]
+            bluetoothAudioRoutePresent=\(bluetoothPresent) targetAudioIdentity=unverified
+            audioEvidenceScope=current_app_audio_route_only; absence_does_not_prove_bluetooth_disconnected
+            """
+        )
+    }
+
+    private static func diagnosticPorts(_ ports: [AVAudioSessionPortDescription]) -> String {
+        ports.map { "type=\($0.portType.rawValue) name=\($0.portName.debugDescription) uid=\($0.uid.debugDescription)" }
+            .joined(separator: "; ")
+    }
+
     private static func installRouteObserverIfNeeded() {
         guard !didInstallObserver else { return }
         didInstallObserver = true
@@ -136,7 +160,20 @@ enum GlassesAudioRouteController {
         ) { note in
             let reasonValue = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
                 .flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
+            let previousRoute = note.userInfo?[AVAudioSessionRouteChangePreviousRouteKey]
+                as? AVAudioSessionRouteDescription
+            let previousInputs = previousRoute?.inputs.map {
+                "\($0.portName)[\($0.portType.rawValue)] uid=\($0.uid)"
+            }.joined(separator: "; ") ?? "unavailable"
+            let previousOutputs = previousRoute?.outputs.map {
+                "\($0.portName)[\($0.portType.rawValue)] uid=\($0.uid)"
+            }.joined(separator: "; ") ?? "unavailable"
             Task { @MainActor in
+                DebugLogStore.logConnect(
+                    "audio route changed (diagnostic)",
+                    detail: "reason=\(String(describing: reasonValue))\npreviousInputs=[\(previousInputs)]\npreviousOutputs=[\(previousOutputs)]\n\(connectionDiagnosticSnapshot.detail)",
+                    direction: .received
+                )
                 handleRouteChange(reason: reasonValue)
             }
         }

@@ -20,6 +20,9 @@ struct GlassesFirmwareUpgradeView: View {
                 VStack(spacing: 24) {
                     upgradeIcon
                     versionCard
+                    if ble.deviceVersionQueryFailed, !ble.isQueryingDeviceVersionsAndStorage {
+                        versionQueryFailure
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 32)
@@ -33,8 +36,9 @@ struct GlassesFirmwareUpgradeView: View {
             ble.ensureConnected(reason: "firmwareUpgrade")
             refreshVersionsFromBLE()
         }
-        .onChangeCompat(of: ble.isReady) { ready in
-            if ready { refreshVersionsFromBLE() }
+        .onChangeCompat(of: ble.isDeviceAvailable) { available in
+            if available { refreshVersionsFromBLE() }
+            else { refreshState() }
         }
         .onChangeCompat(of: ble.deviceStorage) { _ in refreshState() }
         .onChangeCompat(of: ble.deviceVersion2800) { _ in refreshState() }
@@ -42,6 +46,7 @@ struct GlassesFirmwareUpgradeView: View {
         .onChangeCompat(of: ble.isQueryingDeviceVersionsAndStorage) { isQuerying in
             if !isQuerying { refreshState() }
         }
+        .onChangeCompat(of: ble.deviceVersionQueryFailed) { _ in refreshState() }
         .onChangeCompat(of: authSession.userInfo?.bluetoothBySerialNumber.count ?? 0) { _ in refreshState() }
         .onChangeCompat(of: authSession.userInfo?.firmwareBySerialNumber.count ?? 0) { _ in refreshState() }
         .onChangeCompat(of: otaManager.state) { newState in
@@ -91,6 +96,20 @@ struct GlassesFirmwareUpgradeView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
+    private var versionQueryFailure: some View {
+        VStack(spacing: 12) {
+            Text(L10n.t("未收到完整版本信息，请重新连接眼镜后重试。", "Complete version information was not received. Reconnect your glasses and try again."))
+                .font(AppTheme.notoSansSC(size: 14, weight: .regular))
+                .foregroundStyle(AppTheme.secondaryText)
+                .multilineTextAlignment(.center)
+
+            Button(L10n.t("重试", "Retry"), action: refreshVersionsFromBLE)
+                .font(AppTheme.notoSansSC(size: 15, weight: .medium))
+                .disabled(!ble.isDeviceAvailable || ble.isQueryingDeviceVersionsAndStorage || ble.isQueryingAboutDeviceInfo)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     @ViewBuilder
     private var bluetoothVersionRow: some View {
         if let offer = updateCoordinator.bluetoothUpdate {
@@ -100,10 +119,11 @@ struct GlassesFirmwareUpgradeView: View {
                 versionRowLabel(
                     title: L10n.t("蓝牙版本", "Bluetooth Version"),
                     version: displayVersion(ble.deviceVersion2800),
-                    hasUpdate: true
+                    hasUpdate: !ble.deviceVersionQueryFailed
                 )
             }
             .buttonStyle(.plain)
+            .disabled(!ble.isDeviceAvailable || ble.deviceVersionQueryFailed)
         } else {
             versionRowLabel(
                 title: L10n.t("蓝牙版本", "Bluetooth Version"),
@@ -122,10 +142,11 @@ struct GlassesFirmwareUpgradeView: View {
                 versionRowLabel(
                     title: L10n.t("固件版本", "Firmware Version"),
                     version: displayVersion(ble.deviceVersion6350),
-                    hasUpdate: true
+                    hasUpdate: !ble.deviceVersionQueryFailed
                 )
             }
             .buttonStyle(.plain)
+            .disabled(!ble.isDeviceAvailable || ble.deviceVersionQueryFailed)
         } else {
             versionRowLabel(
                 title: L10n.t("固件版本", "Firmware Version"),
@@ -170,13 +191,15 @@ struct GlassesFirmwareUpgradeView: View {
             return L10n.t("加载中...", "Loading...")
         }
         let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !trimmed.isEmpty else { return "—" }
+        guard !trimmed.isEmpty else {
+            return ble.deviceVersionQueryFailed ? L10n.t("读取失败", "Read failed") : "—"
+        }
         if trimmed.hasPrefix("V") || trimmed.hasPrefix("v") { return trimmed }
         return "V\(trimmed)"
     }
 
     private func refreshVersionsFromBLE() {
-        if ble.isReady {
+        if ble.isDeviceAvailable {
             ble.refreshDeviceVersionsAndStorage(includeSerialNumber: true)
         }
         refreshState()

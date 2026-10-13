@@ -20,6 +20,8 @@ final class SimultaneousTranslationController: ObservableObject {
     private var audioEngine: AVAudioEngine?
     private var converter: AVAudioConverter?
     private var token: String = ""
+    private var isActive = false
+    private var permissionGeneration = 0
 
     private var socketReady = false
     private var waitingSocketReady = false
@@ -35,14 +37,19 @@ final class SimultaneousTranslationController: ObservableObject {
     private let targetSampleRate: Double = 16_000
 
     func start(token: String?) {
+        isActive = true
+        translationManager?.close()
         self.token = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let manager = RealtimeTranslationManager(callback: self)
         translationManager = manager
         manager.setSpeechPlaybackEnabled(glassesSoundEnabled)
+        manager.setAutoPlayIncomingSpeech(false)
         connectSocketOnly()
     }
 
     func stop() {
+        isActive = false
+        permissionGeneration += 1
         autoStopTask?.cancel()
         if isRecording {
             stopRealtimeTranslation()
@@ -52,6 +59,7 @@ final class SimultaneousTranslationController: ObservableObject {
         }
         translationManager?.close()
         translationManager = nil
+        socketReady = false
     }
 
     func toggleGlassesSound() {
@@ -126,14 +134,17 @@ final class SimultaneousTranslationController: ObservableObject {
     // MARK: - Recording
 
     private func startRealtimeTranslation() {
-        guard !isRecording else { return }
+        guard isActive, !isRecording else { return }
         guard !token.isEmpty else {
             alertMessage = L10n.t("未登录，无法开始同声传译", "Not signed in, cannot start interpretation")
             return
         }
 
+        permissionGeneration += 1
+        let permissionRequest = permissionGeneration
         Task {
             let granted = await requestMicrophonePermission()
+            guard isActive, permissionGeneration == permissionRequest else { return }
             guard granted else {
                 alertMessage = L10n.t("请开启麦克风权限后重试", "Enable microphone access and try again")
                 return
@@ -189,8 +200,13 @@ final class SimultaneousTranslationController: ObservableObject {
             return
         }
         do {
+            translationManager?.setPhoneMicrophoneCaptureEnabled(true)
             try GlassesAudioRouteController.activate(.playAndRecord)
-            try AVAudioSession.sharedInstance().setPreferredSampleRate(targetSampleRate)
+            let session = AVAudioSession.sharedInstance()
+            if let microphone = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+                try session.setPreferredInput(microphone)
+            }
+            try session.setPreferredSampleRate(targetSampleRate)
 
             let engine = AVAudioEngine()
             let input = engine.inputNode
@@ -201,8 +217,8 @@ final class SimultaneousTranslationController: ObservableObject {
                 channels: 1,
                 interleaved: true
             ) else {
-                alertMessage = L10n.t("音频格式初始化失败", "Failed to initialize audio format")
-                return
+                throw NSError(domain: "SimultaneousTranslation", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: L10n.t("音频格式初始化失败", "Failed to initialize audio format")])
             }
 
             let converter = AVAudioConverter(from: inputFormat, to: targetFormat)
@@ -218,6 +234,10 @@ final class SimultaneousTranslationController: ObservableObject {
             scheduleAutoStop()
             print("[SimultaneousTranslation] audio record started")
         } catch {
+            stopAudioEngine()
+            translationManager?.markLocalRecordingStopped(reason: "simultaneous audio start failed")
+            translationManager?.finish()
+            socketReady = false
             alertMessage = error.localizedDescription
             isRecording = false
             pendingStartRecord = false
@@ -232,7 +252,13 @@ final class SimultaneousTranslationController: ObservableObject {
         guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
 
         var error: NSError?
+        var supplied = false
         let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            guard !supplied else {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
             outStatus.pointee = .haveData
             return buffer
         }
@@ -245,8 +271,11 @@ final class SimultaneousTranslationController: ObservableObject {
               let channels = converted.int16ChannelData else { return }
         let byteCount = Int(converted.frameLength) * MemoryLayout<Int16>.size
         let data = Data(bytes: channels[0], count: byteCount)
-        Task { @MainActor in
-            _ = self.translationManager?.sendPCM(data)
+        let recordingManager = translationManager
+        Task { @MainActor [weak self] in
+            guard let self, self.isActive, self.isRecording,
+                  self.translationManager === recordingManager else { return }
+            _ = recordingManager?.sendPCM(data)
         }
     }
 
@@ -262,6 +291,7 @@ final class SimultaneousTranslationController: ObservableObject {
     }
 
     private func stopAudioEngine() {
+        translationManager?.setPhoneMicrophoneCaptureEnabled(false)
         if let engine = audioEngine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
@@ -301,6 +331,7 @@ final class SimultaneousTranslationController: ObservableObject {
         let manager = RealtimeTranslationManager(callback: self)
         translationManager = manager
         manager.setSpeechPlaybackEnabled(glassesSoundEnabled)
+        manager.setAutoPlayIncomingSpeech(false)
         connectSocketOnly()
     }
 
@@ -470,75 +501,71 @@ final class SimultaneousTranslationController: ObservableObject {
 }
 
 extension SimultaneousTranslationController: RealtimeTranslationManager.Callback {
-    nonisolated func onReady() {
-        Task { @MainActor in
-            socketReady = true
-            // 录音中再次 ready 表示上一轮处理完毕，别把提示退回「点击开始录音」。
-            socketStatus = isRecording ? L10n.t("正在录音翻译…", "Recording & translating…") : L10n.t("翻译服务已就绪，点击下方按钮开始录音", "Ready — tap below to start recording")
-            if waitingSocketReady, isRecording, audioEngine == nil {
-                waitingSocketReady = false
-                beginAudioRecord()
-            } else if pendingStartRecord, isRecording, audioEngine == nil {
-                pendingStartRecord = false
-                beginAudioRecord()
-            }
-        }
-    }
-
-    nonisolated func onTaskStarted() {}
-
-    nonisolated func onTranscript(_ text: String) {
-        Task { @MainActor in appendSourceText(text) }
-    }
-
-    nonisolated func onTranscriptCompleted(_ text: String) {
-        Task { @MainActor in appendSourceText(text) }
-    }
-
-    nonisolated func onTranslation(_ text: String) {
-        Task { @MainActor in appendTargetText(text) }
-    }
-
-    nonisolated func onSpeech(_ data: Data) {}
-
-    nonisolated func onTranslationCompleted() {
-        Task { @MainActor in maybeSaveCurrentRecord() }
-    }
-
-    nonisolated func onTranslationFinal(_ text: String) {
-        Task { @MainActor in
-            appendTargetText(text)
-            maybeSaveCurrentRecord()
-        }
-    }
-
-    nonisolated func onError(_ message: String) {
-        Task { @MainActor in
+    func onReady() {
+        guard isActive else { return }
+        socketReady = true
+        // 录音中再次 ready 表示上一轮处理完毕，别把提示退回「点击开始录音」。
+        socketStatus = isRecording ? L10n.t("正在录音翻译…", "Recording & translating…") : L10n.t("翻译服务已就绪，点击下方按钮开始录音", "Ready — tap below to start recording")
+        if waitingSocketReady, isRecording, audioEngine == nil {
             waitingSocketReady = false
             pendingStartRecord = false
-            socketReady = false
-            stopRecordingOnly()
-            isRecording = false
-            socketStatus = message.isEmpty ? L10n.t("翻译服务异常", "Translation service error") : message
-            alertMessage = message
+            beginAudioRecord()
+        } else if pendingStartRecord, isRecording, audioEngine == nil {
+            pendingStartRecord = false
+            beginAudioRecord()
         }
     }
 
-    nonisolated func onRecoverableError(_ message: String) {
+    func onTaskStarted() {}
+
+    func onTranscript(_ text: String) {
+        appendSourceText(text)
+    }
+
+    func onTranscriptCompleted(_ text: String) {
+        appendSourceText(text)
+    }
+
+    func onTranslation(_ text: String) {
+        appendTargetText(text)
+    }
+
+    func onSpeech(_ data: Data) {
+        guard isActive, glassesSoundEnabled else { return }
+        _ = translationManager?.playSpeechOnGlasses(data)
+    }
+
+    func onTranslationCompleted() {
+        maybeSaveCurrentRecord()
+    }
+
+    func onTranslationFinal(_ text: String) {
+        appendTargetText(text)
+        maybeSaveCurrentRecord()
+    }
+
+    func onError(_ message: String) {
+        guard isActive else { return }
+        waitingSocketReady = false
+        pendingStartRecord = false
+        socketReady = false
+        stopRecordingOnly()
+        isRecording = false
+        socketStatus = message.isEmpty ? L10n.t("翻译服务异常", "Translation service error") : message
+        alertMessage = message
+    }
+
+    func onRecoverableError(_ message: String) {
         // 服务端仍在处理上一句：保持录音，只提示等待，等下一个 ready 自动继续。
-        Task { @MainActor in
-            guard isRecording else { return }
-            socketStatus = L10n.t("正在处理上一句翻译…", "Processing previous translation…")
-            print("[SimultaneousTranslation] recoverable: \(message)")
-        }
+        guard isActive, isRecording else { return }
+        socketStatus = L10n.t("正在处理上一句翻译…", "Processing previous translation…")
+        print("[SimultaneousTranslation] recoverable: \(message)")
     }
 
-    nonisolated func onClosed() {
-        Task { @MainActor in
-            socketReady = false
-            if !isRecording {
-                socketStatus = L10n.t("翻译服务已断开", "Translation service disconnected")
-            }
+    func onClosed() {
+        socketReady = false
+        if !isRecording {
+            socketStatus = L10n.t("翻译服务已断开", "Translation service disconnected")
         }
     }
 }
