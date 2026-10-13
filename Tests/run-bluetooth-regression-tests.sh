@@ -13,6 +13,7 @@ bash Tests/run-glasses-http-tests.sh
 bash Tests/run-pairing-attempt-tests.sh
 bash Tests/run-device-availability-tests.sh
 bash Tests/run-device-command-availability-tests.sh
+bash Tests/run-home-video-capture-tests.sh
 
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/aiglass-bluetooth-tests.XXXXXX")
 trap 'rm -rf "$test_dir"' EXIT

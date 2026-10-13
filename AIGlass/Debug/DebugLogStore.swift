@@ -413,7 +413,7 @@ final class DebugLogStore: ObservableObject {
 
         case "actionrsp0":
             if let response = AstraA1BleProtocol.parseActionResponse(data) {
-                return "\(deviceActionLabel(response.action)) → \(deviceActionResultLabel(response.result)) | 当前 \(response.currentStatus.logDescription)"
+                return "\(deviceActionLabel(response.action)) → \(deviceActionResultLabel(response.result)) (result=\(response.rawResult)) | 当前 \(response.currentStatus.logDescription)"
             }
             return "动作回执（解析失败）"
 

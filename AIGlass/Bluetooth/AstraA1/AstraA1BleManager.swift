@@ -284,6 +284,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var homePhotoNewFileQueryWorkItem: DispatchWorkItem?
     /// 对齐 Android HomeFragment：达到设置的录像时长后自动发送停止命令。
     private var homeVideoAutoStopWorkItem: DispatchWorkItem?
+    private var homeVideoCapture = HomeVideoCaptureState()
 
     /// 智能识图传图中：暂停首页例行电量 / hasnewfile，避免写通道抢带宽导致 imgrecdata 丢包。
     private(set) var isAIVisionTransferBusy = false
@@ -1973,6 +1974,13 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 查询眼镜端待导入媒体文件数量。
     func queryPendingImportFiles() {
+        if deviceGeneration == .gen1G5K61,
+           isVideoRecording || isVideoStopping || deviceRuntimeStatus == .videoRecording {
+            // Gen1 0x33 switches the device to network mode and can interrupt recording.
+            deferredPendingImportQuery = true
+            logVideoCapture("defer-file-query", detail: "reason=recording command=0x33")
+            return
+        }
         if deviceGeneration == .gen1G5K61, gen1APImportIdentity != nil {
             deferredPendingImportQuery = true
             return
@@ -3156,6 +3164,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             mediaActionAlertMessage = deviceRuntimeStatus.busyMessage
             return
         }
+        homePhotoNewFileQueryWorkItem?.cancel()
+        homePhotoNewFileQueryWorkItem = nil
         guard startVideo() else {
             mediaActionAlertMessage = L10n.t("发送开始录像命令失败，请重试", "Failed to start video. Try again.")
             return
@@ -3163,9 +3173,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         // 对齐 Android：写命令成功后立即切成“结束录像”，后续回包可纠正真实状态。
         isVideoRecording = true
         isVideoStopping = false
+        homeVideoCapture.startSent(at: ProcessInfo.processInfo.systemUptime)
         scheduleHomeVideoAutoStop(after: maxDurationSeconds)
         mediaActionToastMessage = L10n.t("眼镜开始录像，请从相册中导入", "Recording started. Import it from Album.")
-        print("\(logTag) startvideo sent, wait →VIDEO_RECORDING")
+        logVideoCapture("start-sent", detail: "maxDuration=\(maxDurationSeconds)s minimumDuration=3s")
     }
 
     private func stopVideoRecordingFromHome() {
@@ -3174,17 +3185,23 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             allowedRuntimeStatuses: [.videoRecording],
             requiresAvailableDevice: false
         ) else { return }
-        cancelHomeVideoAutoStop()
+        let remaining = homeVideoCapture.stopDelayRemaining(at: ProcessInfo.processInfo.systemUptime)
+        guard remaining == 0 else {
+            mediaActionToastMessage = L10n.t("录像至少需要 3 秒，请稍后停止", "Record for at least 3 seconds before stopping.")
+            logVideoCapture("stop-blocked", detail: "reason=minimum_duration remaining=\(String(format: "%.3f", remaining))s")
+            return
+        }
         isVideoStopping = true
         guard stopVideo() else {
             isVideoStopping = false
             mediaActionAlertMessage = L10n.t("发送停止录像命令失败，请重试", "Failed to stop video. Try again.")
             return
         }
-        // actionrsp0/devstatus0 丢失时仍能收尾，避免按钮永久停在“停止中”。
+        homeVideoCapture.stopSent()
+        // Missing acknowledgements trigger a status query, never a fabricated success.
         scheduleMediaCompletionFallback(isPhoto: false)
-        mediaActionToastMessage = L10n.t("眼镜结束录像，请从相册中导入", "Recording stopped. Import it from Album.")
-        print("\(logTag) stopvideo0 sent, wait VIDEO_RECORDING→STANDBY")
+        mediaActionToastMessage = L10n.t("正在停止录像，请稍候", "Stopping recording. Please wait.")
+        logVideoCapture("stop-sent", detail: "awaiting=device_standby")
     }
 
     private func ensureMediaActionAllowed(
@@ -3212,7 +3229,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private func applyDeviceRuntimeStatus(
         _ status: AstraA1BleProtocol.DeviceRuntimeStatus,
         source: String,
-        receivedFromDevice: Bool = false
+        receivedFromDevice: Bool = false,
+        allowsVideoCompletion: Bool = true
     ) {
         if receivedFromDevice {
             deviceRuntimeStatusReportSequence += 1
@@ -3225,26 +3243,33 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if status != .unknown {
             cancelDeviceStatusSyncRetry()
         }
-        handleDeviceRuntimeStatusTransition(from: previous, to: status)
+        handleDeviceRuntimeStatusTransition(from: previous, to: status,
+                                            allowsVideoCompletion: receivedFromDevice && allowsVideoCompletion)
     }
 
     /// 每次状态变化都看上次状态：拍照/录像完成只认这里的跳变。
     private func handleDeviceRuntimeStatusTransition(
         from previous: AstraA1BleProtocol.DeviceRuntimeStatus,
-        to current: AstraA1BleProtocol.DeviceRuntimeStatus
+        to current: AstraA1BleProtocol.DeviceRuntimeStatus,
+        allowsVideoCompletion: Bool = true
     ) {
         if current == .photoTaking {
             isTakingPhoto = true
         }
+        let videoFinished = homeVideoCapture.receive(
+            current, at: ProcessInfo.processInfo.systemUptime, allowsCompletion: allowsVideoCompletion
+        )
         isVideoRecording = current == .videoRecording
-        if current == .videoRecording {
-            isVideoStopping = false
+            || (current == .unknown && homeVideoCapture.startedAt != nil)
+        isVideoStopping = homeVideoCapture.isStopPending
+        if current == .videoRecording || previous == .videoRecording || videoFinished {
+            logVideoCapture("device-status", detail: "previous=\(previous.name) current=\(current.name) completionAllowed=\(allowsVideoCompletion)")
         }
 
         if previous == .photoTaking, current == .standby {
             finishPhotoCaptureSuccess()
         }
-        if previous == .videoRecording, current == .standby {
+        if videoFinished {
             finishVideoCaptureSuccess()
         }
         // 识图传图：末包可能丢，设备已回空闲 → 通知拼包层用已收数据收尾。
@@ -3272,19 +3297,30 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         cancelHomeVideoAutoStop()
         isVideoStopping = false
         isVideoRecording = false
-        if deviceRuntimeStatus == .videoRecording {
-            // 对齐 Android 的乐观收尾：停止命令已发出但固件不补 STANDBY 时，不永久卡录像中。
-            previousDeviceRuntimeStatus = .videoRecording
-            deviceRuntimeStatus = .unknown
-            resetDeviceStatusQueryGate(reason: "video-completion-without-standby")
-        }
+        homeVideoCapture.reset()
         showVideoCompletedFeedback()
-        print("\(logTag) stopvideo completed runtime=\(deviceRuntimeStatus.name)")
+        mediaActionToastMessage = L10n.t("眼镜结束录像，请从相册中导入", "Recording stopped. Import it from Album.")
+        scheduleHomePhotoNewFileQuery()
+        logVideoCapture("completed", detail: "confirmed=device_standby")
     }
 
     private func handleActionResponse(_ response: AstraA1BleProtocol.DeviceActionResponse) {
+        let startRejected = response.action == .startVideo && response.result != .accepted
+        if startRejected, response.currentStatus != .videoRecording {
+            homeVideoCapture.reset()
+            cancelMediaCompletionFallback()
+        }
+        let stopRejected = response.action == .stopVideo && response.result != .accepted
+        if stopRejected {
+            homeVideoCapture.stopRejectedOrUnconfirmed()
+            cancelMediaCompletionFallback()
+        }
+        if response.action == .startVideo || response.action == .stopVideo {
+            logVideoCapture("action-response", detail: "action=\(response.action.rawValue) result=\(response.rawResult) status=\(response.currentStatus.name)")
+        }
         // actionrsp0 里的 current_status 也走同一套全局状态更新。
-        applyDeviceRuntimeStatus(response.currentStatus, source: "actionrsp0", receivedFromDevice: true)
+        applyDeviceRuntimeStatus(response.currentStatus, source: "actionrsp0", receivedFromDevice: true,
+                                 allowsVideoCompletion: !stopRejected && !startRejected)
 
         switch response.action {
         case .takePhoto:
@@ -3331,9 +3367,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             switch response.result {
             case .accepted:
                 print("\(logTag) stopvideo ACCEPTED status=\(response.currentStatus.name)")
-                if response.currentStatus == .standby {
-                    finishVideoCaptureSuccess()
-                } else {
+                if response.currentStatus != .standby {
                     scheduleMediaCompletionFallback(isPhoto: false)
                 }
             case .busy:
@@ -3347,7 +3381,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             case .failed:
                 isVideoStopping = false
                 cancelMediaCompletionFallback()
-                mediaActionAlertMessage = L10n.t("停止录像失败，请重试", "Failed to stop video. Try again.")
+                mediaActionAlertMessage = L10n.t("设备未接受停止录像，请稍后重试", "The device did not accept stopping recording. Try again shortly.") + " (\(response.rawResult))"
             }
 
         case .startFirmwareUpgrade:
@@ -3368,7 +3402,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private var mediaCompletionFallbackWorkItem: DispatchWorkItem?
 
-    /// STANDBY 丢包时：几秒后主动 getdevstat / 强制收尾，避免 UI 永久「拍照中」。
+    /// Missing completion reports: photos retain their compatibility fallback;
+    /// video stops query the real status and allow retry without claiming success.
     private func scheduleMediaCompletionFallback(isPhoto: Bool) {
         cancelMediaCompletionFallback()
         let work = DispatchWorkItem { [weak self] in
@@ -3383,10 +3418,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                     self.finishPhotoCaptureSuccess()
                 }
             } else if !isPhoto, self.isVideoStopping || self.deviceRuntimeStatus == .videoRecording {
-                print("\(self.logTag) video stop completion fallback: query status / finish")
+                self.homeVideoCapture.stopRejectedOrUnconfirmed()
+                self.isVideoStopping = false
+                self.logVideoCapture("stop-unconfirmed", detail: "elapsed=4s action=query_status completion=false")
                 self.forceQueryDeviceStatus(reason: "video-stop-fallback")
-                // Android 停止命令写成功后立即恢复本地按钮；这里延迟 4 秒再乐观收尾。
-                self.finishVideoCaptureSuccess()
+                self.mediaActionToastMessage = L10n.t("尚未确认录像已停止，正在查询设备状态，请稍后重试", "Recording stop is not confirmed. Checking device status; please try again shortly.")
             }
         }
         mediaCompletionFallbackWorkItem = work
@@ -3402,6 +3438,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         homePhotoNewFileQueryWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.isReady else { return }
+            guard !self.isVideoRecording, !self.isVideoStopping,
+                  self.deviceRuntimeStatus != .videoRecording else {
+                self.logVideoCapture("skip-file-query", detail: "reason=recording")
+                return
+            }
             self.queryPendingImportFiles()
             print("\(self.logTag) query hasnewfile after home photo")
         }
@@ -3411,7 +3452,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func scheduleHomeVideoAutoStop(after seconds: Int) {
         cancelHomeVideoAutoStop()
-        let delay = TimeInterval(max(1, seconds))
+        let delay = max(HomeVideoCaptureState.minimumDuration, TimeInterval(seconds))
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.isReady else { return }
             guard self.isVideoRecording || self.deviceRuntimeStatus == .videoRecording else { return }
@@ -3425,6 +3466,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private func cancelHomeVideoAutoStop() {
         homeVideoAutoStopWorkItem?.cancel()
         homeVideoAutoStopWorkItem = nil
+    }
+
+    private func logVideoCapture(_ event: String, detail: String = "") {
+        DebugLogStore.logBLEEvent("Video capture \(event)", detail:
+            "generation=\(deviceGeneration) runtime=\(deviceRuntimeStatus.name) recording=\(isVideoRecording) stopping=\(isVideoStopping) completed=\(videoCompleted) \(detail)")
     }
 
     private func forceQueryDeviceStatus(reason: String) {
@@ -3542,6 +3588,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func resetHomeMediaCaptureState() {
+        homeVideoCapture.reset()
+        cancelMediaCompletionFallback()
         photoCompletedResetTask?.cancel()
         videoCompletedResetTask?.cancel()
         homePhotoNewFileQueryWorkItem?.cancel()
@@ -4696,7 +4744,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                     Gen1AiRecordingManager.shared.stop()
                     isAIRecording = false
                 }
-                if [Gen1Commands.takePhoto, Gen1Commands.startVideo, Gen1Commands.stopVideo].contains(frame.command) {
+                if frame.command == Gen1Commands.startVideo || frame.command == Gen1Commands.stopVideo {
+                    let action: UInt8 = frame.command == Gen1Commands.startVideo ? 2 : 3
+                    emitGen1Canonical("actionrsp0", Data([action, 1, deviceRuntimeStatus.rawValue]))
+                } else if frame.command == Gen1Commands.takePhoto {
                     resetHomeMediaCaptureState()
                 }
                 if frame.command == Gen1Commands.factoryReset { factoryResetResult = 0 }
@@ -6330,7 +6381,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
         if command == "actionrsp0" {
             if let response = AstraA1BleProtocol.parseActionResponse(data) {
-                print("[device_status] recv actionrsp0 action=\(response.action.rawValue) result=\(response.result.rawValue) current=\(response.currentStatus.logDescription)")
+                print("[device_status] recv actionrsp0 action=\(response.action.rawValue) result=\(response.rawResult) current=\(response.currentStatus.logDescription)")
                 handleActionResponse(response)
             } else {
                 print("[device_status] recv actionrsp0 parse failed raw=\(data.map { String(format: "%02X", $0) }.joined(separator: " "))")
@@ -6400,7 +6451,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                     finishPhotoCaptureSuccess()
                 }
                 if info.hasNew, isVideoStopping {
-                    finishVideoCaptureSuccess()
+                    // Counts may describe an older photo/video; they do not confirm this stop.
+                    logVideoCapture("files-reported", detail: "count=\(info.fileCount) action=query_status completion=false")
+                    forceQueryDeviceStatus(reason: "video-files-reported")
                 }
                 if info.hasNew, let cont = mediaCaptureContinuation {
                     mediaCaptureContinuation = nil

@@ -517,6 +517,8 @@ enum AstraA1BleProtocol {
     struct DeviceActionResponse {
         let action: DeviceAction
         let result: DeviceActionResult
+        /// Preserve undocumented firmware rejection codes instead of dropping the response.
+        let rawResult: UInt8
         let currentStatus: DeviceRuntimeStatus
     }
 
@@ -538,12 +540,11 @@ enum AstraA1BleProtocol {
         guard data.count >= 15 else { return nil }
         let dataLength = Int(data[10]) | (Int(data[11]) << 8)
         guard dataLength >= 3, data.count >= 15 else { return nil }
-        guard let action = DeviceAction(rawValue: data[12]),
-              let result = DeviceActionResult(rawValue: data[13]) else {
-            return nil
-        }
+        guard let action = DeviceAction(rawValue: data[12]) else { return nil }
+        let rawResult = data[13]
+        let result = DeviceActionResult(rawValue: rawResult) ?? .failed
         let status = DeviceRuntimeStatus(rawValue: data[14]) ?? .unknown
-        return DeviceActionResponse(action: action, result: result, currentStatus: status)
+        return DeviceActionResponse(action: action, result: result, rawResult: rawResult, currentStatus: status)
     }
 
     /// getworkpat：获取 HTTP 路径。type 0x01=下载，0x02=OTA，0x03=上传，0x04=DLL。
