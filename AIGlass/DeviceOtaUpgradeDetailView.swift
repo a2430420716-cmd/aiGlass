@@ -66,6 +66,13 @@ struct DeviceOtaUpgradeDetailView: View {
         return nil
     }
 
+    private var unconfirmedMessage: String? {
+        if case .versionUnconfirmed(let message) = otaManager.state, isStateForCurrentOffer {
+            return message
+        }
+        return nil
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             navigationBar
@@ -75,6 +82,13 @@ struct DeviceOtaUpgradeDetailView: View {
                     imageName: "ota_upgrade_success",
                     title: L10n.t("升级成功", "Update Successful"),
                     subtitle: L10n.t("快去体验新版本吧！", "Enjoy the new version!")
+                )
+            } else if let unconfirmedMessage {
+                resultView(
+                    imageName: "questionmark.circle",
+                    title: L10n.t("升级结果待确认", "Update Awaiting Confirmation"),
+                    subtitle: unconfirmedMessage,
+                    isSystemImage: true
                 )
             } else if let failureMessage {
                 resultView(
@@ -294,14 +308,15 @@ struct DeviceOtaUpgradeDetailView: View {
         .disabled(!isOfferDeviceAvailable)
     }
 
-    private func resultView(imageName: String, title: String, subtitle: String) -> some View {
+    private func resultView(imageName: String, title: String, subtitle: String, isSystemImage: Bool = false) -> some View {
         VStack(spacing: 20) {
             Spacer()
 
-            Image(imageName)
+            (isSystemImage ? Image(systemName: imageName) : Image(imageName))
                 .resizable()
                 .scaledToFit()
                 .frame(width: 120, height: 120)
+                .foregroundStyle(AppTheme.secondaryText)
 
             Text(title)
                 .font(AppTheme.notoSansSC(size: 20, weight: .bold))

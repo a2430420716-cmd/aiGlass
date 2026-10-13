@@ -25,6 +25,7 @@ xcrun swiftc -module-cache-path "$test_dir/cache" \
   -o "$test_dir/firmware"
 "$test_dir/firmware"
 bash Tests/run-gen1-firmware-session-tests.sh
+bash Tests/run-gen1-ota-version-tests.sh
 
 bash Tests/run-gen1-ap-import-tests.sh
 bash Tests/run-gen1-hotspot-cleanup-tests.sh

@@ -56,6 +56,33 @@ The Android transfer setup is in [Gen1P2pImportManager](../app/src/main/java/com
 
 ## Bluetooth OTA SDK provenance
 
+### Post-upgrade version confirmation (2026-10-14)
+
+The 2026-10-10 logs show Bluetooth firmware changing from `03.26.01.06` to
+`03.26.01.07`. Normal GATT became ready at `17:18:44.585`; a version query at
+`17:18:45.190` received the new version at `17:18:45.264`. The former shared
+90-second reconnect/query deadline could expire during the final polling sleep,
+skipping an already received matching version and reporting failure at UI 95%.
+
+- `Gen1OtaVersionVerificationSession` now gives reconnection 90 seconds and,
+  after GATT becomes ready, a separate 30-second version-query window. It checks
+  a received matching version before applying the timeout. Cached versions and
+  transfer progress alone cannot confirm success.
+- The Gen1 Bluetooth OTA recovery target protects scanning from routine
+  connection/battery refreshes, including foreground entry. Pairing cancellation,
+  rebinding and flow completion invalidate that recovery scope.
+- A completed SDK transfer with no confirmed version ends as **Update Awaiting
+  Confirmation**, rather than **Update Failed**. A fresh match ends as success;
+  actual SDK errors still fail. The 95% phase represents version confirmation.
+- Exported BLE logs include the attempt ID, target versions, SDK result codes,
+  transfer progress, transport handoff, reconnect attempts, queries, replies and
+  timeout phase. Firmware bytes and authentication packets are not logged.
+
+Validation: 63 new version-confirmation assertions, 145 existing Gen1 main-firmware
+session assertions and 1,289 shared Bluetooth/Gen2 assertions passed (1,497 total).
+Final unsigned Debug device build passed. Real-device Bluetooth OTA, foreground
+entry during reconnect and Gen2 upgrade smoke tests remain required.
+
 The native implementation uses [Jieli's official iOS-JL_OTA SDK](https://github.com/Jieli-Tech/iOS-JL_OTA/tree/28f12b3dee972f110efcceb57c7dbaa5330ee085/libs/Release2.5.0), pinned to commit `28f12b3dee972f110efcceb57c7dbaa5330ee085`, release directory `libs/Release2.5.0`. The bundled `JL_OTALib`, `JL_HashPair`, `JL_AdvParse` and `JLLogHelper` frameworks include device and simulator slices; provenance and Apache 2.0 license are retained in [Frameworks/Jieli](../Frameworks/Jieli/README.md). The license is also included in the app's [resource directory](../AIGlass/ThirdPartyNotices/Jieli-OTA-LICENSE.txt).
 
 This transport uses separate `AE00`/`AE01`/`AE02` services and characteristics, hash authentication, write backpressure and bootloader reconnect by peripheral UUID or manufacturer-advertised MAC. A completed transfer or unexpected disconnect alone is not success: the application reconnects and verifies a fresh Bluetooth firmware version. Actual G5K61 image/bootloader compatibility remains unverified.

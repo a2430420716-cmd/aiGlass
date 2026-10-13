@@ -18,6 +18,10 @@ struct BluetoothOtaUpgradeProgressOverlay: View {
                     ProgressView(value: progress)
                         .tint(AppTheme.primaryText)
                         .frame(maxWidth: .infinity)
+                } else if case .versionUnconfirmed = state {
+                    Image(systemName: "questionmark.circle")
+                        .font(.system(size: 42))
+                        .foregroundStyle(AppTheme.secondaryText)
                 } else {
                     ProgressView()
                         .tint(AppTheme.primaryText)
@@ -54,6 +58,8 @@ struct BluetoothOtaUpgradeProgressOverlay: View {
             return L10n.t("升级完成", "Update Complete")
         case .failed:
             return L10n.t("升级失败", "Update Failed")
+        case .versionUnconfirmed:
+            return L10n.t("升级结果待确认", "Update Awaiting Confirmation")
         default:
             return L10n.t("蓝牙固件升级", "Bluetooth Firmware Update")
         }
@@ -72,7 +78,7 @@ struct BluetoothOtaUpgradeProgressOverlay: View {
 
     private var showsDismissButton: Bool {
         switch state {
-        case .completed, .failed:
+        case .completed, .versionUnconfirmed, .failed:
             return true
         default:
             return false

@@ -17,11 +17,12 @@ enum BluetoothOtaUpgradeState: Equatable {
     case closingWifi
     case upgrading(percent: Int)
     case completed
+    case versionUnconfirmed(String)
     case failed(String)
 
     var isActive: Bool {
         switch self {
-        case .idle, .completed, .failed:
+        case .idle, .completed, .versionUnconfirmed, .failed:
             return false
         default:
             return true
@@ -78,7 +79,7 @@ enum BluetoothOtaUpgradeState: Equatable {
             case .bluetooth, .none:
                 return L10n.t("蓝牙固件升级完成，设备将自动重启", "Bluetooth firmware update complete. Device will restart automatically")
             }
-        case .failed(let message):
+        case .versionUnconfirmed(let message), .failed(let message):
             return message
         }
     }
@@ -125,7 +126,7 @@ extension BluetoothOtaUpgradeState {
     /// 将各阶段进度映射为 0-100 的整体进度，供圆环展示。
     var overallProgress: Int? {
         switch self {
-        case .idle, .completed, .failed:
+        case .idle, .completed, .versionUnconfirmed, .failed:
             return nil
         case .downloadingFirmware(let percent):
             return min(34, max(1, percent * 34 / 100))
@@ -156,7 +157,7 @@ extension BluetoothOtaUpgradeState {
 
     var isTerminal: Bool {
         switch self {
-        case .completed, .failed:
+        case .completed, .versionUnconfirmed, .failed:
             return true
         default:
             return false
@@ -289,6 +290,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
     func resetCompletedState() {
         guard upgradeTask == nil else { return }
         if case .completed = state { state = .idle }
+        if case .versionUnconfirmed = state { state = .idle }
         if case .failed = state { state = .idle }
         activeKind = nil
         activeTargetVersion = nil
@@ -740,6 +742,11 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         }
         ble.beginFirmwareUpgradeFlow()
         defer { ble.endFirmwareUpgradeFlow(reason: "gen1-ota-finished") }
+        let sessionID = UUID()
+        let log: (String) -> Void = { message in
+            DebugLogStore.logBLEEvent("Gen1 Bluetooth OTA", detail: "session=\(sessionID) target=\(targetIdentifier) targetVersion=\(serverInfo.version) \(message)")
+        }
+        log("started oldVersion=\(ble.deviceVersion2800 ?? "unknown")")
 
         do {
             if kind == .bluetooth {
@@ -760,21 +767,32 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                     }
                     state = .uploadingFirmware(percent: 0)
                     let transport = Gen1BluetoothOtaTransport()
-                    try await transport.upgrade(data: prepared.data, peripheralIdentifier: peripheralIdentifier) { percent in
+                    try await transport.upgrade(data: prepared.data, peripheralIdentifier: peripheralIdentifier, log: log) { percent in
                         self.state = .uploadingFirmware(percent: percent)
                     }
                 } catch {
                     ble.resumeNormalConnectionAfterGen1OTA()
                     throw error
                 }
+                log("SDK terminal result accepted; restoring control connection for fresh version verification")
                 ble.resumeNormalConnectionAfterGen1OTA()
                 state = .upgrading(percent: 100)
                 // A 100% transfer or bootloader disconnect alone is not success.
                 try await verifyGen1Version(command: 0x14, targetVersion: serverInfo.version,
-                                            targetIdentifier: targetIdentifier, ble: ble)
+                                            targetIdentifier: targetIdentifier, ble: ble, log: log)
                 state = .completed
+                log("completed: fresh device version matched target")
             }
+        } catch let error as Gen1OtaVersionVerificationSession.Failure {
+            // The SDK finished. A missing post-reboot version is an unknown outcome,
+            // not evidence that flashing failed. Do not invite a blind second flash.
+            log("version confirmation pending: \(error)")
+            state = .versionUnconfirmed(L10n.t(
+                "固件传输已完成，暂未确认重启后的版本。请保持眼镜开机，重新连接后检查版本。",
+                "Firmware transfer completed, but the version after restart is not yet confirmed. Keep glasses on, reconnect, and check the version."
+            ))
         } catch {
+            log("stopped error=\(error.localizedDescription)")
             state = .failed(error.localizedDescription)
         }
     }
@@ -829,40 +847,32 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
     }
 
     private func verifyGen1Version(command: UInt8, targetVersion: String, targetIdentifier: String,
-                                  ble: AstraA1BleManager) async throws {
+                                  ble: AstraA1BleManager, log: @escaping (String) -> Void) async throws {
         isVerifyingGen1Version = true
         defer { isVerifyingGen1Version = false }
-        // Read a fresh version after reboot. Cached pre-update version cannot confirm success.
-        try await Task.sleep(nanoseconds: 3_000_000_000)
-        var freshVersion: String?
-        let subscription = ble.gen1ControlSubject.sink { frame in
-            guard frame.command == command, ble.deviceBluetoothIdentifier == targetIdentifier else { return }
-            freshVersion = String(data: frame.payload, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters))
-        }
-        defer { subscription.cancel() }
-        let deadline = Date().addingTimeInterval(90)
-        var lastQueryAt = Date.distantPast
-        while Date() < deadline {
-            try Task.checkCancellation()
-            guard ble.savedPeripheralUUIDString == targetIdentifier else {
+        let session = Gen1OtaVersionVerificationSession(send: {
+            ble.sendGen1Command(command: command)
+        }, validate: {
+            guard ble.savedPeripheralUUIDString == targetIdentifier,
+                  ble.isGen1OTAVersionRecoveryCurrent(targetIdentifier: targetIdentifier) else {
                 throw BluetoothOtaUpgradeError.message(L10n.t("眼镜绑定已改变，版本校验已停止", "Glasses binding changed. Version verification stopped"))
             }
             if ble.isReady, ble.deviceGeneration != .gen1G5K61 || ble.deviceBluetoothIdentifier != targetIdentifier {
                 throw BluetoothOtaUpgradeError.message(L10n.t("当前连接的眼镜已改变，版本校验已停止", "Connected glasses changed. Version verification stopped"))
             }
-            if ble.isReady, ble.deviceBluetoothIdentifier == targetIdentifier,
-               Date().timeIntervalSince(lastQueryAt) >= 3 {
-                lastQueryAt = Date()
-                _ = ble.sendGen1Command(command: command)
-            } else if !ble.isReady {
-                ble.ensureConnected(reason: "gen1-ota-version-verification")
-            }
-            if let freshVersion, Gen1FirmwareUpdateProtocol.versionsMatch(freshVersion, target: targetVersion) { return }
-            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }, isReady: {
+            ble.isReady && ble.deviceBluetoothIdentifier == targetIdentifier
+        }, reconnect: {
+            log("control reconnect state=\(ble.connectionState)")
+            ble.ensureConnected(reason: "gen1-ota-version-verification")
+        }, log: log)
+        // Subscribe before the first query. Never use the pre-upgrade cached version.
+        let subscription = ble.gen1ControlSubject.sink { frame in
+            guard frame.command == command, ble.deviceBluetoothIdentifier == targetIdentifier else { return }
+            session.receive(payload: frame.payload)
         }
-        let detail = freshVersion.map { "\($0) → \(targetVersion)" } ?? targetVersion
-        throw BluetoothOtaUpgradeError.message(L10n.t("固件写入完成，但尚未确认重启后的版本（\(detail)），请重新连接眼镜检查", "Firmware was written, but its version after restart could not be confirmed (\(detail)). Reconnect glasses and check"))
+        defer { subscription.cancel() }
+        try await session.run(targetVersion: targetVersion)
     }
 
     /// Only stage eligibility; actual cancellation also requires accepted preparation

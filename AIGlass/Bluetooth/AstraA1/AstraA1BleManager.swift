@@ -146,6 +146,20 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var gen1GuideStep = 0
     private var gen1GuidePeripheralID: UUID?
     private var gen1OTAPeripheralID: UUID?
+    /// Survives GATT handle resets while this flow restores the normal control channel.
+    private var gen1OTAVerificationPeripheralID: UUID?
+
+    private var isRestoringGen1OTAConnection: Bool {
+        gen1OTAVerificationPeripheralID != nil
+            && gen1OTAVerificationPeripheralID == savedPeripheralID()
+            && gen1OTAPeripheralID == nil
+            && isFirmwareUpgradeFlowBusy
+            && !userInitiatedDisconnect
+    }
+
+    func isGen1OTAVersionRecoveryCurrent(targetIdentifier: String) -> Bool {
+        isRestoringGen1OTAConnection && gen1OTAVerificationPeripheralID?.uuidString == targetIdentifier
+    }
     private static let gen1ServiceUUID = CBUUID(string: "AE3A")
     private static let gen1WriteUUID = CBUUID(string: "AE3B")
     private static let gen1ControlUUID = CBUUID(string: "AE3C")
@@ -486,7 +500,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         assessment=\(assessment.rawValue): \(assessment.explanation)
         centralState=\(centralManager.state) (\(centralManager.state.rawValue)) authorization=\(CBManager.authorization.rawValue) appState=\(connectStateDescription(connectionState))
         targetID=\(targetID?.uuidString ?? "none") targetName=\((cached?.name ?? deviceName ?? "unknown").debugDescription)
-        serviceFilter=\(AstraA1BleProtocol.serviceUUID.uuidString) queryPerformed=\(queryPerformed) retrievedCount=\(retrieved.count) targetMatched=\(targetRetrieved)
+        serviceFilter=\(Self.supportedServiceUUIDs.map(\.uuidString).joined(separator: ",")) queryPerformed=\(queryPerformed) retrievedCount=\(retrieved.count) targetMatched=\(targetRetrieved)
         retrievedPeripherals=[\(returned)]
         cachedTargetState=\(cached.map { peripheralStateDescription($0.state) } ?? "not_cached") observedSystemConnectionFlag=\(historicalEvent) flagIsHistorical=true
         autoReconnect=\(autoReconnectEnabled) userDisconnect=\(userInitiatedDisconnect) standingAllowed=\(standingConnectAllowed) standingRequest=\(standingConnectPeripheralID?.uuidString ?? "none")
@@ -729,9 +743,13 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 首页进入：系统蓝牙已连接才接管 GATT；否则只监听系统连接事件。
     func ensureConnected(reason: String = "") {
         guard gen1OTAPeripheralID == nil else { return }
-        if reason == "gen1-ota-version-verification", !isReady,
-           !isConnectionInProgress, !centralManager.isScanning, let id = savedPeripheralID() {
-            _ = reconnectBoundDevice(boundSerialNumbers: [id.uuidString], reason: reason)
+        if !isReady, reason == "gen1-ota-version-verification" || isRestoringGen1OTAConnection {
+            // Version verification owns this reconnect. Falling through to a battery
+            // refresh changes scanning to disconnected, so didDiscover ignores the
+            // target even while CoreBluetooth continues scanning.
+            if !isConnectionInProgress, !centralManager.isScanning, let id = savedPeripheralID() {
+                _ = reconnectBoundDevice(boundSerialNumbers: [id.uuidString], reason: reason)
+            }
             return
         }
         if savedPeripheralID() != nil, !userInitiatedDisconnect {
@@ -778,6 +796,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 首页显示时刷新电量：系统已连接则查询，否则只等待系统连接事件。
     func refreshBatteryLevel() {
         guard gen1OTAPeripheralID == nil else { return }
+        if isRestoringGen1OTAConnection, !isReady {
+            ensureConnected(reason: "gen1-ota-version-verification")
+            return
+        }
         guard !isManualHardReconnectCentralTransitionInProgress else {
             connectLog("refreshBatteryLevel deferred: rebuilding central")
             return
@@ -3464,6 +3486,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 无论成功、失败或取消都恢复 Android 同等的例行查询。
     func endFirmwareUpgradeFlow(reason: String, preserveRuntimeStatus: Bool = false) {
+        gen1OTAVerificationPeripheralID = nil
         gen2OtaRecovery.finish()
         guard isFirmwareUpgradeFlowBusy else {
             if !preserveRuntimeStatus { finishFirmwareUpgradeRuntime(reason: reason) }
@@ -3911,6 +3934,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 开始扫描；发现设备后列入弹窗，由用户手动选择再连接。
     func startPairing(preferredDeviceName: String? = nil) {
+        gen1OTAVerificationPeripheralID = nil
         // 解绑后的 didConnect/didDisconnect 可能延迟抵达。新配对必须先清掉旧链路目标，
         // 否则旧 ready 回调会结束新 session，首次点击便会永久停在“正在配对”。
         let stalePeripheral = connectedPeripheral ?? reconnectPeripheral
@@ -4135,6 +4159,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 取消扫描/连接（用户点取消）。
     func cancelPairing() {
+        gen1OTAVerificationPeripheralID = nil
         pendingStart = false
         cancelManualReconnectScanTimeout()
         isManualReconnectScan = false
@@ -4593,6 +4618,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         guard let id = gen1OTAPeripheralID else { return }
         gen1OTAPeripheralID = nil
         guard savedPeripheralID() == id else { return }
+        gen1OTAVerificationPeripheralID = id
         userInitiatedDisconnect = false
         autoReconnectEnabled = true
         _ = reconnectBoundDevice(boundSerialNumbers: [id.uuidString], reason: "gen1-bluetooth-ota-completed")
