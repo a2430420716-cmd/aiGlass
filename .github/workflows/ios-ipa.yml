@@ -37,6 +37,9 @@ jobs:
           test -n "$IOS_PROFILE_BASE64" || { echo '缺少 IOS_PROFILE_BASE64'; exit 1; }
       - name: 准备 Xcode 和 CocoaPods
         run: |
+          sudo xcode-select --switch "$DEVELOPER_DIR"
+          sudo xcodebuild -runFirstLaunch
+          xcodebuild -downloadPlatform iOS
           xcodebuild -version
           sudo gem install cocoapods -v 1.17.0 --no-document
           pod install --deployment
