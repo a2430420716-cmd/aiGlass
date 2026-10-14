@@ -190,7 +190,7 @@ enum DeviceWifiManager {
             detail: "targetSSID=\(ssid.debugDescription)\npassword=\(includePasswordInDiagnostics ? password.debugDescription : "<redacted>")\npasswordUTF8Bytes=\(password.utf8.count)\nsecurity=\(password.isEmpty ? "open" : "WPA/WPA2")\njoinOnce=\(joinOnce)",
             direction: .sent
         )
-        let result = CallbackResult<Void>()
+        let result = CallbackResult()
         let timeoutTask = timeout.map { seconds in
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
@@ -378,12 +378,12 @@ enum DeviceWifiManager {
 
     /// Main-actor callbacks and cancellation may race; resume the caller exactly once.
     @MainActor
-    private final class CallbackResult<Value: Sendable> {
-        private var continuation: CheckedContinuation<Value, Error>?
-        private var result: Result<Value, Error>?
+    private final class CallbackResult {
+        private var continuation: CheckedContinuation<Void, Error>?
+        private var result: Result<Void, Error>?
         var isResolved: Bool { result != nil }
 
-        func install(_ continuation: CheckedContinuation<Value, Error>) {
+        func install(_ continuation: CheckedContinuation<Void, Error>) {
             if let result {
                 continuation.resume(with: result)
             } else {
@@ -391,7 +391,7 @@ enum DeviceWifiManager {
             }
         }
 
-        func resolve(_ result: Result<Value, Error>) {
+        func resolve(_ result: Result<Void, Error>) {
             guard self.result == nil else { return }
             self.result = result
             continuation?.resume(with: result)
