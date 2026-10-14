@@ -36,7 +36,7 @@ jobs:
       - name: 准备 Xcode 和 CocoaPods
         run: |
           xcodebuild -version
-          sudo gem install cocoapods -v 1.16.2 --no-document
+          sudo gem install cocoapods -v 1.17.0 --no-document
           pod install --deployment
       - name: 签名、归档、导出 IPA
         env:
