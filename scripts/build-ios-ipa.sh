@@ -92,6 +92,7 @@ RUBY
 
 xcodebuild -workspace AIGlass.xcworkspace -scheme AIGlass -configuration Release \
   -destination 'generic/platform=iOS' -archivePath "$PWD/build/AIGlass.xcarchive" \
+  SWIFT_OPTIMIZATION_LEVEL=-Onone \
   archive 2>&1 | tee build/logs/archive.log
 xcodebuild -exportArchive -archivePath "$PWD/build/AIGlass.xcarchive" \
   -exportOptionsPlist "$PWD/build/ExportOptions.plist" -exportPath "$PWD/build/ipa" \

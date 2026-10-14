@@ -23,8 +23,7 @@ jobs:
     timeout-minutes: 60
     env:
       EXPORT_METHOD: ${{ inputs.export_method }}
-      # Avoid the Swift optimizer crash in the image's default Xcode 26.6.
-      DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - name: 检查签名配置
@@ -37,9 +36,6 @@ jobs:
           test -n "$IOS_PROFILE_BASE64" || { echo '缺少 IOS_PROFILE_BASE64'; exit 1; }
       - name: 准备 Xcode 和 CocoaPods
         run: |
-          sudo xcode-select --switch "$DEVELOPER_DIR"
-          sudo xcodebuild -runFirstLaunch
-          xcodebuild -downloadPlatform iOS
           xcodebuild -version
           sudo gem install cocoapods -v 1.17.0 --no-document
           pod install --deployment
