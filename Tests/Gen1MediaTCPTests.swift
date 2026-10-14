@@ -249,9 +249,11 @@ enum Gen1MediaTCPTests {
             }
             let port = try await server.start()
             var config = configuration()
-            config.readIdleTimeout = 0.12
-            config.fileListTimeout = 0.28
-            config.heartbeatInterval = 0.025
+            // Keep the same idle-vs-overall assertion, but allow hosted Intel
+            // scheduling and TCP delayed ACKs more than the old 120ms window.
+            config.readIdleTimeout = 0.8
+            config.fileListTimeout = 2.5
+            config.heartbeatInterval = 0.05
             let client = Gen1MediaTCPClient(host: "127.0.0.1", port: port, testConfiguration: config)
             defer { server.stop() }
             try await client.connect()
@@ -259,7 +261,7 @@ enum Gen1MediaTCPTests {
                 _ = try await client.fileList()
                 throw Failure(description: "missing list did not time out")
             } catch Gen1MediaTCPError.timeout(let reason) {
-                try check(reason == (heartbeatReplies ? "文件列表" : "数据接收"), "idle and overall deadlines distinguish heartbeat-only traffic")
+                try check(reason == (heartbeatReplies ? "文件列表" : "数据接收"), "idle and overall deadlines distinguish heartbeat-only traffic: replies=\(heartbeatReplies) actual=\(reason)")
             }
             await client.close()
         }
