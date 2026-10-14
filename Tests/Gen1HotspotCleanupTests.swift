@@ -202,12 +202,12 @@ enum Gen1HotspotCleanupTests {
         malformedStatus.onSend = { target, command in
             if command == Gen1Commands.deviceStatusQuery {
                 malformedStatus.reply(command, [0, 0], target: target)
-                malformedStatus.reply(Gen1Commands.deviceStatusChanged, [0], target: target)
+                malformedStatus.reply(Gen1Commands.deviceStatusChanged, [0, 0], target: target)
             }
             return true
         }
         malformedStatus.at(1) { malformedStatus.reply(Gen1Commands.closeHotspot, [2]) }
-        check(await malformedStatus.run() == .pending, "Malformed query replies and unsolicited 0x73 cannot confirm stable idle")
+        check(await malformedStatus.run() == .pending, "Malformed query replies and notifications cannot confirm stable idle")
         malformedStatus.pending("Invalid status evidence retains shutdown barrier")
     }
 
@@ -366,6 +366,42 @@ enum Gen1HotspotCleanupTests {
         check(h.clock >= 20.25, "An immediate device reply still requires actual settling time")
     }
 
+    private static func testNotificationOnlyFirmware() async {
+        let h = Harness()
+        // The real device sends 0x73 transitions and does not answer 0x72.
+        h.at(30.674) { h.reply(Gen1Commands.closeHotspot, [2]) }
+        h.at(81.581) { h.reply(Gen1Commands.deviceStatusChanged, [0]) }
+        h.at(81.590) { h.reply(Gen1Commands.deviceStatusChanged, [4]) }
+        h.at(84.613) { h.reply(Gen1Commands.deviceStatusChanged, [0]) }
+        h.at(85.153) { h.reply(Gen1Commands.deviceStatusChanged, [0]) }
+        h.at(89) { h.pending("Shutdown transition must restart the five-second idle window") }
+        check(await h.run() == .pending, "Field device remains busy beyond the initial UI deadline")
+        h.advance(6.75)
+        check(await h.run() == .settled, "Fresh 0x73 stable idle releases notification-only firmware")
+        check(h.clock >= 89.613 && h.clock < 92, "Late field timeline recovers without unsupported 0x72 replies")
+        check(h.closeCommands.count == 1, "Notification recovery does not duplicate close")
+
+        let late = Harness()
+        late.at(30) { late.reply(Gen1Commands.closeHotspot, [2]) }
+        check(await late.run() == .pending, "No idle notification preserves the timeout barrier")
+        late.advance(20)
+        let eventAt = late.clock
+        late.reply(Gen1Commands.deviceStatusChanged, [0])
+        check(await late.run() == .settled, "Late 0x73 resumes cleanup automatically")
+        check(late.clock >= eventAt + 5, "Unobserved timeout gap is not counted as idle")
+        check(late.closeCommands.count == 1, "Late state does not resend close")
+
+        let disconnected = Harness()
+        disconnected.at(1) { disconnected.reply(Gen1Commands.closeHotspot, [2]) }
+        disconnected.at(21) { disconnected.reply(Gen1Commands.deviceStatusChanged, [0]) }
+        disconnected.at(23) {
+            disconnected.connected = false
+            disconnected.cleanup.connectionInterrupted()
+        }
+        disconnected.at(30) { disconnected.connected = true }
+        check(await disconnected.run() == .pending, "Disconnect invalidates notification idle evidence")
+    }
+
     static func main() async {
         let defaults = Cleanup.Timing()
         check(defaults.timeout == 75, "Production cleanup has a 75-second overall deadline")
@@ -382,6 +418,7 @@ enum Gen1HotspotCleanupTests {
         await testFailedStatusEnqueueRestartsIdleEvidence()
         await testIndependentDevices()
         await testFailedQueueCanRetryWithoutFalseEvidence()
+        await testNotificationOnlyFirmware()
         print("Gen1HotspotCleanupTests passed: \(assertions) assertions")
     }
 }

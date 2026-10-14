@@ -18,7 +18,7 @@ nonisolated struct Gen1MediaTCPTestConfiguration: Sendable {
 actor Gen1MediaTCPClient {
     private enum State { case idle, connecting, ready, finished, closed }
     private struct Timing {
-        var connect: TimeInterval = 10
+        var connect: TimeInterval = 30
         var read: TimeInterval = 15
         var write: TimeInterval = 15
         var list: TimeInterval = 30
@@ -93,6 +93,7 @@ actor Gen1MediaTCPClient {
                 if requiresWiFi { parameters.requiredInterfaceType = .wifi }
                 let connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: parameters)
                 self.connection = connection
+                logConnection("state=starting timeout=\(timing.connect)s requiredInterface=\(requiresWiFi ? "wifi" : "any")")
                 connection.stateUpdateHandler = { [weak self] state in
                     Task { await self?.connectionChanged(state) }
                 }
@@ -212,6 +213,7 @@ actor Gen1MediaTCPClient {
 
     private func connectionChanged(_ newState: NWConnection.State) {
         guard state != .closed else { return }
+        logConnection("state=\(String(describing: newState))")
         switch newState {
         case .ready:
             guard state == .connecting else { return }
@@ -233,6 +235,13 @@ actor Gen1MediaTCPClient {
         case .cancelled: transportFailed(Gen1MediaTCPError.connectionClosed)
         default: break // A waiting route gets the same bounded connect deadline.
         }
+    }
+
+    private func logConnection(_ detail: String) {
+        #if !GEN1_MEDIA_TCP_TESTING
+        DebugLogStore.logWiFi("一代：TCP 连接诊断",
+            detail: "endpoint=\(host):\(port) \(detail); TCP_ready_is_required_before_file_list")
+        #endif
     }
 
     private func heartbeatInterval() -> TimeInterval? { state == .ready ? timing.heartbeat : nil }
@@ -389,6 +398,7 @@ actor Gen1MediaTCPClient {
 
     private func abort(_ error: Error) {
         guard state != .closed else { return }
+        if state == .connecting { logConnection("state=aborted error=\(String(reflecting: error))") }
         state = .closed
         terminalError = error
         connection?.stateUpdateHandler = nil

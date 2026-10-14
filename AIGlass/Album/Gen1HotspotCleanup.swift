@@ -21,6 +21,7 @@ final class Gen1HotspotCleanup {
         var queuedAt: TimeInterval?
         var replyAt: TimeInterval?
         var idleSince: TimeInterval?
+        var idleFromNotification = false
         var querySentAt: TimeInterval?
         var lastQueryAt: TimeInterval?
     }
@@ -73,6 +74,7 @@ final class Gen1HotspotCleanup {
     func connectionInterrupted() {
         for id in Array(pending.keys) {
             pending[id]?.idleSince = nil
+            pending[id]?.idleFromNotification = false
             pending[id]?.querySentAt = nil
             pending[id]?.lastQueryAt = nil
         }
@@ -82,6 +84,7 @@ final class Gen1HotspotCleanup {
         guard var state = pending[targetID], state.queuedAt != nil else { return }
         guard isAuthorized(state.identity), canSend(targetID) else {
             pending[targetID]?.idleSince = nil
+            pending[targetID]?.idleFromNotification = false
             pending[targetID]?.querySentAt = nil
             return
         }
@@ -92,6 +95,7 @@ final class Gen1HotspotCleanup {
             // that firmware has responded; fresh stable idle is also required.
             state.replyAt = payload.first == 0xE3 ? nil : time
             state.idleSince = nil
+            state.idleFromNotification = false
             state.querySentAt = nil
             state.lastQueryAt = nil
             log("一代：收到热点关闭回包，继续等待稳定空闲",
@@ -100,7 +104,15 @@ final class Gen1HotspotCleanup {
             guard payload.count == 1 else { return }
             if payload[0] != 0 {
                 state.idleSince = nil
+                state.idleFromNotification = false
                 state.querySentAt = nil
+            } else if command == Gen1Commands.deviceStatusChanged, state.replyAt != nil {
+                // Firmware reports state transitions through 0x73 even when it
+                // never answers 0x72. This is a fresh event, not cached status.
+                if state.idleSince == nil || workers[targetID] == nil { state.idleSince = time }
+                state.idleFromNotification = true
+                state.querySentAt = nil
+                log("一代：收到热点收尾期间空闲通知", "target=\(targetID) command=0x73; waiting_for_stable_idle")
             } else if command == Gen1Commands.deviceStatusQuery,
                       let replyAt = state.replyAt, let queryAt = state.querySentAt,
                       queryAt >= replyAt, time - queryAt <= timing.queryTimeout {
@@ -116,12 +128,20 @@ final class Gen1HotspotCleanup {
             }
         }
         pending[targetID] = state
+        if state.idleFromNotification, workers[targetID] == nil {
+            // A late event can arrive after the UI's cleanup deadline. Observe
+            // from this new event without requiring another tap or another close.
+            _ = worker(for: targetID, resetObservation: false)
+        }
     }
 
-    private func worker(for targetID: UUID) -> Task<Outcome, Never> {
+    private func worker(for targetID: UUID, resetObservation: Bool = true) -> Task<Outcome, Never> {
         if let task = workers[targetID] { return task }
         // A paused/timed-out observer cannot count the unobserved gap as idle.
-        pending[targetID]?.idleSince = nil
+        if resetObservation {
+            pending[targetID]?.idleSince = nil
+            pending[targetID]?.idleFromNotification = false
+        }
         pending[targetID]?.querySentAt = nil
         pending[targetID]?.lastQueryAt = nil
         let task = Task { [self] in
@@ -138,11 +158,21 @@ final class Gen1HotspotCleanup {
             guard let state = pending[targetID] else { return .settled }
             guard isAuthorized(state.identity) else {
                 pending[targetID]?.idleSince = nil
+                pending[targetID]?.idleFromNotification = false
                 pending[targetID]?.querySentAt = nil
                 log("一代：热点收尾暂停，保留重试阻断", "target=\(targetID) reason=account_or_target_changed")
                 return .pending
             }
             if canSend(targetID) {
+                if state.idleFromNotification, let idleSince = state.idleSince,
+                   let replyAt = state.replyAt,
+                   now() - replyAt >= timing.replySettleInterval,
+                   now() - idleSince >= timing.idleInterval {
+                    pending[targetID] = nil
+                    log("一代：热点收尾等待结束，允许下一次导入",
+                        "target=\(targetID) evidence=close_reply_then_fresh_0x73_stable_idle")
+                    return .settled
+                }
                 if state.queuedAt == nil {
                     // Install before sending so even an immediate reply is owned.
                     pending[targetID]?.queuedAt = now()
@@ -154,16 +184,19 @@ final class Gen1HotspotCleanup {
                 } else if state.replyAt != nil,
                           state.lastQueryAt.map({ now() - $0 >= timing.queryInterval }) ?? true,
                           state.querySentAt.map({ now() - $0 > timing.queryTimeout }) ?? true {
-                    if state.querySentAt != nil { pending[targetID]?.idleSince = nil }
+                    if state.querySentAt != nil, !state.idleFromNotification {
+                        pending[targetID]?.idleSince = nil
+                    }
                     pending[targetID]?.querySentAt = now()
                     pending[targetID]?.lastQueryAt = now()
                     if !send(targetID, Gen1Commands.deviceStatusQuery) {
                         pending[targetID]?.querySentAt = nil
-                        pending[targetID]?.idleSince = nil
+                        if !state.idleFromNotification { pending[targetID]?.idleSince = nil }
                     }
                 }
             } else {
                 pending[targetID]?.idleSince = nil
+                pending[targetID]?.idleFromNotification = false
                 pending[targetID]?.querySentAt = nil
                 pending[targetID]?.lastQueryAt = nil
             }

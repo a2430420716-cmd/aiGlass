@@ -39,6 +39,10 @@ jobs:
           xcodebuild -version
           sudo gem install cocoapods -v 1.17.0 --no-document
           pod install --deployment
+      - name: 验证一代热点收尾和 TCP 传输
+        run: |
+          bash Tests/run-gen1-hotspot-cleanup-tests.sh
+          bash Tests/run-gen1-media-tcp-tests.sh
       - name: 签名、归档、导出 IPA
         env:
           IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
