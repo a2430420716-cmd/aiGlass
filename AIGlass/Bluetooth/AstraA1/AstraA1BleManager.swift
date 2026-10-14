@@ -1857,7 +1857,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         updateState(.discoveringServices)
         connectLog(
             "discoverServices",
-            detail: "reason=\(reason) attempt=\(gattDiscoveryAttempt) peripheralState=\(peripheralStateDescription(peripheral.state))"
+            detail: "reason=\(reason) attempt=\(gattDiscoveryAttempt) peripheralState=\(peripheralStateDescription(peripheral.state)) requestedServiceUUIDs=all"
         )
         peripheral.discoverServices(nil)
         startConnectWatchdog(for: peripheral)
@@ -1865,6 +1865,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 从已连接外设恢复写/通知特征并读电量。
     private func recoverCharacteristics(from peripheral: CBPeripheral) {
+        logProtocolServiceEvidence(peripheral, error: nil, source: "cached-services-before-recovery")
         let services = peripheral.services ?? []
         assignCharacteristics(from: services)
         if writeCharacteristic != nil, notifyCharacteristic != nil,
@@ -7703,9 +7704,30 @@ extension AstraA1BleManager: CBPeripheralDelegate {
         }
     }
 
+    /// Persist discovery evidence in exported logs, including empty/error results.
+    /// Cached services are labelled separately and do not prove a fresh discovery.
+    private func logProtocolServiceEvidence(_ peripheral: CBPeripheral, error: Error?, source: String) {
+        let services = peripheral.services ?? []
+        let found = services.map { "\($0.uuid.uuidString)(primary=\($0.isPrimary))" }.joined(separator: ",")
+        let expected = Self.supportedServiceUUIDs.map(\.uuidString).joined(separator: ",")
+        let matched = services.filter { Self.supportedServiceUUIDs.contains($0.uuid) }.map { $0.uuid.uuidString }.joined(separator: ",")
+        let nsError = error as NSError?
+        let detail = "diagnosticVersion=1 source=\(source)"
+            + "\nperipheral=\(peripheral.identifier.uuidString) name=\((peripheral.name ?? "unknown").debugDescription)"
+            + "\nperipheralState=\(peripheralStateDescription(peripheral.state)) appGATTState=\(connectionState) attempt=\(gattDiscoveryAttempt)"
+            + "\nexpectedProtocolServiceUUIDs=[\(expected)] gen1ServiceUUID=\(Self.gen1ServiceUUID.uuidString)"
+            + "\nreturnedServiceCount=\(services.count) returnedServices=[\(found)] matchedProtocolServices=[\(matched)]"
+            + "\nerrorDomain=\(nsError?.domain ?? "none") errorCode=\(nsError.map { String($0.code) } ?? "none") error=\((error?.localizedDescription ?? "none").debugDescription)"
+            + "\nprobing=\(isProbingService) pairingActive=\(isPairingSessionActive) userPairing=\(isUserInitiatedPairingConnect)"
+            + "\nevidenceScope=iOS_CoreBluetooth_service_result; backend_model_list_does_not_supply_GATT_services"
+        connectLog("protocol service discovery evidence", detail: detail, direction: .received)
+        DebugLogStore.logBLEEvent("protocol service discovery evidence", detail: detail)
+    }
+
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         Task { @MainActor in
             guard !shouldIgnoreGATTCallback(from: peripheral, event: "didDiscoverServices") else { return }
+            logProtocolServiceEvidence(peripheral, error: error, source: "didDiscoverServices-before-phase-guard")
             guard case .discoveringServices = connectionState,
                   pendingCharacteristicServices.isEmpty else { return }
             cancelDiscoverServicesWorkItem()
@@ -7733,6 +7755,7 @@ extension AstraA1BleManager: CBPeripheralDelegate {
 
             let hasProtocolService = services.contains { Self.supportedServiceUUIDs.contains($0.uuid) }
             if !hasProtocolService {
+                connectLog("protocol service missing", detail: "peripheral=\(peripheral.identifier.uuidString) failureStage=service-discovery; see_protocol_service_discovery_evidence; device_identity_query_not_started=true")
                 if isProbingService {
                     handleProbeFailed(reason: "no protocol service \(AstraA1BleProtocol.serviceUUID.uuidString)")
                 } else if isPairingSessionActive && isUserInitiatedPairingConnect {

@@ -724,13 +724,13 @@ final class MediaImportManager: ObservableObject {
             ssid = credentials.ssid
             try checkTarget()
             state = .connectingWifi
-            let gateway = try await DeviceWifiManager.connectGen1(
+            let host = try await DeviceWifiManager.connectGen1(
                 ssid: credentials.ssid, password: credentials.password,
                 diagnosticID: diagnostics.id, deviceEvidence: { diagnostics.deviceEvidence }
             )
             try checkTarget()
-            endpoint = "tcp://\(gateway):8556"
-            let transport = Gen1MediaTCPClient(host: gateway)
+            endpoint = "tcp://\(host):8556"
+            let transport = Gen1MediaTCPClient(host: host)
             client = transport
             try await transport.connect()
             try checkTarget()

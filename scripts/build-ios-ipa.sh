@@ -38,7 +38,7 @@ required = plistlib.loads(pathlib.Path('AIGlass/AIGlass.entitlements').read_byte
 for key, value in required.items():
     actual = entitlements.get(key)
     if isinstance(value, list):
-        assert isinstance(actual, list) and ('*' in actual or set(value).issubset(actual)), '描述文件缺少权限: ' + key
+        assert actual == '*' or (isinstance(actual, list) and ('*' in actual or set(value).issubset(actual))), '描述文件缺少权限: ' + key
     else:
         assert actual == value, '描述文件缺少权限: ' + key
 method = os.environ['EXPORT_METHOD']

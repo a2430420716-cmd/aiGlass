@@ -123,8 +123,8 @@ enum DeviceWifiManager {
         )
     }
 
-    /// Gen1 AP import uses TCP 8556 at the system-reported Wi-Fi gateway.
-    /// It never applies the Gen2 subnet fallback or synthesizes a router address.
+    /// Gen1 firmware serves media at a fixed endpoint. Apply the device's SSID,
+    /// then let the Wi-Fi-only TCP connection verify reachability without SSID/gateway reads.
     static func connectGen1(
         ssid: String,
         password: String,
@@ -142,8 +142,8 @@ enum DeviceWifiManager {
         diagnostics.log(
             "开始加入一代眼镜热点",
             detail: "targetSSID=\(ssid.debugDescription) passwordUTF8Bytes=\(password.utf8.count)"
-                + "\nserviceProtocol=TCP servicePort=8556 gatewaySource=systemWiFiPath"
-                + "\nidentityPolicy=exactSSIDRequired subnetFallback=false readyTimeout=\(readyTimeout)s",
+                + "\nserviceEndpoint=192.168.4.1:8556 endpointSource=fixedFirmwareAddress"
+                + "\nidentityPolicy=applyDeviceSSIDThenWiFiOnlyTCP ssidReadRequired=false gatewayReadRequired=false",
             direction: .sent
         )
         NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
@@ -151,16 +151,15 @@ enum DeviceWifiManager {
             try await Task.sleep(nanoseconds: 300_000_000)
             try await applyConfiguration(ssid: ssid, password: password, diagnostics: diagnostics,
                                          includePasswordInDiagnostics: false, timeout: 45)
-            let resolver = Gen1WifiGatewayResolver(targetSSID: ssid, diagnostics: diagnostics)
-            let gateway = try await resolver.resolve(timeout: readyTimeout)
             try Task.checkCancellation()
-            diagnostics.log("一代热点网关已确认", detail: "ssid=\(ssid.debugDescription) gateway=\(gateway)"
-                + "\nserviceEndpoint=TCP:\(gateway):8556 TCPVerified=false nextStage=TCPMediaTransport", direction: .received)
-            return gateway
+            diagnostics.log("一代热点配置已应用，连接固定文件服务", detail: "ssid=\(ssid.debugDescription)"
+                + "\nserviceEndpoint=192.168.4.1:8556 TCPVerified=false associationConfirmed=false"
+                + "\nnextStage=WiFiOnlyTCPMediaTransport ssidReadRequired=false gatewayReadRequired=false", direction: .received)
+            return "192.168.4.1"
         } catch {
             diagnostics.log("一代热点连接结束，移除本次配置", detail: "ssid=\(ssid.debugDescription)"
                 + "\ncancelled=\(error is CancellationError || Task.isCancelled) error=\(error.localizedDescription)"
-                + "\nserviceProtocol=TCP servicePort=8556 gateway=unconfirmed", direction: .received)
+                + "\nserviceEndpoint=192.168.4.1:8556 TCPVerified=false", direction: .received)
             NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
             throw error
         }
