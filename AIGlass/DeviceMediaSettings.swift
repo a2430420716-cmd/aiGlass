@@ -76,6 +76,14 @@ enum DeviceMediaSettings {
         storageKey(prefix: autoSavePrefix, userId: userId, deviceKey: deviceKey)
     }
 
+    static func clear(userId: String?, deviceKey: String?) {
+        for prefix in [autoSavePrefix, recordDurationPrefix, videoResolutionPrefix, wearDetectionPrefix] {
+            if let key = storageKey(prefix: prefix, userId: userId, deviceKey: deviceKey) {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+    }
+
     private static func storageKey(prefix: String, userId: String?, deviceKey: String?) -> String? {
         guard let device = normalized(deviceKey), !device.isEmpty else { return nil }
         let user = normalized(userId) ?? "anonymous"

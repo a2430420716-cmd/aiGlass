@@ -48,6 +48,7 @@ struct AIGlassApp: App {
     @StateObject private var languageManager = AppLanguageManager.shared
 
     init() {
+        DeviceWifiManager.removeStaleTransferConfigurations()
         // 异步远程退出检查；除响应正文严格为 true 外，任何结果均忽略。
         StartupRemoteCrashCheck.start()
         // 启动即生成/读取 Keychain 设备 UUID

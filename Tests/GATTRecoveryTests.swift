@@ -20,7 +20,55 @@ enum GATTRecoveryTests {
         testRetryNeedsFailureAndConsumesAuthorization()
         testPollingDoesNotPostponeRetry()
         testRetryBackoffAndReset()
+        testBoundReconnectScanAndFailureCooldowns()
+        testBoundReconnectStopsAfterThreeRetries()
         print("GATT recovery: \(assertionCount) assertions passed")
+    }
+
+    private static func testBoundReconnectScanAndFailureCooldowns() {
+        var policy = BoundBLEReconnectPolicy()
+        check(policy.canRetry(now: 0), "A bound device can reconnect without waiting for system BLE evidence")
+        check(policy.claimScan(now: 0), "Missing peripheral cache permits the first identity scan")
+        for second in 1..<30 {
+            check(!policy.claimScan(now: TimeInterval(second)), "Repeated home refreshes must not start another scan or move its deadline")
+            check(policy.canRetry(now: TimeInterval(second)), "Scan cooldown must not block a subsequently retrieved cached peripheral")
+        }
+        check(policy.claimScan(now: 30), "A missing device can be scanned again after the cooldown")
+        policy.noteConnectionFailure(now: 35)
+        for second in 36..<65 {
+            check(!policy.canRetry(now: TimeInterval(second)), "Actual connection failure waits 30 seconds")
+            check(!policy.claimScan(now: TimeInterval(second)), "Scan fallback must not bypass connection failure cooldown")
+        }
+        check(policy.canRetry(now: 65), "Polling does not postpone the next connection attempt")
+        check(policy.claimScan(now: 65), "Scan can resume when both deadlines have passed")
+        policy.noteConnectionFailure(now: 66)
+        policy.reset()
+        check(policy.canRetry(now: 66), "Successful GATT setup clears the failure deadline")
+        check(policy.claimScan(now: 66), "Successful GATT setup also clears old scan throttling")
+    }
+
+    private static func testBoundReconnectStopsAfterThreeRetries() {
+        var policy = BoundBLEReconnectPolicy()
+        check(policy.canRetry(now: 0), "Initial connection is allowed")
+        for retry in 1...3 {
+            let failedAt = TimeInterval((retry - 1) * 30)
+            policy.noteConnectionFailure(now: failedAt)
+            check(!policy.isExhausted, "Failure before retry \(retry) must leave that retry available")
+            check(!policy.canRetry(now: failedAt + 29), "Each retry still respects cooldown")
+            check(policy.canRetry(now: failedAt + 30), "Automatic retry \(retry) is allowed")
+        }
+        policy.noteConnectionFailure(now: 90)
+        check(policy.isExhausted, "Failure of the third retry stops this cycle")
+        check(policy.failedAttempts == 4, "Budget includes initial attempt and three retries")
+        for second in 120...300 {
+            check(!policy.canRetry(now: TimeInterval(second)), "Polling or foreground refresh must not reopen exhausted retries")
+            check(!policy.claimScan(now: TimeInterval(second)), "Scanning cannot bypass exhausted retries")
+        }
+        policy.noteConnectionFailure(now: 400)
+        check(policy.failedAttempts == 4, "Extra callbacks cannot grow or reset exhausted counter")
+        policy.reset()
+        check(policy.failedAttempts == 0 && !policy.isExhausted, "Success or explicit manual retry starts a new cycle")
+        check(policy.canRetry(now: 400), "New cycle can connect immediately")
     }
 
     private static func testSlowDiscoveryDoesNotConsumeNotificationBudget() {

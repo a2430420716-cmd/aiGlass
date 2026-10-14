@@ -45,7 +45,8 @@ nonisolated struct Gen1MediaTCPHeader: Equatable, Sendable {
     var bodyLength: Int64 { totalLength - 20 }
 }
 
-/// G5K61 AP protocol: 18-byte BE header, body, fixed AF8C trailer.
+/// G5K61 AP protocol: 18-byte header, body, fixed AF8C trailer.
+/// Magic, command and lengths use network order. Routing fields may use LE on device firmware.
 /// `external_length` describes bytes already contained in the body; never add it twice.
 nonisolated enum Gen1MediaTCPProtocol {
     static let headerSize = 18
@@ -77,13 +78,19 @@ nonisolated enum Gen1MediaTCPProtocol {
         guard bytes.count == headerSize else { throw Gen1MediaTCPError.invalidFrame("header must contain 18 bytes") }
         guard bytes[0] == 0xAF, bytes[1] == 0x8C else { throw Gen1MediaTCPError.invalidFrame("invalid magic") }
         func uint16(_ offset: Int) -> UInt16 { UInt16(bytes[offset]) << 8 | UInt16(bytes[offset + 1]) }
+        func littleEndianUInt16(_ offset: Int) -> UInt16 { UInt16(bytes[offset]) | UInt16(bytes[offset + 1]) << 8 }
         let version = uint16(2)
         let source = uint16(6)
         let target = uint16(8)
-        // Older Android/UniApp framing left all three fields zero. Do not accept
-        // partly zero or reversed IDs, which could be echoed client requests.
+        // Firmware TransferFrame writes these three fields in host order on LE
+        // controllers, while magic/command/lengths remain in network order.
+        // Accept complete BE or LE response tuples, never independently swap
+        // individual fields or accept echoed client routing (source=2,target=3).
         let legacy = version == 0 && source == 0 && target == 0
-        guard legacy || (version == 1 && source == 3 && target == 2) else {
+        let networkRouting = version == 1 && source == 3 && target == 2
+        let hostRouting = littleEndianUInt16(2) == 1
+            && littleEndianUInt16(6) == 3 && littleEndianUInt16(8) == 2
+        guard legacy || networkRouting || hostRouting else {
             throw Gen1MediaTCPError.invalidFrame("invalid version/source/target")
         }
         guard uint16(10) == 0 else { throw Gen1MediaTCPError.invalidFrame("reserved field is not zero") }

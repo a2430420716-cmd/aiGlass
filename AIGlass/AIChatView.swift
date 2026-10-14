@@ -64,12 +64,13 @@ struct AIChatView: View {
             }
             // 对齐 Android `background_app`：AI 对话页始终使用 #F5F5F5，
             // 不跟随系统深色模式切换背景。
+            .mainTabRootContent()
             .background(AppTheme.background.ignoresSafeArea())
             .background {
                 NavigationLink(
                     isActive: $navigateToSettings,
                     destination: {
-                        GlassesSettingsView(device: connectedSettingsDevice)
+                        GlassesSettingsView(device: connectedSettingsDevice, suppressesTabBarOnAppear: false)
                     },
                     label: { EmptyView() }
                 )

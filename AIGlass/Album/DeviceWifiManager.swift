@@ -20,6 +20,30 @@ enum DeviceWifiError: LocalizedError {
 
 enum DeviceWifiManager {
     private static let logTag = "[DeviceWifi]"
+    private static let managedHotspotsKey = "DeviceWifiManager.managedTransferHotspots"
+    private static var configurationAttempts: [String: UUID] = [:]
+
+    /// Only remove networks installed by a previous transfer, never user-managed Wi-Fi.
+    static func removeStaleTransferConfigurations() {
+        let ssids = UserDefaults.standard.stringArray(forKey: managedHotspotsKey) ?? []
+        for ssid in ssids {
+            NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
+        }
+        UserDefaults.standard.removeObject(forKey: managedHotspotsKey)
+    }
+
+    private static func rememberTransferConfiguration(_ ssid: String) {
+        var ssids = Set(UserDefaults.standard.stringArray(forKey: managedHotspotsKey) ?? [])
+        ssids.insert(ssid)
+        UserDefaults.standard.set(Array(ssids), forKey: managedHotspotsKey)
+    }
+
+    private static func removeTransferConfiguration(_ ssid: String) {
+        configurationAttempts.removeValue(forKey: ssid)
+        NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
+        let ssids = (UserDefaults.standard.stringArray(forKey: managedHotspotsKey) ?? []).filter { $0 != ssid }
+        UserDefaults.standard.set(ssids, forKey: managedHotspotsKey)
+    }
 
     /// 系统接受热点配置后，等待目标热点身份和有效 IPv4 的最长时间。
     private static let readyTimeout: TimeInterval = 30
@@ -35,11 +59,13 @@ enum DeviceWifiManager {
         probeBaseURL: String = "http://192.168.0.1/",
         diagnosticContext: String = "unspecified",
         diagnosticID: String = UUID().uuidString,
-        deviceEvidence: (@MainActor () -> String)? = nil
+        deviceEvidence: (@MainActor () -> String)? = nil,
+        keepConnectionInBackground: Bool = false
     ) async throws {
         let probeEndpoint = ProbeEndpoint(baseURL: probeBaseURL)
         let diagnostics = WifiDiagnosticSession(
-            targetSSID: ssid, context: diagnosticContext, id: diagnosticID, deviceEvidence: deviceEvidence
+            targetSSID: ssid, context: diagnosticContext, id: diagnosticID, deviceEvidence: deviceEvidence,
+            joinOnce: !keepConnectionInBackground
         )
         defer { diagnostics.stop() }
         diagnostics.recordSnapshot(phase: "before-apply", force: true)
@@ -51,15 +77,16 @@ enum DeviceWifiManager {
         )
 
         // 残留配置会让 apply 直接返回 alreadyAssociated，却未真正关联到眼镜。
-        NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
+        removeTransferConfiguration(ssid)
         diagnostics.log("移除旧热点配置", detail: "ssid=\(ssid)")
         do {
             try await Task.sleep(nanoseconds: 300_000_000)
-            try await applyConfiguration(ssid: ssid, password: password, diagnostics: diagnostics)
+            if keepConnectionInBackground { rememberTransferConfiguration(ssid) }
+            try await applyConfiguration(ssid: ssid, password: password, diagnostics: diagnostics, joinOnce: !keepConnectionInBackground)
         } catch {
             diagnostics.recordSnapshot(phase: "apply-failed-before-cleanup", force: true)
             diagnostics.log("热点申请失败，移除配置", detail: "callerTaskCancelled=\(Task.isCancelled)")
-            NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
+            removeTransferConfiguration(ssid)
             print("\(logTag) apply failed, abort task: \(error.localizedDescription)")
             let nsError = error as NSError
             diagnostics.log(
@@ -79,7 +106,7 @@ enum DeviceWifiManager {
             let cancelled = error is CancellationError || Task.isCancelled
             diagnostics.recordSnapshot(phase: cancelled ? "cancelled-before-cleanup" : "timeout-before-cleanup", force: true)
             diagnostics.log("热点等待结束，移除配置", detail: "reason=\(cancelled ? "caller-cancelled" : "readiness-timeout"); snapshot_recorded_before_cleanup")
-            NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
+            removeTransferConfiguration(ssid)
             diagnostics.log(
                 cancelled ? "热点连接已取消" : "热点关联或 IP 获取超时，本次任务终止",
                 detail: "targetSSID=\(ssid)\ntimeout=\(Int(readyTimeout))s\nserviceEndpoint=\(probeEndpoint.host):\(probeEndpoint.port)\nTCPVerified=false HTTPResponseVerified=false",
@@ -142,7 +169,7 @@ enum DeviceWifiManager {
     static func disconnect(from ssid: String) {
         print("\(logTag) remove hotspot config ssid=\(ssid)")
         DebugLogStore.logWiFi("断开眼镜热点", detail: "ssid=\(ssid)", direction: .sent)
-        NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
+        removeTransferConfiguration(ssid)
         DebugLogStore.logWiFi("热点配置已移除", detail: "ssid=\(ssid)", direction: .received)
     }
 
@@ -153,12 +180,15 @@ enum DeviceWifiManager {
         password: String,
         diagnostics: WifiDiagnosticSession,
         includePasswordInDiagnostics: Bool = true,
+        joinOnce: Bool = true,
         timeout: TimeInterval? = nil
     ) async throws {
         let started = ProcessInfo.processInfo.systemUptime
+        let attemptID = UUID()
+        configurationAttempts[ssid] = attemptID
         diagnostics.log(
             "请求系统加入热点",
-            detail: "targetSSID=\(ssid.debugDescription)\npassword=\(includePasswordInDiagnostics ? password.debugDescription : "<redacted>")\npasswordUTF8Bytes=\(password.utf8.count)\nsecurity=\(password.isEmpty ? "open" : "WPA/WPA2")\njoinOnce=true",
+            detail: "targetSSID=\(ssid.debugDescription)\npassword=\(includePasswordInDiagnostics ? password.debugDescription : "<redacted>")\npasswordUTF8Bytes=\(password.utf8.count)\nsecurity=\(password.isEmpty ? "open" : "WPA/WPA2")\njoinOnce=\(joinOnce)",
             direction: .sent
         )
         let result = CallbackResult<Void>()
@@ -180,10 +210,22 @@ enum DeviceWifiManager {
                 } else {
                     configuration = NEHotspotConfiguration(ssid: ssid, passphrase: password, isWEP: false)
                 }
-                configuration.joinOnce = true
+                // A join-once network can be removed when iOS backgrounds the app.
+                // Gen2 transfers retain it until explicit completion/failure cleanup.
+                configuration.joinOnce = joinOnce
+                if !joinOnce { configuration.lifeTimeInDays = 1 }
 
                 NEHotspotConfigurationManager.shared.apply(configuration) { error in
                     Task { @MainActor in
+                        // apply cannot be cancelled. A late callback must not resurrect a
+                        // cancelled persistent network or remove a newer attempt's network.
+                        if result.isResolved || configurationAttempts[ssid] != attemptID {
+                            if configurationAttempts[ssid] == nil || configurationAttempts[ssid] == attemptID {
+                                removeTransferConfiguration(ssid)
+                            }
+                            result.resolve(.failure(CancellationError()))
+                            return
+                        }
                         let elapsed = ProcessInfo.processInfo.systemUptime - started
                         let timing = "applyElapsed=\(String(format: "%.3f", elapsed))s"
                         diagnostics.recordSnapshot(phase: "apply-callback", force: true)
@@ -340,6 +382,7 @@ enum DeviceWifiManager {
     private final class CallbackResult<Value: Sendable> {
         private var continuation: CheckedContinuation<Value, Error>?
         private var result: Result<Value, Error>?
+        var isResolved: Bool { result != nil }
 
         func install(_ continuation: CheckedContinuation<Value, Error>) {
             if let result {

@@ -34,7 +34,13 @@
 | 保活 | 独立任务每 2 秒发送 `0x0006`，文件落盘使用独立 actor；按长度读取，文件内容中的 `AF8C` 不作为分隔符 |
 | 结束 | 本批文件完成后发送一次 `0x0007`，释放 TCP 和手机热点配置；仅本次曾实际提交开启请求且未收到忙拒绝时，交给收尾协调器关闭同一眼镜热点 |
 
-TCP 使用 18 字节大端帧头和固定 `AF8C` 帧尾。请求使用 version=1、source=2、target=3；接收除标准 3→2 外，兼容 Android 历史版本 version/source/target 全为零的帧，拒绝混合零值和反向回显。
+TCP 使用 18 字节帧头和固定 `AF8C` 帧尾。magic、command、external_length、total_length 使用网络序。请求使用大端 version=1、source=2、target=3；接收兼容 version=1、source=3、target=2 三个字段统一使用大端或小端，以及 Android 历史版本三个字段全为零的帧。拒绝混合零值、三个字段各自使用不同字节序和反向回显。
+
+### 2026-10-14 混合字节序接收兼容
+
+主控小端原样写出 version/source/target 时，回包字段为 `01 00`、`03 00`、`02 00`。接收解析现接受这一完整组合，避免将其按大端误读成 256/768/512 并报 `invalid version/source/target`。长度、文件名长度、magic、reserved 和帧尾校验继续保留；发送格式保持原有网络序。
+
+新增测试覆盖混合字节序文件列表、心跳、超过 65535 字节的文件、六种不一致路由字段组合、反向回显和非法文件名长度。现有 TCP 回环成功批次使用混合字节序列表/文件响应，并交替接收大端心跳。此次 Windows 环境无 Swift/Xcode，尚未运行 Swift 测试或 iOS 编译；在 macOS 执行 `bash Tests/run-gen1-media-tcp-tests.sh`，再用实际眼镜回包验证。
 
 文档“单个文件结束”和 Android 的批次结束行为存在表述差异：当前按 Android 的完整批次发送一次 `0x0007`。必须通过新版固件多文件真机测试确认，不将本地测试视为固件兼容证明。
 

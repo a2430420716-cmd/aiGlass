@@ -105,7 +105,7 @@ struct DeviceAboutView: View {
             AboutCardDivider()
             DeviceAboutRow(title: L10n.t("序列号", "Serial Number"), value: displaySerialNumber)
             AboutCardDivider()
-            DeviceAboutRow(title: L10n.t("眼镜MAC地址", "Glasses MAC Address"), value: displayMACAddress)
+            DeviceAboutRow(title: L10n.t("蓝牙标识", "Bluetooth Identifier"), value: displayMACAddress)
         }
     }
 
@@ -129,6 +129,7 @@ struct DeviceAboutView: View {
 
     private var displayName: String {
         (isAboutDeviceAvailable ? nonEmpty(ble.deviceName) : nil)
+            ?? (isAboutDeviceAvailable ? nonEmpty(ble.currentPeripheralName) : nil)
             ?? nonEmpty(boundDevice?.deviceName)
             ?? nonEmpty(boundDevice?.displayName)
             ?? placeholder
@@ -140,15 +141,20 @@ struct DeviceAboutView: View {
     }
 
     private var displaySerialNumber: String {
-        (isAboutDeviceAvailable ? nonEmpty(ble.deviceSN) : nil)
-            ?? nonEmpty(boundDevice?.hardwareSN)
-            ?? nonEmpty(boundDevice?.serialNumber)
-            ?? placeholder
+        DeviceIdentityPresentation.hardwareSN(
+            candidates: [
+                isAboutDeviceAvailable ? ble.deviceSN : nil,
+                (boundDevice?.serialNumber).flatMap { ble.cachedHardwareSN(forSerialNumber: $0) },
+                boundDevice?.hardwareSN
+            ],
+            bluetoothID: boundDevice?.serialNumber
+        ) ?? placeholder
     }
 
     /// iOS 不向第三方 App 提供 BLE 真实 MAC；展示 CoreBluetooth 外设 UUID（绑定接口 serial_number 同值）。
     private var displayMACAddress: String {
-        isAboutDeviceAvailable ? (nonEmpty(ble.deviceBluetoothIdentifier) ?? placeholder) : placeholder
+        (isAboutDeviceAvailable ? nonEmpty(ble.deviceBluetoothIdentifier) : nil)
+            ?? nonEmpty(boundDevice?.serialNumber) ?? placeholder
     }
 
     /// 协议未提供系统名称字段；MOCO 眼镜固件系统名为 MOS。

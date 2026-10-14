@@ -32,7 +32,9 @@ struct HomeVideoCaptureState {
     ) -> Bool {
         switch status {
         case .videoRecording:
-            if startedAt == nil { startedAt = uptime }
+            // BLE writes can precede actual recording. Anchor the minimum duration
+            // at the first device confirmation; repeated reports must not reset it.
+            if !hasConfirmedRecording { startedAt = uptime }
             hasConfirmedRecording = true
         case .standby:
             let completed = allowsCompletion && (hasConfirmedRecording || isStopPending)

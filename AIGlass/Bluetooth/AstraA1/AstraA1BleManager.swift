@@ -86,6 +86,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @Published private(set) var voiceWakeupResponse: VoiceWakeupResponse?
     /// factreset0 的 testresult：0=失败，1=成功，2=进行中。
     @Published private(set) var factoryResetResult: UInt8?
+    private var unpairFactoryResetConfirmation: FactoryResetConfirmation?
     /// 拍照/录像等动作被拒绝或失败时的提示文案（供 UI 弹窗）。
     @Published var mediaActionAlertMessage: String?
     @Published var mediaActionToastMessage: String?
@@ -377,6 +378,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var manualReconnectAllowAnyProtocolDevice = false
     private var manualReconnectScanWorkItem: DispatchWorkItem?
     private let manualReconnectScanTimeoutSeconds: TimeInterval = 15
+    private var boundReconnectScanTargetID: UUID?
+    private var boundReconnectScanTimeoutWorkItem: DispatchWorkItem?
+    private var boundBLEReconnectPolicy = BoundBLEReconnectPolicy()
     /// 已挂起常驻 connect 的外设；避免监控轮询反复重复 connect 刷屏。
     private var standingConnectPeripheralID: UUID?
     /// 系统传输层已连接、App GATT 却卡在 connecting 时的重建次数。
@@ -633,7 +637,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if savedPending > 0 {
             pendingRecordingImportFileCount = savedPending
         }
-        // 已绑定设备启动后监听系统连接事件；系统未连接前禁止主动 GATT connect。
+        // 已绑定设备优先接管系统连接，否则主动挂起目标 BLE 重连。
         let hasSavedPeripheral = UserDefaults.standard.string(forKey: savedPeripheralIDKey)
             .flatMap(UUID.init(uuidString:)) != nil
         autoReconnectEnabled = hasSavedPeripheral
@@ -669,6 +673,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             hasCorrespondingCard: deviceCardPresenceProvider?() ?? false
         )
     }
+
+    var currentPeripheralName: String? { connectedPeripheral?.name }
 
     func matchesCurrentDevice(serialNumber: String?, hardwareSN: String?) -> Bool {
         DeviceAvailabilityPolicy.matches(
@@ -743,6 +749,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 首页进入：系统蓝牙已连接才接管 GATT；否则只监听系统连接事件。
     func ensureConnected(reason: String = "") {
+        if stopBoundReconnectIfExhausted() { return }
         guard gen1OTAPeripheralID == nil else { return }
         if !isReady, reason == "gen1-ota-version-verification" || isRestoringGen1OTAConnection {
             // Version verification owns this reconnect. Falling through to a battery
@@ -754,7 +761,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             return
         }
         if savedPeripheralID() != nil, !userInitiatedDisconnect {
-            // 进 App/回前台恢复监听；系统连接事件到达前不主动 connect。
+            // 进 App/回前台恢复已绑定目标的 BLE 连接。
             autoReconnectEnabled = true
         }
         connectLog(
@@ -794,8 +801,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         refreshBatteryLevel()
     }
 
-    /// 首页显示时刷新电量：系统已连接则查询，否则只等待系统连接事件。
+    /// 首页显示时刷新电量：已连接则查询，否则恢复已绑定目标的 BLE 连接。
     func refreshBatteryLevel() {
+        if stopBoundReconnectIfExhausted() { return }
         guard gen1OTAPeripheralID == nil else { return }
         if isRestoringGen1OTAConnection, !isReady {
             ensureConnected(reason: "gen1-ota-version-verification")
@@ -886,6 +894,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         force: Bool = false,
         systemTransportObserved: Bool = false
     ) {
+        if stopBoundReconnectIfExhausted() { return }
         guard !isManualHardReconnectCentralTransitionInProgress else {
             connectLog(
                 "standing connect deferred: rebuilding central",
@@ -942,23 +951,31 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if systemTransportObserved || peripheral.state == .connected {
             systemTransportConnectedPeripheralIDs.insert(requestedID)
         }
-        guard let peripheral = systemConnectedPeripheral(matching: requestedID) else {
+        let systemPeripheral = systemConnectedPeripheral(matching: requestedID)
+        // Classic audio can reconnect without BLE. A saved binding authorizes a BLE
+        // connect request; retrieveConnectedPeripherals is an optimization, not a gate.
+        guard savedPeripheralID() == requestedID else {
             standingConnectAllowed = false
             reconnectPeripheral = peripheral
             if !isPairingSessionActive {
                 updateState(.disconnected)
             }
             connectLog(
-                "standing connect blocked: system transport not connected",
+                "standing connect blocked: target not bound",
                 detail: "id=\(requestedID.uuidString) cachedPeripheralState=\(peripheralStateDescription(peripheral.state))"
             )
             startSystemReconnectMonitor()
             return
         }
+        let peripheral = systemPeripheral ?? peripheral
+        // Historical peer events cannot prove the device is currently in range.
+        let hasCurrentSystemEvidence = systemTransportObserved || peripheral.state == .connected
+            || freshlyRetrievedSystemConnectedPeripheral(matching: requestedID) != nil
         if shouldRequireTemporaryManualHardReconnect(for: peripheral) {
             requireTemporaryManualHardReconnect(for: peripheral, source: "armSystemAutoConnect")
             return
         }
+        if boundReconnectScanTargetID != nil { stopScan() }
         reconnectPeripheral = peripheral
         connectedPeripheral = peripheral
         peripheral.delegate = self
@@ -984,7 +1001,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 direction: .sent
             )
             centralManager.connect(peripheral, options: nil)
-            if !isReady {
+            if !isReady, hasCurrentSystemEvidence {
                 startConnectWatchdog(
                     for: peripheral,
                     timeoutOverride: shouldRefreshSystemTransportGrace
@@ -998,6 +1015,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 detail: "id=\(peripheral.identifier.uuidString) peripheralState=\(peripheralStateDescription(peripheral.state))"
             )
             if !isReady,
+               hasCurrentSystemEvidence,
                peripheral.state == .connecting,
                (shouldRefreshSystemTransportGrace || connectWatchdogWorkItem == nil),
                standingConnectRecoveryCount < maxStandingConnectRecoveryAttempts {
@@ -1027,7 +1045,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     /// `retrievePeripherals` 只代表系统缓存过外设，不能证明「设置 > 蓝牙」当前已连接。
-    /// 自动连接门禁只接受 retrieveConnectedPeripherals 或目标 peerConnected 事件。
+    /// 此查询用于系统连接接管和 GATT 故障恢复，不作为已绑定 BLE 主动重连的前提。
     private func systemConnectedPeripheral(matching id: UUID) -> CBPeripheral? {
         guard let centralManager, centralManager.state == .poweredOn else { return nil }
         let connected = centralManager.retrieveConnectedPeripherals(
@@ -1084,6 +1102,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// initialization after a bounded cooldown, without rebuilding the central in a loop.
     @discardableResult
     private func recoverFailedGATTIfPossible(source: String, allowRetry: Bool) -> Bool {
+        if stopBoundReconnectIfExhausted() { return false }
         guard case .failed = connectionState,
               let context = failedGATTContext,
               context.central === centralManager,
@@ -1232,6 +1251,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             )
             return false
         }
+        if boundBLEReconnectPolicy.isExhausted {
+            boundBLEReconnectPolicy.reset()
+            clearManualHardReconnectRequirement(reason: "user retry after automatic retry limit")
+            return reconnectBoundDevice(boundSerialNumbers: [peripheralID.uuidString], reason: "user-retry-after-limit")
+        }
+        boundBLEReconnectPolicy.reset()
         guard let systemPeripheral = systemConnectedPeripheral(matching: peripheralID) else {
             clearManualHardReconnectRequirement(reason: "user tap but system transport disconnected")
             updateState(.disconnected)
@@ -1445,6 +1470,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 眼镜断电重连后，系统层已连但 App GATT 未就绪时，周期尝试接管。
     private func startSystemReconnectMonitor() {
         stopSystemReconnectMonitor()
+        if stopBoundReconnectIfExhausted() { return }
         guard autoReconnectEnabled, !userInitiatedDisconnect else { return }
         guard manualHardReconnectPeripheralID == nil || failedGATTContext != nil else { return }
         if case .ready = connectionState { return }
@@ -1474,6 +1500,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func tickSystemReconnectMonitor() {
         systemReconnectMonitorWorkItem = nil
+        if stopBoundReconnectIfExhausted() { return }
         guard autoReconnectEnabled, !userInitiatedDisconnect else { return }
         guard !isAutomaticGATTRecoveryInProgress else { return }
         if case .ready = connectionState { return }
@@ -1497,7 +1524,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             return
         }
 
-        // 未取得目标的系统连接证据：只轮询，不发 connect，也不累计失败次数。
+        // No cached target yet, or a bounded scan is cooling down. Keep monitoring.
         scheduleNextSystemReconnectMonitor(after: 2.5)
     }
 
@@ -1511,14 +1538,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         print("\(logTag) registered for system connection events")
         connectLog(
             "registered for system connection events",
-            detail: "serviceFilter=\(AstraA1BleProtocol.serviceUUID.uuidString) saved=\(savedPeripheralID()?.uuidString ?? "none"); registration_does_not_confirm_connection"
+            detail: "serviceFilter=\(Self.supportedServiceUUIDs.map(\.uuidString).joined(separator: ",")) saved=\(savedPeripheralID()?.uuidString ?? "none"); registration_does_not_confirm_connection"
         )
     }
 
-    /// 接管系统已连接的外设并完成服务发现。成功返回 true。
+    /// 优先接管系统已连接外设，否则恢复已绑定目标。已处理返回 true。
     /// 只接管「已保存」那副眼镜，禁止系统已连的其它同型号眼镜抢身份。
     @discardableResult
     private func attachToAlreadyConnectedPeripheralIfPossible(source: String = "attach") -> Bool {
+        if stopBoundReconnectIfExhausted() { return true }
         guard gen1OTAPeripheralID == nil else { return false }
         if isManualHardReconnectCentralTransitionInProgress {
             connectLog("attach deferred: rebuilding central")
@@ -1567,7 +1595,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             cached: heldTarget?.state == .connected ? heldTarget : cachedTarget,
             decision: savedID == nil ? "no_saved_target"
                 : hasConnectedTarget ? "evaluate_system_connected_target"
-                : "wait_no_matching_system_peripheral; connect_not_sent; failure_count_unchanged; poll_interval=2.5s"
+                : "no_matching_system_peripheral; evaluate_bound_BLE_reconnect"
         )
 
         // 0) 当前持有的外设在系统层已是 connected，且必须是已保存目标
@@ -1625,7 +1653,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                     detail: "others=\(others) saved=\(savedID.uuidString)"
                 )
             }
-            return false
+            return reconnectSavedPeripheralWithoutSystemConnection(source: source)
         }
 
         // 2) 无已保存设备（首次/已清会话）：不自动接管任意眼镜
@@ -1636,6 +1664,80 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             )
         }
         return false
+    }
+
+    /// Stop after the initial attempt and at most three automatic retries.
+    @discardableResult
+    private func stopBoundReconnectIfExhausted() -> Bool {
+        guard boundBLEReconnectPolicy.isExhausted, let id = savedPeripheralID() else { return false }
+        if case .failed = connectionState, manualHardReconnectPeripheralID == id { return true }
+        stopSystemReconnectMonitor()
+        if boundReconnectScanTargetID != nil { stopScan() }
+        cancelAutomaticGATTRecovery(reason: "automatic BLE retry limit", resetAttempts: false)
+        cancelConnectWatchdog()
+        cancelDiscoverServicesWorkItem()
+        let peripheral = connectedPeripheral ?? reconnectPeripheral
+        reconnectPeripheral = peripheral
+        standingConnectPeripheralID = nil
+        standingConnectAllowed = false
+        manualHardReconnectPeripheralID = id
+        resetConnectionHandles()
+        updateState(.failed(L10n.t("自动重连已重试 3 次，请点击重试", "Automatic reconnection retried 3 times. Tap to retry.")))
+        connectLog("automatic BLE retry limit reached", detail: "failedAttempts=\(boundBLEReconnectPolicy.failedAttempts) maxRetries=\(BoundBLEReconnectPolicy.maxRetries) id=\(id.uuidString)")
+        if let peripheral, peripheral.state != .disconnected {
+            centralManager.cancelPeripheralConnection(peripheral)
+        }
+        return true
+    }
+
+    /// Reconnect only the saved UUID. Never adopt another nearby device by name.
+    @discardableResult
+    private func reconnectSavedPeripheralWithoutSystemConnection(source: String) -> Bool {
+        guard autoReconnectEnabled, !userInitiatedDisconnect,
+              centralManager.state == .poweredOn,
+              gen1OTAPeripheralID == nil, !isRestoringGen1OTAConnection,
+              !isPairingSessionActive, !isManualPairingScan, !isManualReconnectScan,
+              !isManualReconnectConnect, !isProbingService,
+              !isAutomaticGATTRecoveryInProgress,
+              !isManualHardReconnectAttemptInProgress,
+              !isManualHardReconnectCentralTransitionInProgress,
+              manualHardReconnectPeripheralID == nil,
+              let id = savedPeripheralID() else { return false }
+        guard boundBLEReconnectPolicy.canRetry(now: ProcessInfo.processInfo.systemUptime) else { return false }
+        if boundReconnectScanTargetID == id { return true }
+        if let peripheral = centralManager.retrievePeripherals(withIdentifiers: [id]).first
+            ?? reconnectPeripheral.flatMap({ $0.identifier == id ? $0 : nil }) {
+            // Wait for release callbacks before issuing a new connection request.
+            if peripheral.state == .disconnecting {
+                startSystemReconnectMonitor()
+                return true
+            }
+            connectLog("reconnect saved BLE without system connection", detail: "source=\(source) id=\(id.uuidString)")
+            standingConnectAllowed = true
+            armSystemAutoConnect(peripheral, force: true)
+            return true
+        }
+        guard !centralManager.isScanning,
+              boundBLEReconnectPolicy.claimScan(now: ProcessInfo.processInfo.systemUptime) else { return false }
+        boundReconnectScanTargetID = id
+        hasStartedConnect = false
+        updateState(.scanning)
+        connectLog("bound BLE reconnect scan started", detail: "source=\(source) id=\(id.uuidString); exact UUID only")
+        // Some firmware omits service UUIDs in advertisements. Match identity in didDiscover.
+        centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.boundReconnectScanTargetID == id else { return }
+            self.stopScan()
+            guard self.autoReconnectEnabled, !self.userInitiatedDisconnect,
+                  self.savedPeripheralID() == id else { return }
+            self.updateState(.disconnected)
+            self.boundBLEReconnectPolicy.noteConnectionFailure(now: ProcessInfo.processInfo.systemUptime)
+            self.connectLog("bound BLE reconnect scan timed out", detail: "id=\(id.uuidString); retry after cooldown")
+            self.startSystemReconnectMonitor()
+        }
+        boundReconnectScanTimeoutWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + manualReconnectScanTimeoutSeconds, execute: work)
+        return true
     }
 
     private var isGATTDiscoveryInProgress: Bool {
@@ -1651,6 +1753,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 系统层已连接时：先 connect() 认领连接，再发现服务。
     /// 仅 discoverServices 而不 connect，iOS 往往不会回调 didDiscoverServices。
     private func attachToConnectedPeripheral(_ peripheral: CBPeripheral) {
+        if stopBoundReconnectIfExhausted() { return }
         guard !isAutomaticGATTRecoveryInProgress else {
             connectLog(
                 "attach deferred: GATT recovery in progress",
@@ -1658,6 +1761,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             )
             return
         }
+        if boundReconnectScanTargetID != nil { stopScan() }
         if shouldRequireTemporaryManualHardReconnect(for: peripheral) {
             systemTransportConnectedPeripheralIDs.insert(peripheral.identifier)
             requireTemporaryManualHardReconnect(
@@ -2008,12 +2112,18 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         print("\(logTag) queryPendingImportFiles sent=\(ok)")
     }
 
-    /// 导入完成后 BLE 暂不可用时，本地先扣减待导入数量，避免横幅残留。
+    /// 文件删除已确认后立即扣减待导入数量，后续设备回包可更新真实剩余数量。
     func noteImportedMediaFiles(count: Int) {
         guard count > 0 else { return }
         let before = pendingImportFileCount
         pendingImportFileCount = max(0, pendingImportFileCount - count)
         print("\(logTag) noteImportedMediaFiles -\(count) pending \(before) -> \(pendingImportFileCount)")
+    }
+
+    /// A validated HTTP directory is authoritative when the BLE count is stale.
+    func noteEmptyMediaDirectory() {
+        pendingImportFileCount = 0
+        print("\(logTag) pending media cleared: HTTP directory contains no media files")
     }
 
     /// 升级检测：优先等初连 getdevinfo 队列结束；仍缺则串行补查。
@@ -2353,6 +2463,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if let key = Self.normalizedSNKey(serialNumber), let sn = map[key] {
             return sn
         }
+        // An explicit target must never inherit another glasses' SN.
+        if Self.normalizedSNKey(serialNumber) != nil { return nil }
         return map.count == 1 ? map.values.first : nil
     }
 
@@ -3187,7 +3299,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         ) else { return }
         let remaining = homeVideoCapture.stopDelayRemaining(at: ProcessInfo.processInfo.systemUptime)
         guard remaining == 0 else {
-            mediaActionToastMessage = L10n.t("录像至少需要 3 秒，请稍后停止", "Record for at least 3 seconds before stopping.")
+            mediaActionToastMessage = L10n.t("录制时间过短，请录制至少 3 秒", "Recording is too short. Please record for at least 3 seconds.")
             logVideoCapture("stop-blocked", detail: "reason=minimum_duration remaining=\(String(format: "%.3f", remaining))s")
             return
         }
@@ -3992,6 +4104,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         cancelConnectWatchdog()
         cancelDiscoverServicesWorkItem()
         cancelAutomaticGATTRecovery(reason: "fresh-pairing-session", resetAttempts: true)
+        boundBLEReconnectPolicy.reset()
         cancelManualHardReconnectState(reason: "fresh-pairing-session")
         if let stalePeripheral, stalePeripheral.state != .disconnected {
             centralManager.cancelPeripheralConnection(stalePeripheral)
@@ -4327,6 +4440,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 恢复出厂设置（factreset0）。
     @discardableResult
     func factoryResetDevice() -> Bool {
+        guard unpairFactoryResetConfirmation == nil else { return false }
         guard ensureDeviceAvailable(for: "factoryResetDevice") else { return false }
         factoryResetResult = nil
         let sent = sendCommand(AstraA1BleProtocol.buildFactoryResetCommand())
@@ -4342,6 +4456,41 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             }
         }
         return sent
+    }
+
+    /// Device success acknowledgement is required before removing the server binding.
+    func resetGen2BeforeUnpair() async throws {
+        try Task.checkCancellation()
+        guard unpairFactoryResetConfirmation == nil,
+              deviceGeneration == .gen2, isDeviceAvailable,
+              !isFirmwareUpgradeFlowBusy,
+              let targetID = connectedPeripheral?.identifier else {
+            throw ImportBLEError.failed(L10n.t("请连接当前眼镜后重试解绑", "Connect these glasses before unpairing"))
+        }
+        guard factoryResetDevice() else { throw ImportBLEError.sendFailed }
+        unpairFactoryResetConfirmation = FactoryResetConfirmation(
+            targetID: targetID, deadline: ProcessInfo.processInfo.systemUptime + 30
+        )
+        defer { unpairFactoryResetConfirmation = nil }
+        connectLog("unbind: waiting for factory reset acknowledgement", detail: "target=\(targetID.uuidString) timeout=30s")
+        while let confirmation = unpairFactoryResetConfirmation {
+            try Task.checkCancellation()
+            switch confirmation.outcome(now: ProcessInfo.processInfo.systemUptime) {
+            case .succeeded:
+                connectLog("unbind: factory reset confirmed", detail: "target=\(targetID.uuidString)")
+                return
+            case .failed:
+                throw ImportBLEError.failed(L10n.t("眼镜恢复出厂设置失败，未解绑", "Factory reset failed. Glasses remain bound"))
+            case .timedOut:
+                throw ImportBLEError.failed(L10n.t("等待眼镜恢复出厂设置回复超时，未解绑，请重新连接后重试", "Factory reset confirmation timed out. Reconnect and retry unpairing"))
+            case .waiting: break
+            }
+            guard connectedPeripheral?.identifier == targetID, isReady else {
+                throw ImportBLEError.failed(L10n.t("尚未确认恢复出厂设置成功，眼镜已断开，未解绑", "Glasses disconnected before factory reset was confirmed. They remain bound"))
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw ImportBLEError.failed(L10n.t("恢复出厂设置已取消，未解绑", "Factory reset cancelled. Glasses remain bound"))
     }
 
     /// 进入/退出新手引导模式（guidectrl0）。
@@ -4969,6 +5118,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func stopScan() {
+        boundReconnectScanTimeoutWorkItem?.cancel()
+        boundReconnectScanTimeoutWorkItem = nil
+        boundReconnectScanTargetID = nil
         if centralManager.isScanning {
             centralManager.stopScan()
         }
@@ -5171,9 +5323,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         )
         if case .ready = connectionState { return true }
 
+        boundBLEReconnectPolicy.reset()
+        clearManualHardReconnectRequirement(reason: "explicit bound device reconnect")
+
         userInitiatedDisconnect = false
         autoReconnectEnabled = true
-        // 用户显式点了卡片，才允许挂常驻 connect。
+        // 用户显式点卡片时也允许挂起目标连接。
         standingConnectAllowed = true
 
         if savedPeripheralID() == nil {
@@ -5316,12 +5471,14 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         connectionState = state
         switch state {
         case .idle:
+            if boundReconnectScanTargetID != nil { stopScan() }
             cancelAutomaticGATTRecovery(reason: "state-idle", resetAttempts: true)
             stopSystemReconnectMonitor()
             stopBatteryPolling()
             statusMessage = pairingStatusMessage(for: .idle)
             markDeviceRuntimeStatusUnknown(reason: "idle")
         case .bluetoothUnavailable(let message):
+            if boundReconnectScanTargetID != nil { stopScan() }
             cancelAutomaticGATTRecovery(reason: "bluetooth-unavailable", resetAttempts: true)
             stopSystemReconnectMonitor()
             stopBatteryPolling()
@@ -5337,6 +5494,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         case .enablingNotifications:
             statusMessage = pairingStatusMessage(for: .enablingNotifications)
         case .ready:
+            if boundReconnectScanTargetID != nil { stopScan() }
+            boundBLEReconnectPolicy.reset()
             failedGATTContext = nil
             failedGATTRetryGate.reset()
             cancelAutomaticGATTRecovery(reason: "state-ready", resetAttempts: true)
@@ -5558,6 +5717,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private var canAutomaticallyRecoverGATT: Bool {
+        guard !boundBLEReconnectPolicy.isExhausted else { return false }
         guard let centralManager else { return false }
         let targetID = connectedPeripheral?.identifier
             ?? reconnectPeripheral?.identifier
@@ -5672,6 +5832,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 detail: "reason=\(reason) id=\(peripheral.identifier.uuidString)"
             )
             return
+        }
+
+        if reason != "unexpected-disconnect" {
+            boundBLEReconnectPolicy.noteConnectionFailure(now: ProcessInfo.processInfo.systemUptime)
+            if stopBoundReconnectIfExhausted() { return }
         }
 
         automaticGATTRecoveryWorkItem?.cancel()
@@ -5960,6 +6125,13 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             }
 
             if isStandingConnect {
+                // An out-of-range bound device may leave connect pending indefinitely.
+                // Do not cancel that request merely because classic/BLE evidence is absent.
+                if self.freshlyRetrievedSystemConnectedPeripheral(matching: peripheral.identifier) == nil {
+                    self.connectLog("standing BLE connect pending: keep request", detail: "id=\(peripheral.identifier.uuidString); no current system BLE evidence")
+                    self.startSystemReconnectMonitor()
+                    return
+                }
                 self.connectLog(
                     "standing connect stuck; rebuild GATT",
                     detail: "id=\(peripheral.identifier.uuidString) peripheralState=\(self.peripheralStateDescription(peripheral.state))"
@@ -6222,7 +6394,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                     print("\(self.logTag) queryInitialDeviceInfo cancelled type=\(type.rawValue)")
                     return
                 }
-                _ = self.sendCommand(AstraA1BleProtocol.buildGetDevInfoCommand(type: type))
+                let sent = self.sendCommand(AstraA1BleProtocol.buildGetDevInfoCommand(type: type))
+                self.connectLog("initial device info query", detail: "generation=\(generation) type=\(type.rawValue) key=\(AstraA1BleProtocol.devInfoKey(for: type)) sent=\(sent) target=\(self.deviceBluetoothIdentifier ?? "nil")")
             }
         }
         let extraCommands: [UInt8] = firstGeneration ? [Gen1Commands.systemName, Gen1Commands.bleMac] : []
@@ -6416,7 +6589,13 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
         if command == "testresult" {
             if let response = AstraA1BleProtocol.parseFactoryResetResponse(data), response.testID == 0x13 {
-                factoryResetResult = response.result
+                if var confirmation = unpairFactoryResetConfirmation {
+                    let accepted = confirmation.receive(response.result, from: connectedPeripheral?.identifier, now: ProcessInfo.processInfo.systemUptime)
+                    unpairFactoryResetConfirmation = confirmation
+                    connectLog("unbind: factory reset response", detail: "result=\(response.result) accepted=\(accepted) target=\(confirmation.targetID.uuidString)")
+                } else {
+                    factoryResetResult = response.result
+                }
                 print("\(logTag) factory testresult=\(response.result)")
             }
             return
@@ -7084,6 +7263,7 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
                     direction: .received
                 )
                 guard autoReconnectEnabled, !userInitiatedDisconnect else { return }
+                if stopBoundReconnectIfExhausted() { return }
                 guard !isAutomaticGATTRecoveryInProgress else {
                     connectLog(
                         "connectionEvent peerConnected deferred: recovery in progress",
@@ -7176,6 +7356,17 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
 
             logDiscoveredPeripheral(peripheral, advertisementData: advertisementData, rssi: RSSI)
 
+            if let targetID = boundReconnectScanTargetID {
+                guard autoReconnectEnabled, !userInitiatedDisconnect,
+                      savedPeripheralID() == targetID,
+                      peripheral.identifier == targetID else { return }
+                stopScan()
+                reconnectPeripheral = peripheral
+                standingConnectAllowed = true
+                armSystemAutoConnect(peripheral, force: true)
+                return
+            }
+
             if isManualReconnectScan {
                 guard manualReconnectMatches(peripheral, advertisementData: advertisementData) else { return }
                 print("\(logTag) manual reconnect matched \(peripheral.identifier.uuidString)")
@@ -7223,6 +7414,11 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
             }
             // A queued connect completion must not revive an unbound device or take
             // ownership back from the dedicated Gen1 OTA central.
+            if boundBLEReconnectPolicy.isExhausted {
+                central.cancelPeripheralConnection(peripheral)
+                _ = stopBoundReconnectIfExhausted()
+                return
+            }
             let isPairingTarget = isPairingSessionActive && (
                 connectedPeripheral === peripheral || userPairingTargetID == peripheral.identifier
             )
@@ -7306,6 +7502,7 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
             if consumeAutomaticGATTRecoveryCancellation(for: peripheral, source: "didFailToConnect") {
                 return
             }
+            if stopBoundReconnectIfExhausted() { return }
             if isPairingSessionActive,
                isManualPairingScan,
                !isUserInitiatedPairingConnect,
@@ -7360,6 +7557,11 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
             }
             resetConnectionHandles()
             updateState(.failed(error?.localizedDescription ?? L10n.t("BLE连接失败", "BLE connection failed")))
+            if autoReconnectEnabled, !userInitiatedDisconnect,
+               savedPeripheralID() == peripheral.identifier {
+                boundBLEReconnectPolicy.noteConnectionFailure(now: ProcessInfo.processInfo.systemUptime)
+                startSystemReconnectMonitor()
+            }
         }
     }
 
@@ -7396,6 +7598,7 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
             if consumeAutomaticGATTRecoveryCancellation(for: peripheral, source: "didDisconnect") {
                 return
             }
+            if stopBoundReconnectIfExhausted() { return }
             if centralManager.state != .poweredOn {
                 reconnectPeripheral = peripheral
                 resetConnectionHandles()

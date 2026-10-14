@@ -12,16 +12,20 @@ extension EnvironmentValues {
 }
 
 private struct SuppressTabBarOnAppearModifier: ViewModifier {
+    let enabled: Bool
     @Environment(\.tabBarSuppressionCount) private var suppressionCount
+    @State private var isSuppressing = false
 
     func body(content: Content) -> some View {
         content
             .onAppear {
-                guard let suppressionCount else { return }
+                guard enabled, !isSuppressing, let suppressionCount else { return }
+                isSuppressing = true
                 suppressionCount.wrappedValue += 1
             }
             .onDisappear {
-                guard let suppressionCount else { return }
+                guard isSuppressing, let suppressionCount else { return }
+                isSuppressing = false
                 suppressionCount.wrappedValue = max(0, suppressionCount.wrappedValue - 1)
             }
     }
@@ -29,7 +33,7 @@ private struct SuppressTabBarOnAppearModifier: ViewModifier {
 
 extension View {
     /// 页面可见时抑制底部 TabBar；嵌套 push/pop 用引用计数，避免父页 onDisappear 误恢复 TabBar。
-    func suppressTabBarOnAppear() -> some View {
-        modifier(SuppressTabBarOnAppearModifier())
+    func suppressTabBarOnAppear(enabled: Bool = true) -> some View {
+        modifier(SuppressTabBarOnAppearModifier(enabled: enabled))
     }
 }

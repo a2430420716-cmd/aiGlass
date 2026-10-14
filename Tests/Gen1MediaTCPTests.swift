@@ -21,13 +21,17 @@ enum Gen1MediaTCPTests {
     }
 
     /// Device-side fixture, independently specifies the documented wire layout.
-    static func response(_ command: UInt16, _ body: Data = Data(), external: Int = 0, tail: Data = Data([0xAF, 0x8C])) -> Data {
+    static func response(_ command: UInt16, _ body: Data = Data(), external: Int = 0, tail: Data = Data([0xAF, 0x8C]), littleEndianRouting: Bool = false) -> Data {
         let length = body.count + 20
         let header: [UInt8] = [0xAF, 0x8C, 0, 1, UInt8(command >> 8), UInt8(command & 255),
                                0, 3, 0, 2, 0, 0, UInt8(external >> 8), UInt8(external & 255),
                                UInt8((length >> 24) & 255), UInt8((length >> 16) & 255),
                                UInt8((length >> 8) & 255), UInt8(length & 255)]
-        return Data(header) + body + tail
+        var bytes = header
+        if littleEndianRouting {
+            for offset in [2, 6, 8] { bytes.swapAt(offset, offset + 1) }
+        }
+        return Data(bytes) + body + tail
     }
 
     static func main() async throws {
@@ -62,6 +66,35 @@ enum Gen1MediaTCPTests {
         let header = try Gen1MediaTCPProtocol.parseResponseHeader(frame.prefix(18))
         let fileLength = try Gen1MediaTCPProtocol.fileLength(header: header, requestedName: name)
         try check(fileLength == 70_000 && header.bodyLength == 70_005, "external length counted once; file larger than UInt16")
+        // Literal device wire vector: routing LE, command and lengths still BE.
+        let mixedHeader = try Gen1MediaTCPProtocol.parseResponseHeader(hex("AF 8C 01 00 00 01 03 00 02 00 00 00 00 05 00 01 11 89"))
+        try check(mixedHeader == header, "mixed-endian routing normalizes to existing response metadata")
+        try check(try Gen1MediaTCPProtocol.fileLength(header: mixedHeader, requestedName: name) == 70_000,
+                  "mixed-endian file length remains network order")
+        let mixedList = try Gen1MediaTCPProtocol.parseResponseHeader(hex("AF 8C 01 00 00 03 03 00 02 00 00 00 00 00 00 00 00 14"))
+        try check(mixedList.command == 3 && mixedList.bodyLength == 0 && !mixedList.usesLegacyRouting,
+                  "mixed-endian list response accepted without relaxing legacy length rules")
+        let mixedHeartbeat = try Gen1MediaTCPProtocol.parseResponseHeader(hex("AF 8C 01 00 00 06 03 00 02 00 00 00 00 00 00 00 00 14"))
+        try check(mixedHeartbeat.command == 6, "mixed-endian heartbeat response accepted")
+        // Reject every inconsistent permutation: all three routing fields share one order.
+        for mask in 1..<7 {
+            var inconsistent = Data(frame.prefix(18))
+            for (bit, offset) in [2, 6, 8].enumerated() where mask & (1 << bit) != 0 {
+                inconsistent.swapAt(offset, offset + 1)
+            }
+            try expectFailure("inconsistent routing byte order rejected: \(mask)") {
+                _ = try Gen1MediaTCPProtocol.parseResponseHeader(inconsistent)
+            }
+        }
+        var mixedEcho = Data(fileRequest.prefix(18))
+        for offset in [2, 6, 8] { mixedEcho.swapAt(offset, offset + 1) }
+        try expectFailure("LE request echo rejected as response") { _ = try Gen1MediaTCPProtocol.parseResponseHeader(mixedEcho) }
+        var mixedBadExternal = Data(frame.prefix(18))
+        for offset in [2, 6, 8] { mixedBadExternal.swapAt(offset, offset + 1) }
+        mixedBadExternal[13] = 0
+        try expectFailure("mixed-endian routing preserves filename length validation") {
+            _ = try Gen1MediaTCPProtocol.fileLength(header: Gen1MediaTCPProtocol.parseResponseHeader(mixedBadExternal), requestedName: name)
+        }
         var legacy = Data(frame.prefix(18))
         for index in [2, 3, 6, 7, 8, 9] { legacy[index] = 0 }
         for external in [0, name.count, body.count & 0xFFFF] {
@@ -143,10 +176,10 @@ enum Gen1MediaTCPTests {
         let server = LoopbackPeer { command, payload in
             switch command {
             case 3:
-                return .fragmented(response(6) + response(3, Data("first.jpg,movie.mp4,first.jpg,preview.jpg".utf8)), sizes: [1, 2, 7, 17])
+                return .fragmented(response(6, littleEndianRouting: true) + response(3, Data("first.jpg,movie.mp4,first.jpg,preview.jpg".utf8), littleEndianRouting: true), sizes: [1, 2, 7, 17])
             case 1:
                 let content = String(decoding: payload, as: UTF8.self) == "first.jpg" ? image : video
-                return .fragmented(response(6, Data([1])) + response(1, payload + content, external: payload.count), sizes: [3, 17, 4096, 65_536], interval: 0.002)
+                return .fragmented(response(6, Data([1])) + response(1, payload + content, external: payload.count, littleEndianRouting: true), sizes: [3, 17, 4096, 65_536], interval: 0.002)
             case 6: return .fragmented(response(6), sizes: [20])
             default: return .none
             }

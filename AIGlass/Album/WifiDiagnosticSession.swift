@@ -28,7 +28,7 @@ final class WifiDiagnosticSession {
     private var recordedProbeResult: Bool?
     private(set) var currentSSID: String?
 
-    init(targetSSID: String, context: String, id: String, deviceEvidence: (@MainActor () -> String)? = nil) {
+    init(targetSSID: String, context: String, id: String, deviceEvidence: (@MainActor () -> String)? = nil, joinOnce: Bool = true) {
         self.id = id
         self.targetSSID = targetSSID
         self.deviceEvidence = deviceEvidence
@@ -52,7 +52,7 @@ final class WifiDiagnosticSession {
                 }
             })
         }
-        log("热点连接诊断开始", detail: "diagnosticVersion=2 context=\(context.debugDescription)\ntargetSSID=\(targetSSID.debugDescription)\njoinOnce=true\nssidEntitlement=notVerifiedAtRuntime requiresWifiInfoEntitlement=true\nevidenceLimit=SSID_nil_does_not_prove_disconnection; NWPath_is_not_target_association_or_DHCP_evidence")
+        log("热点连接诊断开始", detail: "diagnosticVersion=3 context=\(context.debugDescription)\ntargetSSID=\(targetSSID.debugDescription)\njoinOnce=\(joinOnce)\nssidEntitlement=notVerifiedAtRuntime requiresWifiInfoEntitlement=true\nevidenceLimit=SSID_nil_does_not_prove_disconnection; NWPath_is_not_target_association_or_DHCP_evidence")
     }
 
     func stop() {

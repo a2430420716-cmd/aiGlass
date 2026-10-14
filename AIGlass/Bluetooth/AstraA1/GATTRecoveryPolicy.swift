@@ -1,5 +1,37 @@
 import Foundation
 
+/// Rate limits missing-cache scans and actual connection failures separately.
+/// Polling and foreground refreshes must not postpone either deadline.
+struct BoundBLEReconnectPolicy {
+    static let maxRetries = 3
+    private(set) var failedAttempts = 0
+    private var retryAvailableAt: TimeInterval = 0
+    private var scanAvailableAt: TimeInterval = 0
+
+    var isExhausted: Bool { failedAttempts > Self.maxRetries }
+
+    func canRetry(now: TimeInterval) -> Bool {
+        !isExhausted && now >= retryAvailableAt
+    }
+
+    mutating func claimScan(now: TimeInterval) -> Bool {
+        guard canRetry(now: now), now >= scanAvailableAt else { return false }
+        scanAvailableAt = now + 30
+        return true
+    }
+
+    mutating func noteConnectionFailure(now: TimeInterval) {
+        if !isExhausted { failedAttempts += 1 }
+        retryAvailableAt = max(retryAvailableAt, now + 30)
+    }
+
+    mutating func reset() {
+        failedAttempts = 0
+        retryAvailableAt = 0
+        scanAvailableAt = 0
+    }
+}
+
 enum GATTRecoveryPhase: Equatable {
     case connecting
     case discoveringServices

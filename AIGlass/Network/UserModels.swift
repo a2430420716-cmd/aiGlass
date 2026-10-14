@@ -308,16 +308,9 @@ struct UserDevice: Decodable, Identifiable, Equatable {
     }
 
     var displayName: String {
-        if let deviceName, !deviceName.isEmpty {
-            return deviceName
-        }
-        if let eqName, !eqName.isEmpty {
-            return eqName
-        }
-        if let modelName, !modelName.isEmpty {
-            return modelName
-        }
-        return serialNumber
+        [deviceName, eqName, modelName]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? "MOCO AI Glasses"
     }
 
     var cardImageName: String {

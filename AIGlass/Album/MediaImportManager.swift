@@ -2,6 +2,43 @@ import Combine
 import Foundation
 import UIKit
 
+/// iOS grants finite execution time; this is not an unlimited background download.
+@MainActor
+private final class MediaImportBackgroundExecution {
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+    private var observers: [NSObjectProtocol] = []
+    private(set) var didExpire = false
+
+    init(onExpiration: @escaping @MainActor () -> Void) {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: "GlassesMediaImport") { [weak self] in
+            Task { @MainActor in
+                guard let self, self.identifier != .invalid else { return }
+                self.didExpire = true
+                onExpiration()
+                self.end()
+            }
+        }
+        DebugLogStore.logWiFi("相册导入：申请有限后台执行时间", detail: "granted=\(identifier != .invalid)")
+        for name in [UIApplication.didEnterBackgroundNotification, UIApplication.didBecomeActiveNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { notification in
+                let event = notification.name.rawValue
+                Task { @MainActor in
+                    DebugLogStore.logWiFi("相册导入：App 生命周期", detail: "event=\(event) backgroundTimeRemaining=\(UIApplication.shared.backgroundTimeRemaining)")
+                }
+            })
+        }
+    }
+
+    func end() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
+        guard identifier != .invalid else { return }
+        let finished = identifier
+        identifier = .invalid
+        UIApplication.shared.endBackgroundTask(finished)
+    }
+}
+
 struct MediaImportFailureRecord: Equatable, Identifiable {
     let id = UUID()
     let fileName: String
@@ -171,13 +208,16 @@ final class MediaImportManager: ObservableObject {
             if failedPhotos > 0 || failedVideos > 0 {
                 return L10n.t("已导入 \(imported) 项，部分失败", "Imported \(imported) item(s), some failed")
             }
+            if imported == 0 {
+                return L10n.t("眼镜中暂无可导入的照片或视频", "No photos or videos to import from the glasses")
+            }
             return L10n.t("已导入 \(imported) 项", "Imported \(imported) item(s)")
         case .failed(let message):
             return message
         }
     }
 
-    /// 启动导入。任务由本管理器持有，切换页面/销毁视图都不会中断，只有强杀 App 才会终止。
+    /// 任务不随页面销毁；切后台仅在系统允许的有限时间内继续，到期取消并清理。
     func beginImport(
         ble: AstraA1BleManager,
         library: MediaLibrary,
@@ -253,6 +293,12 @@ final class MediaImportManager: ObservableObject {
             "相册导入：开始 Wi-Fi 流程",
             detail: "expectedFileCount=\(expectedFileCount)\nautoSaveToPhotoLibrary=\(autoSaveToPhotoLibrary)\nbleReady=\(ble.isReady)"
         )
+        let backgroundExecution = MediaImportBackgroundExecution { [weak self] in
+            diagnostics.log("相册导入：后台执行时间到期", detail: "action=cancel-transfer-and-remove-hotspot; unfinished_files_remain_on_device")
+            self?.importTask?.cancel()
+            self?.disconnectHotspot()
+        }
+        defer { backgroundExecution.end() }
 
         do {
             // 进热点前鉴权（需公网）。CheckLicense 参数与 demo 一致传空串。
@@ -278,7 +324,8 @@ final class MediaImportManager: ObservableObject {
                 probeBaseURL: wifi.httpAddress,
                 diagnosticContext: diagnostics.connectionContext,
                 diagnosticID: diagnostics.id,
-                deviceEvidence: { diagnostics.deviceEvidence }
+                deviceEvidence: { diagnostics.deviceEvidence },
+                keepConnectionInBackground: true
             )
             diagnostics.log(
                 "相册导入：热点连接成功",
@@ -302,6 +349,7 @@ final class MediaImportManager: ObservableObject {
             diagnostics.log("相册导入：开始读取目录", detail: "url=\(baseURL)", direction: .sent)
             let fileNames = try await fetchMediaFileList(ble: ble, baseURL: baseURL, expectedCount: expectedFileCount)
             diagnostics.log("相册导入：目录读取完成", detail: "url=\(baseURL) fileCount=\(fileNames.count)", direction: .received)
+            if fileNames.isEmpty { ble.noteEmptyMediaDirectory() }
             print("\(logTag) parsed files=\(fileNames)")
 
             var importedNames: [String] = []
@@ -349,6 +397,7 @@ final class MediaImportManager: ObservableObject {
                     continue
                 }
 
+                try Task.checkCancellation()
                 do {
                     let item = try await library.importOriginal(data: data, fileName: name)
                     importedNames.append(name)
@@ -389,6 +438,7 @@ final class MediaImportManager: ObservableObject {
                 }
             }
 
+            try Task.checkCancellation()
             state = .finishing
             // 对齐安卓 FileImportManager：transferok → deletefile → closewifi。
             // 连热点会打断 BLE；下载期间可能还在重连。等 ready 再收尾。
@@ -399,7 +449,8 @@ final class MediaImportManager: ObservableObject {
                 ble.sendTransferOK(success: transferOK)
                 // 对齐安卓：transferok 后稍等再删（批次间 250ms）。
                 try? await Task.sleep(nanoseconds: 250_000_000)
-                await deleteDeviceFilesWithRetry(ble: ble, fileNames: uniqueDeletes)
+                let deleted = await deleteDeviceFilesWithRetry(ble: ble, fileNames: uniqueDeletes)
+                ble.noteImportedMediaFiles(count: deleted)
             } else {
                 print("\(logTag) BLE not ready after download, skip transferok/delete (pending banner may linger)")
             }
@@ -414,9 +465,7 @@ final class MediaImportManager: ObservableObject {
             if await waitUntilBLEReady(ble, timeout: 20) {
                 ble.queryPendingImportFiles()
             } else {
-                // BLE 暂未 ready：本地先扣掉已导入数量，避免 UI 仍显示旧 pending。
-                ble.noteImportedMediaFiles(count: importedNames.count + purgedFromDeviceCount)
-                print("\(logTag) BLE not ready after closewifi, applied local pending decrement")
+                print("\(logTag) BLE not ready after closewifi; retaining count after confirmed deletion")
             }
 
             if failedPhotoCount > 0 || failedVideoCount > 0 {
@@ -437,6 +486,7 @@ final class MediaImportManager: ObservableObject {
                     failureRecords: failureRecords
                 )
             }
+            try Task.checkCancellation()
             state = .completed(
                 imported: importedNames.count,
                 failedPhotos: failedPhotoCount,
@@ -449,7 +499,10 @@ final class MediaImportManager: ObservableObject {
             )
         } catch {
             let failedStage = String(describing: state)
-            state = .failed(error.localizedDescription)
+            let message = backgroundExecution.didExpire
+                ? L10n.t("后台导入已中断，请保持 App 在前台后重新导入，未完成的文件仍保留在眼镜中。", "Background import was interrupted. Keep the app open and import again. Unfinished files remain on the glasses.")
+                : error.localizedDescription
+            state = .failed(message)
             print("\(logTag) FAILED: \(error.localizedDescription)")
             let nsError = error as NSError
             diagnostics.log(
@@ -767,15 +820,15 @@ final class MediaImportManager: ObservableObject {
         return ble.isDeviceAvailable
     }
 
-    private func deleteDeviceFilesWithRetry(ble: AstraA1BleManager, fileNames: [String]) async {
-        guard !fileNames.isEmpty else { return }
+    private func deleteDeviceFilesWithRetry(ble: AstraA1BleManager, fileNames: [String]) async -> Int {
+        guard !fileNames.isEmpty else { return 0 }
         var remaining = fileNames
         for attempt in 1...3 {
-            guard await waitUntilBLEReady(ble, timeout: 10) else { return }
+            guard await waitUntilBLEReady(ble, timeout: 10) else { return 0 }
             do {
                 try await ble.deleteImportedFiles(remaining)
                 print("\(logTag) deleted device files ok count=\(remaining.count) attempt=\(attempt)")
-                return
+                return remaining.count
             } catch {
                 print("\(logTag) delete attempt \(attempt)/3 failed: \(error.localizedDescription) files=\(remaining)")
                 if attempt < 3 {
@@ -784,6 +837,7 @@ final class MediaImportManager: ObservableObject {
             }
         }
         print("\(logTag) delete exhausted, leftover on device: \(remaining)")
+        return 0
     }
 
     func resetStatus() {
@@ -842,7 +896,16 @@ final class MediaImportManager: ObservableObject {
                 if !names.isEmpty {
                     return names
                 }
-                throw MediaImportError.message(L10n.t("HTTP 已连通但文件列表为空", "Connected but file list is empty"))
+                guard GlassesMediaDirectory.isDirectoryListing(html) else {
+                    throw MediaImportError.message(L10n.t("眼镜返回的内容不是有效文件目录", "The glasses returned an invalid file directory"))
+                }
+                if expectedCount == 0 || attempt == 8 {
+                    DebugLogStore.logWiFi("相册导入：眼镜目录为空", detail: "url=\(baseURL) cachedCount=\(expectedCount) attempts=\(attempt) HTTPDirectoryVerified=true mediaFiles=0")
+                    return []
+                }
+                // A nonzero BLE count may be stale or precede filesystem publication.
+                // Give the device time to publish files before accepting empty.
+                throw MediaImportError.message(L10n.t("眼镜目录暂未发现照片或视频", "No photos or videos in the glasses directory yet"))
             } catch {
                 if Self.isWifiConnectivityFailure(error) {
                     throw error
@@ -855,9 +918,6 @@ final class MediaImportManager: ObservableObject {
             }
         }
 
-        if expectedCount > 0 {
-            throw MediaImportError.message(L10n.t("无法从眼镜下载文件列表。请确认：1) 已加入 ble_wifi_test 热点；2) 设置中已允许「本地网络」权限", "Unable to download file list. Check: 1) Joined the glasses hotspot; 2) Local Network permission is allowed"))
-        }
         throw lastError ?? MediaImportError.message(L10n.t("获取文件列表失败", "Failed to get file list"))
     }
 
@@ -896,50 +956,7 @@ final class MediaImportManager: ObservableObject {
     }
 
     static func parseMediaFileNames(from html: String) -> [String] {
-        var names: [String] = []
-
-        let hrefPatterns = [
-            #"href\s*=\s*["']([^"']+)["']"#,
-            #"href\s*=\s*([^\s>"]+\.(?:jpg|jpeg|png|heic|mp4|mov))"#,
-        ]
-        for pattern in hrefPatterns {
-            appendMatches(from: html, pattern: pattern, into: &names)
-        }
-
-        let textPattern = #"([A-Za-z0-9_\-\.]+\.(?:jpg|jpeg|png|heic|mp4|mov))"#
-        appendMatches(from: html, pattern: textPattern, into: &names)
-
-        return names
-    }
-
-    private static func appendMatches(from html: String, pattern: String, into names: inout [String]) {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return }
-        let range = NSRange(html.startIndex..<html.endIndex, in: html)
-        for match in regex.matches(in: html, options: [], range: range) {
-            guard match.numberOfRanges > 1,
-                  let nameRange = Range(match.range(at: 1), in: html) else { continue }
-            guard let normalized = normalizeMediaFileName(String(html[nameRange])),
-                  !names.contains(normalized) else { continue }
-            names.append(normalized)
-        }
-    }
-
-    private static func normalizeMediaFileName(_ raw: String) -> String? {
-        var name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if name.isEmpty { return nil }
-        if let query = name.firstIndex(of: "?") {
-            name = String(name[..<query])
-        }
-        if let slash = name.lastIndex(of: "/") {
-            name = String(name[name.index(after: slash)...])
-        }
-        let lower = name.lowercased()
-        if lower.contains("_thumb") || lower.contains("thumb.jpg") { return nil }
-        guard lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg") || lower.hasSuffix(".png")
-            || lower.hasSuffix(".heic") || lower.hasSuffix(".mp4") || lower.hasSuffix(".mov") else {
-            return nil
-        }
-        return name
+        GlassesMediaDirectory.fileNames(from: html)
     }
 
     private static func isVideoFileName(_ name: String) -> Bool {

@@ -201,7 +201,7 @@ struct AboutView: View {
                 .buttonStyle(.plain)
             }
 
-            Text(L10n.t("App备案号 沪ICP备2021009247号-4A", "ICP Filing No. 沪ICP备2021009247号-4A"))
+            Text(L10n.t("APP 备案号：沪ICP备2021009247号-4A", "App Filing No.: Shanghai ICP Filing No. 2021009247-4A"))
                 .font(AppTheme.notoSansSC(size: 11, weight: .regular))
                 .foregroundStyle(AppTheme.primaryText)
         }

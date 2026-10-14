@@ -25,6 +25,7 @@ final class PairingCoordinator: ObservableObject {
     @Published var pairingAlertMessage: String?
     /// 绑定成功但经典蓝牙（A2DP/AVRCP）未连上时的引导提示。
     @Published var classicAudioTipMessage: String?
+    @Published private(set) var isWaitingForUnpairFactoryReset = false
 
     /// 一代 G5K61 与二代 G5T71 共用连接管理，按 GATT 服务选择协议。
     let astraA1BleManager = AstraA1BleManager()
@@ -39,6 +40,7 @@ final class PairingCoordinator: ObservableObject {
     private var pairingAttempt = PairingAttemptState()
     private var deviceIdentityTimeout: DispatchWorkItem?
     private var pendingPairingFailureMessage: String?
+    private var isUnpairRequestInProgress = false
 
     init() {
         astraA1BleManager.deviceCardPresenceProvider = { [weak self] in
@@ -444,17 +446,33 @@ final class PairingCoordinator: ObservableObject {
         }
     }
 
-    /// 解除配对：调用解绑接口，断开 BLE 并清除本地连接记录。
+    /// 二代普通解绑先确认设备恢复成功，再解除账号绑定并清理目标缓存。
     /// - Parameters:
     ///   - serialNumber: 蓝牙标识（`serial_number`）
     ///   - sn: 设备硬件 SN（`sn`）
-    func unpairDevice(serialNumber: String, sn: String) async throws {
-        guard let authSession else {
+    func unpairDevice(serialNumber: String, sn: String, force: Bool = false) async throws {
+        guard let authSession, authSession.isLoggedIn, let token = authSession.token, !token.isEmpty else {
             throw APIError.server(message: L10n.t("未登录", "Not signed in"), code: -1)
         }
+        guard !isUnpairRequestInProgress else {
+            throw APIError.server(message: L10n.t("正在解绑，请稍候", "Unpairing in progress. Please wait"), code: -1)
+        }
+        guard !astraA1BleManager.isFirmwareUpgradeFlowBusy,
+              !MediaImportManager.shared.isImporting,
+              !AIRecordingImportManager.shared.isImporting else {
+            throw APIError.server(message: L10n.t("请等待升级或导入完成后再解绑", "Wait for the update or import to finish before unpairing"), code: -1)
+        }
+        isUnpairRequestInProgress = true
+        defer { isUnpairRequestInProgress = false }
+        let accountToken = token
+        let userID = authSession.phoneNumber
+        try Task.checkCancellation()
 
         let targetSerial = serialNumber.trimmingCharacters(in: .whitespacesAndNewlines)
         let targetSN = sn.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetSerial.isEmpty else {
+            throw APIError.server(message: L10n.t("未找到需要解绑的设备标识", "The device identifier is missing"), code: -1)
+        }
         let liveIdentifiers = [
             astraA1BleManager.deviceBluetoothIdentifier,
             astraA1BleManager.savedPeripheralUUIDString
@@ -465,11 +483,44 @@ final class PairingCoordinator: ObservableObject {
         let isCurrentDevice = liveIdentifiers.contains {
             $0.caseInsensitiveCompare(targetSerial) == .orderedSame
         } || (liveSN?.caseInsensitiveCompare(targetSN) == .orderedSame)
+        let targetPeripheralID = isCurrentDevice ? astraA1BleManager.savedPeripheralUUIDString : nil
 
+        let targetConnected = isCurrentDevice && astraA1BleManager.isDeviceAvailable
+        guard force || targetConnected else {
+            throw APIError.server(message: L10n.t("请先连接需要解绑的眼镜", "Connect the glasses you want to unpair first"), code: -1)
+        }
+        let requiresReset = targetConnected && astraA1BleManager.deviceGeneration == .gen2
+        if targetConnected {
+            guard astraA1BleManager.deviceGeneration != .unknown else {
+                throw APIError.server(message: L10n.t("正在识别设备，请稍后重试解绑", "Identifying the glasses. Try unpairing again shortly"), code: -1)
+            }
+            if requiresReset {
+                isWaitingForUnpairFactoryReset = true
+                defer { isWaitingForUnpairFactoryReset = false }
+                try await astraA1BleManager.resetGen2BeforeUnpair()
+            }
+        }
+        try Task.checkCancellation()
+        guard authSession.isLoggedIn, authSession.token == accountToken else {
+            throw APIError.server(message: L10n.t("登录状态已变化，请重新操作解绑", "Sign-in state changed. Start unpairing again"), code: -1)
+        }
+        DebugLogStore.logConnect("unbind: submitting server request", detail: "target=\(targetSerial) forced=\(force) deviceResetRequired=\(requiresReset)")
         try await authSession.unbindDevice(serialNumber: serialNumber, sn: sn)
+        guard authSession.token == accountToken else {
+            DebugLogStore.logConnect("unbind: skip local cleanup after account change", detail: "target=\(targetSerial)")
+            return
+        }
         astraA1BleManager.forgetCachedHardwareSN(forSerialNumber: serialNumber)
+        for key in [targetSerial, targetSN, isCurrentDevice ? (liveSN ?? "") : ""].filter({ !$0.isEmpty }) {
+            GlassesWifiCredentialStore.remove(deviceKey: key)
+        }
+        DeviceDisplayNameStore.remove(serialNumber: serialNumber)
+        DeviceMediaSettings.clear(userId: userID, deviceKey: serialNumber)
+        if !targetSN.isEmpty { DeviceMediaSettings.clear(userId: userID, deviceKey: targetSN) }
 
-        if isCurrentDevice {
+        // The user may have switched devices while the server request was in flight.
+        if isCurrentDevice, (targetPeripheralID != nil && astraA1BleManager.savedPeripheralUUIDString == targetPeripheralID)
+            || astraA1BleManager.matchesCurrentDevice(serialNumber: serialNumber, hardwareSN: sn) {
             astraA1BleManager.disconnectAndClearSession()
             let remainingSerials = (authSession.userInfo?.device ?? []).map(\.serialNumber)
             astraA1BleManager.restoreBoundConnectionAfterPairing(
@@ -626,9 +677,9 @@ final class PairingCoordinator: ObservableObject {
         deviceIdentityTimeout = nil
     }
 
-    private func cancelPairingAttempt() {
+    private func cancelPairingAttempt(reason: String = #function, file: StaticString = #fileID, line: UInt = #line) {
         if pairingAttempt.phase != .idle {
-            DebugLogStore.logConnect("pairing attempt invalidated", detail: "attempt=\(pairingAttempt.generation) phase=\(pairingAttempt.phase) target=\(pairingAttempt.peripheralID?.uuidString ?? "nil") ready=\(astraA1BleManager.isReady) correspondingCard=\(hasCorrespondingDeviceCard)")
+            DebugLogStore.logConnect("pairing attempt invalidated", detail: "source=\(reason) file=\(file) line=\(line) attempt=\(pairingAttempt.generation) phase=\(pairingAttempt.phase) target=\(pairingAttempt.peripheralID?.uuidString ?? "nil") ready=\(astraA1BleManager.isReady) correspondingCard=\(hasCorrespondingDeviceCard)")
         }
         cancelDeviceIdentityTimeout()
         pairingAttempt.cancel()

@@ -36,6 +36,7 @@ struct AlbumView: View {
     @State private var navigateToGlassesSettings = false
     @State private var settingsAlertMessage: String?
     @State private var importErrorMessage: String?
+    @State private var importNoticeMessage: String?
     @State private var showImportPartialFailureDialog = false
     @State private var importPartialFailureMessage = ""
     @State private var showDeleteConfirmation = false
@@ -75,6 +76,7 @@ struct AlbumView: View {
     var body: some View {
         CompatibleNavigationStack {
             albumContent
+                .mainTabRootContent(reservesTabBar: !isSelectionMode)
         }
     }
 
@@ -119,6 +121,9 @@ struct AlbumView: View {
                 pairingCoordinator.astraA1BleManager.refreshPendingImportFiles()
             }
         }
+        .onChangeCompat(of: navigateToGlassesSettings) { active in
+            showsTabBar = !active && !isSelectionMode
+        }
         .onChangeCompat(of: authSession.userInfo?.id) { _ in
             importManager.refreshGen1Recovery(ble: pairingCoordinator.astraA1BleManager)
         }
@@ -129,13 +134,15 @@ struct AlbumView: View {
             AlbumMediaDetailView(item: item)
         }
         .onChangeCompat(of: importManager.state) { newState in
-            if case .completed(_, let failedPhotos, let failedVideos) = newState {
+            if case .completed(let imported, let failedPhotos, let failedVideos) = newState {
                 if failedPhotos > 0 || failedVideos > 0 {
                     importPartialFailureMessage = importFailureMessage(
                         photos: failedPhotos,
                         videos: failedVideos
                     )
                     showImportPartialFailureDialog = true
+                } else if imported == 0 {
+                    importNoticeMessage = L10n.t("眼镜中暂无可导入的照片或视频", "No photos or videos to import from the glasses")
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     importManager.resetStatus()
@@ -178,11 +185,19 @@ struct AlbumView: View {
                 sharePayload = nil
             }
         }
+        .alert(L10n.t("提示", "Notice"), isPresented: Binding(
+            get: { importNoticeMessage != nil },
+            set: { if !$0 { importNoticeMessage = nil } }
+        )) {
+            Button(L10n.t("确定", "OK"), role: .cancel) {}
+        } message: {
+            Text(importNoticeMessage ?? "")
+        }
         .background {
             NavigationLink(
                 isActive: $navigateToGlassesSettings,
                 destination: {
-                    GlassesSettingsView()
+                    GlassesSettingsView(suppressesTabBarOnAppear: false)
                 },
                 label: { EmptyView() }
             )

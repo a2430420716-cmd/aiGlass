@@ -141,13 +141,16 @@ struct AccountManagementView: View {
                 cancelSignOutFlow()
             }
             Button(L10n.t("强制解绑", "Force Unbind"), role: .destructive) {
-                performPendingDeviceUnbind()
+                performPendingDeviceUnbind(force: true)
             }
         } message: {
             Text(L10n.t(
                 "设备未连接状态下，强制解绑无法清空数据，存在数据泄露风险，请谨慎操作。",
                 "When the device is offline, force unbinding cannot clear its data and may expose data. Please proceed carefully."
             ))
+        }
+        .overlay {
+            if pairingCoordinator.isWaitingForUnpairFactoryReset { UnpairFactoryResetProgressView() }
         }
         .alert(L10n.t("提示", "Notice"), isPresented: Binding(
             get: { alertMessage != nil },
@@ -272,7 +275,7 @@ struct AccountManagementView: View {
         return false
     }
 
-    private func performPendingDeviceUnbind() {
+    private func performPendingDeviceUnbind(force: Bool = false) {
         guard let device = pendingUnbindDevice else {
             unbindNextDevice()
             return
@@ -288,7 +291,7 @@ struct AccountManagementView: View {
         isUnbindingDevice = true
         Task {
             do {
-                try await pairingCoordinator.unpairDevice(serialNumber: serialNumber, sn: sn)
+                try await pairingCoordinator.unpairDevice(serialNumber: serialNumber, sn: sn, force: force)
                 isUnbindingDevice = false
                 isSigningOut = false
                 showToast(L10n.t("设备已解除配对", "Device unpaired"))

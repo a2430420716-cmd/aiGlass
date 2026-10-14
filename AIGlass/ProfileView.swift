@@ -18,6 +18,7 @@ struct ProfileView: View {
     var body: some View {
         CompatibleNavigationStack {
             content
+                .mainTabRootContent()
         }
         .environment(\.tabBarSuppressionCount, $tabBarSuppressionCount)
         .onChangeCompat(of: tabBarSuppressionCount) { _ in

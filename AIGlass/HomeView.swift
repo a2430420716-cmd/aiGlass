@@ -101,7 +101,7 @@ struct DeviceCardData: Identifiable, Equatable {
 }
 
 /// 用户自定义首页设备名。按设备序列号保存，避免多副眼镜串名。
-private enum DeviceDisplayNameStore {
+enum DeviceDisplayNameStore {
     private static let defaultsKey = "home.device.customDisplayNames.v1"
 
     static func displayName(for device: DeviceCardData) -> String? {
@@ -115,6 +115,12 @@ private enum DeviceDisplayNameStore {
         guard let key = deviceKey(for: device) else { return }
         var names = storedNames()
         names[key] = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.set(names, forKey: defaultsKey)
+    }
+
+    static func remove(serialNumber: String) {
+        var names = storedNames()
+        names.removeValue(forKey: "serial:\(serialNumber.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())")
         UserDefaults.standard.set(names, forKey: defaultsKey)
     }
 
@@ -179,11 +185,17 @@ struct HomeView: View {
     private var homeDeviceCards: [DeviceCardData] {
         _ = deviceNameRevision
         return authSession.homeDeviceCards.map { card in
-            guard !card.isFindDevice,
-                  let customName = DeviceDisplayNameStore.displayName(for: card) else {
-                return card
+            guard !card.isFindDevice else { return card }
+            if let customName = DeviceDisplayNameStore.displayName(for: card) {
+                return card.withDisplayName(customName)
             }
-            return card.withDisplayName(customName)
+            if ble.matchesCurrentDevice(serialNumber: card.serialNumber, hardwareSN: card.hardwareSN),
+               let name = [ble.deviceName, ble.currentPeripheralName]
+                .compactMap({ $0?.trimmingCharacters(in: .whitespacesAndNewlines) })
+                .first(where: { !$0.isEmpty }) {
+                return card.withDisplayName(name)
+            }
+            return card
         }
     }
 
@@ -208,6 +220,7 @@ struct HomeView: View {
     var body: some View {
         CompatibleNavigationStackPath(path: $pairingCoordinator.path) {
             scrollContent
+                .mainTabRootContent()
                 .background(AppTheme.background.ignoresSafeArea())
                 .sheet(isPresented: $showSoundEffectSheet) {
                     SoundEffectModeSheet(
@@ -357,6 +370,7 @@ struct HomeView: View {
         }
         .onChangeCompat(of: navigateToGlassesSettings) { active in
             if !active { tabRouter.endImmersiveCover() }
+            updateTabBarVisibility()
         }
         .onChangeCompat(of: navigateToAIRecording) { active in
             if !active { tabRouter.endImmersiveCover() }
@@ -662,6 +676,7 @@ struct HomeView: View {
 
     private func updateTabBarVisibility() {
         showsTabBar = tabBarSuppressionCount == 0 && pairingCoordinator.path.isEmpty
+            && !navigateToGlassesSettings
     }
 
     @ViewBuilder
@@ -920,7 +935,7 @@ struct HomeView: View {
             NavigationLink(
                 isActive: $navigateToGlassesSettings,
                 destination: {
-                    GlassesSettingsView(device: settingsDevice)
+                    GlassesSettingsView(device: settingsDevice, suppressesTabBarOnAppear: false)
                 },
                 label: { EmptyView() }
             )

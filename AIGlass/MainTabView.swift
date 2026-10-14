@@ -35,7 +35,7 @@ enum TabItem: Int, CaseIterable {
     }
 }
 
-private enum TabBarLayout {
+enum TabBarLayout {
     static let contentInset: CGFloat = 88
 }
 
@@ -54,14 +54,10 @@ struct MainTabView: View {
     @StateObject private var deviceFirmwareUpdateCoordinator = DeviceFirmwareUpdateCoordinator()
     @StateObject private var bluetoothOtaUpgradeManager = BluetoothOtaUpgradeManager()
 
-    /// 眼镜 Tab 内 push / 沉浸页：立即收起 TabBar 与底部 inset，避免过渡层底部留白。
+    /// 眼镜 Tab 内 push / 沉浸页隐藏 TabBar；导航容器尺寸保持不变。
     private var hidesTabBarForNavigation: Bool {
         (tabRouter.selectedTab == .glasses && !pairingCoordinator.path.isEmpty)
             || tabRouter.hidesTabBarForImmersiveCover
-    }
-
-    private var bottomInset: CGFloat {
-        showsTabBar && !hidesTabBarForNavigation ? TabBarLayout.contentInset : 0
     }
 
     private var showsTabBarChrome: Bool {
@@ -69,20 +65,21 @@ struct MainTabView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            AppTheme.background
-                .ignoresSafeArea()
+        // Keep navigation geometry stable during push/pop. Each tab root reserves
+        // its own tab-bar space; destinations use the full safe-area viewport.
+        GeometryReader { geometry in
+            ZStack(alignment: .bottom) {
+                tabContent
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+                    .id(languageManager.refreshID)
 
-            tabContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.bottom, bottomInset)
-                .id(languageManager.refreshID)
-
-            customTabBar
-                .opacity(showsTabBarChrome ? 1 : 0)
-                .offset(y: showsTabBarChrome ? 0 : TabBarLayout.contentInset)
-                .allowsHitTesting(showsTabBarChrome)
-                .accessibilityHidden(!showsTabBarChrome)
+                customTabBar
+                    .opacity(showsTabBarChrome ? 1 : 0)
+                    .allowsHitTesting(showsTabBarChrome)
+                    .accessibilityHidden(!showsTabBarChrome)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .background(AppTheme.background.ignoresSafeArea())
         .animation(.none, value: showsTabBar)
@@ -243,6 +240,13 @@ struct MainTabView: View {
                 .shadow(color: AppTheme.cardShadow, radius: 8, y: -2)
                 .ignoresSafeArea(edges: .bottom)
         )
+    }
+}
+
+extension View {
+    /// Apply only to a navigation root, never to its NavigationStack or destinations.
+    func mainTabRootContent(reservesTabBar: Bool = true) -> some View {
+        padding(.bottom, reservesTabBar ? TabBarLayout.contentInset : 0)
     }
 }
 

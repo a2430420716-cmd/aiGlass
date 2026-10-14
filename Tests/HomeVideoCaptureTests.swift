@@ -38,12 +38,13 @@ enum HomeVideoCaptureTests {
         check(state.stopDelayRemaining(at: 101.486) > 1.5, "logged early stop is blocked")
         check(!state.receive(.videoRecording, at: 101.132), "start ACK is not completion")
         check(!state.receive(.videoRecording, at: 102.5), "duplicate recording report is not completion")
-        check(state.stopDelayRemaining(at: 103) == 0, "repeated reports do not restart minimum duration")
+        check(state.stopDelayRemaining(at: 103) > 1.1, "three seconds after write is too early when device starts later")
+        check(state.stopDelayRemaining(at: 104.132) == 0, "repeated reports do not restart confirmed minimum duration")
         state.stopSent()
-        check(!state.receive(.videoRecording, at: 103.1) && state.isStopPending,
+        check(!state.receive(.videoRecording, at: 104.2) && state.isStopPending,
               "recording report keeps pending stop locked")
         state.stopRejectedOrUnconfirmed()
-        check(!state.receive(rejected.currentStatus, at: 103.2, allowsCompletion: false),
+        check(!state.receive(rejected.currentStatus, at: 104.3, allowsCompletion: false),
               "logged rejection never marks recording done")
         check(!state.isStopPending && state.hasConfirmedRecording, "rejected stop allows retry while recording")
         state.stopSent()
@@ -72,6 +73,16 @@ enum HomeVideoCaptureTests {
         check(!state.isStopPending && !state.hasConfirmedRecording && state.startedAt == nil,
               "disconnect reset cancels prior recording state")
         check(!state.receive(.standby, at: 510), "new connection does not finish old recording")
+
+        // October 13 trace: start write 06.978, device ACK 08.181, first stop 10.013.
+        state.startSent(at: 6.978)
+        _ = state.receive(.videoRecording, at: 8.181)
+        _ = state.receive(.videoRecording, at: 8.224)
+        check(state.stopDelayRemaining(at: 10.013) > 1.1, "field-log stop rejected locally before reaching firmware")
+        check(state.stopDelayRemaining(at: 11.180) > 0, "just before three device seconds stays blocked")
+        check(state.stopDelayRemaining(at: 11.181) == 0, "stop permitted after three device seconds")
+        _ = state.receive(.videoRecording, at: 11.5)
+        check(state.stopDelayRemaining(at: 11.5) == 0, "later periodic status does not block stop again")
         print("Home video capture: \(assertions) assertions passed")
     }
 }

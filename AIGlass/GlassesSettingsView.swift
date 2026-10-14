@@ -2,6 +2,7 @@ import SwiftUI
 
 struct GlassesSettingsView: View {
     let device: DeviceCardData?
+    let suppressesTabBarOnAppear: Bool
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -36,8 +37,9 @@ struct GlassesSettingsView: View {
     @State private var guideAlertMessage: String?
     @State private var autoSaveAlertMessage: String?
 
-    init(device: DeviceCardData? = nil) {
+    init(device: DeviceCardData? = nil, suppressesTabBarOnAppear: Bool = true) {
         self.device = device
+        self.suppressesTabBarOnAppear = suppressesTabBarOnAppear
     }
 
     private var boundDevice: UserDevice? {
@@ -109,7 +111,7 @@ struct GlassesSettingsView: View {
     }
 
     private var supportedRecordDurations: [Int] {
-        pairingCoordinator.astraA1BleManager.deviceCapabilities.recordDurationSeconds
+        pairingCoordinator.astraA1BleManager.deviceCapabilities.recordDurationSeconds.filter { $0 != 600 }
     }
 
     var body: some View {
@@ -140,8 +142,11 @@ struct GlassesSettingsView: View {
             }
         }
         .background(AppTheme.background.ignoresSafeArea())
+        .overlay {
+            if pairingCoordinator.isWaitingForUnpairFactoryReset { UnpairFactoryResetProgressView() }
+        }
         .navigationBarHidden(true)
-        .suppressTabBarOnAppear()
+        .suppressTabBarOnAppear(enabled: suppressesTabBarOnAppear)
         .onAppear {
             isSettingsVisible = true
             voiceWakeUpState.reset()
@@ -439,19 +444,7 @@ struct GlassesSettingsView: View {
                             set: { applyWearDetection($0) }
                         )
                     )
-                    SettingsDivider()
                 }
-                SettingsNavigationRow(
-                    title: L10n.t("同步通讯录", "Sync Contacts"),
-                    value: L10n.t("设置", "Set Up"),
-                    subtitle: L10n.t("将手机通讯录同步到眼镜，便于语音通话", "Sync phone contacts to glasses for voice calls"),
-                    action: {
-                        guideAlertMessage = L10n.t(
-                            "请前往 iPhone「设置 > 蓝牙」，找到已连接的 MOCO 眼镜并开启“同步通讯录”。",
-                            "Open iPhone Settings > Bluetooth, select the connected MOCO glasses, and enable Sync Contacts."
-                        )
-                    }
-                )
             }
         }
     }
@@ -1044,7 +1037,7 @@ struct GlassesSettingsView: View {
         isUnpairing = true
         Task {
             do {
-                try await pairingCoordinator.unpairDevice(serialNumber: serialNumber, sn: sn)
+                try await pairingCoordinator.unpairDevice(serialNumber: serialNumber, sn: sn, force: force)
                 isUnpairing = false
                 showUnpairSuccess = true
             } catch {
