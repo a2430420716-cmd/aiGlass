@@ -50,22 +50,29 @@ enum GATTRecoveryTests {
     private static func testBoundReconnectStopsAfterThreeRetries() {
         var policy = BoundBLEReconnectPolicy()
         check(policy.canRetry(now: 0), "Initial connection is allowed")
-        for retry in 1...3 {
+        for retry in 1...2 {
             let failedAt = TimeInterval((retry - 1) * 30)
             policy.noteConnectionFailure(now: failedAt)
             check(!policy.isExhausted, "Failure before retry \(retry) must leave that retry available")
             check(!policy.canRetry(now: failedAt + 29), "Each retry still respects cooldown")
             check(policy.canRetry(now: failedAt + 30), "Automatic retry \(retry) is allowed")
         }
-        policy.noteConnectionFailure(now: 90)
-        check(policy.isExhausted, "Failure of the third retry stops this cycle")
-        check(policy.failedAttempts == 4, "Budget includes initial attempt and three retries")
+        policy.noteConnectionFailure(now: 60)
+        check(policy.isExhausted, "Failure of the third total attempt stops this cycle")
+        check(policy.failedAttempts == 3, "Budget is three total automatic attempts")
         for second in 120...300 {
             check(!policy.canRetry(now: TimeInterval(second)), "Polling or foreground refresh must not reopen exhausted retries")
             check(!policy.claimScan(now: TimeInterval(second)), "Scanning cannot bypass exhausted retries")
         }
         policy.noteConnectionFailure(now: 400)
-        check(policy.failedAttempts == 4, "Extra callbacks cannot grow or reset exhausted counter")
+        check(policy.failedAttempts == 3, "Extra callbacks cannot grow or reset exhausted counter")
+        check(!policy.resumeOnSystemConnection(targetMatches: false), "Another device's event cannot reopen retries")
+        check(policy.isExhausted, "Unrelated Bluetooth events retain the stopped state")
+        check(policy.resumeOnSystemConnection(targetMatches: true), "A new bound-target system event reopens retries")
+        check(!policy.resumeOnSystemConnection(targetMatches: true), "Repeated events during an active cycle cannot reset failures")
+        policy.noteConnectionFailure(now: 401)
+        check(!policy.resumeOnSystemConnection(targetMatches: true), "A system event cannot erase failures within an active cycle")
+        check(policy.failedAttempts == 1, "Active-cycle failure budget is preserved")
         policy.reset()
         check(policy.failedAttempts == 0 && !policy.isExhausted, "Success or explicit manual retry starts a new cycle")
         check(policy.canRetry(now: 400), "New cycle can connect immediately")

@@ -3,12 +3,19 @@ import Foundation
 /// Rate limits missing-cache scans and actual connection failures separately.
 /// Polling and foreground refreshes must not postpone either deadline.
 struct BoundBLEReconnectPolicy {
-    static let maxRetries = 3
+    static let maxAttempts = 3
     private(set) var failedAttempts = 0
     private var retryAvailableAt: TimeInterval = 0
     private var scanAvailableAt: TimeInterval = 0
 
-    var isExhausted: Bool { failedAttempts > Self.maxRetries }
+    var isExhausted: Bool { failedAttempts >= Self.maxAttempts }
+
+    /// Only a fresh system event for the bound target may reopen a stopped cycle.
+    mutating func resumeOnSystemConnection(targetMatches: Bool) -> Bool {
+        guard targetMatches, isExhausted else { return false }
+        reset()
+        return true
+    }
 
     func canRetry(now: TimeInterval) -> Bool {
         !isExhausted && now >= retryAvailableAt
