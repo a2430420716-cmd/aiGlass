@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 60
     env:
       EXPORT_METHOD: ${{ inputs.export_method }}
+      # Avoid the Swift optimizer crash in the image's default Xcode 26.6.
+      DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - name: 检查签名配置
