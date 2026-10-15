@@ -737,7 +737,7 @@ final class MediaImportManager: ObservableObject {
             do {
                 let networkDiagnostics = WifiDiagnosticSession(
                     targetSSID: credentials.ssid, context: "gen1-tcp-connect", id: diagnostics.id,
-                    deviceEvidence: { diagnostics.deviceEvidence }
+                    deviceEvidence: { diagnostics.deviceEvidence }, joinOnce: false
                 )
                 networkDiagnostics.recordSnapshot(phase: "tcp-connect-start", force: true)
                 let sampling = Task { @MainActor in
@@ -794,9 +794,13 @@ final class MediaImportManager: ObservableObject {
         // Finish all cleanup before publishing a terminal state or accepting a retry.
         state = .finishing
         await client?.close()
-        if let ssid { DeviceWifiManager.disconnect(from: ssid) }
         isClosingGen1Hotspot = true
+        diagnostics.log("一代：TCP 已关闭，先等待设备热点收尾", detail: "cleanupOrder=closeTCP,closeDeviceHotspot,removePhoneConfiguration")
         let cleanupPending = await hotspot.close() == .pending
+        if let ssid {
+            diagnostics.log("一代：设备热点收尾等待结束，清理手机配置", detail: "deviceCleanupPending=\(cleanupPending) removeReason=importSessionEnded")
+            DeviceWifiManager.disconnect(from: ssid)
+        }
         isClosingGen1Hotspot = false
         identityWatch.cancel()
         if !failures.isEmpty {

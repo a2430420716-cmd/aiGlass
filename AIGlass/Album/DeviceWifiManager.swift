@@ -22,12 +22,14 @@ enum DeviceWifiManager {
     private static let logTag = "[DeviceWifi]"
     private static let managedHotspotsKey = "DeviceWifiManager.managedTransferHotspots"
     private static var configurationAttempts: [String: UUID] = [:]
+    private static var configurationRemovalTimes: [String: TimeInterval] = [:]
 
     /// Only remove networks installed by a previous transfer, never user-managed Wi-Fi.
     static func removeStaleTransferConfigurations() {
         let ssids = UserDefaults.standard.stringArray(forKey: managedHotspotsKey) ?? []
         for ssid in ssids {
             NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
+            configurationRemovalTimes[ssid] = ProcessInfo.processInfo.systemUptime
         }
         UserDefaults.standard.removeObject(forKey: managedHotspotsKey)
     }
@@ -41,6 +43,7 @@ enum DeviceWifiManager {
     private static func removeTransferConfiguration(_ ssid: String) {
         configurationAttempts.removeValue(forKey: ssid)
         NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
+        configurationRemovalTimes[ssid] = ProcessInfo.processInfo.systemUptime
         let ssids = (UserDefaults.standard.stringArray(forKey: managedHotspotsKey) ?? []).filter { $0 != ssid }
         UserDefaults.standard.set(ssids, forKey: managedHotspotsKey)
     }
@@ -136,7 +139,8 @@ enum DeviceWifiManager {
             throw DeviceWifiError.joinFailed(L10n.t("眼镜热点名称无效，请重新开启热点后重试", "Invalid glasses hotspot name. Restart the hotspot and try again"))
         }
         let diagnostics = WifiDiagnosticSession(
-            targetSSID: ssid, context: "gen1-media-import", id: diagnosticID, deviceEvidence: deviceEvidence
+            targetSSID: ssid, context: "gen1-media-import", id: diagnosticID, deviceEvidence: deviceEvidence,
+            joinOnce: false
         )
         defer { diagnostics.stop() }
         diagnostics.log(
@@ -146,21 +150,29 @@ enum DeviceWifiManager {
                 + "\nidentityPolicy=applyDeviceSSIDThenWiFiOnlyTCP ssidReadRequired=false gatewayReadRequired=false",
             direction: .sent
         )
-        NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
         do {
-            try await Task.sleep(nanoseconds: 300_000_000)
+            // Removing and immediately reapplying the same SSID can race iOS's
+            // asynchronous disassociation. Never remove a working config to join.
+            if let removedAt = configurationRemovalTimes[ssid] {
+                let remaining = 3 - (ProcessInfo.processInfo.systemUptime - removedAt)
+                if remaining > 0 {
+                    diagnostics.log("等待上次热点配置移除完成", detail: "retryKind=joinSystemNetwork delaySeconds=\(remaining)")
+                    try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+                }
+            }
+            try Task.checkCancellation()
+            rememberTransferConfiguration(ssid)
             try await applyConfiguration(ssid: ssid, password: password, diagnostics: diagnostics,
-                                         includePasswordInDiagnostics: false, timeout: 45)
+                                         includePasswordInDiagnostics: false, joinOnce: false, timeout: 45)
             try Task.checkCancellation()
             diagnostics.log("一代热点配置已应用，连接固定文件服务", detail: "ssid=\(ssid.debugDescription)"
                 + "\nserviceEndpoint=192.168.4.1:8556 TCPVerified=false associationConfirmed=false"
                 + "\nnextStage=WiFiOnlyTCPMediaTransport ssidReadRequired=false gatewayReadRequired=false", direction: .received)
             return "192.168.4.1"
         } catch {
-            diagnostics.log("一代热点连接结束，移除本次配置", detail: "ssid=\(ssid.debugDescription)"
+            diagnostics.log("一代热点连接失败，交由导入会话关闭热点后清理配置", detail: "ssid=\(ssid.debugDescription)"
                 + "\ncancelled=\(error is CancellationError || Task.isCancelled) error=\(error.localizedDescription)"
                 + "\nserviceEndpoint=192.168.4.1:8556 TCPVerified=false", direction: .received)
-            NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid)
             throw error
         }
     }
@@ -210,7 +222,7 @@ enum DeviceWifiManager {
                     configuration = NEHotspotConfiguration(ssid: ssid, passphrase: password, isWEP: false)
                 }
                 // A join-once network can be removed when iOS backgrounds the app.
-                // Gen2 transfers retain it until explicit completion/failure cleanup.
+                // Transfers using persistent joins retain it until explicit cleanup.
                 configuration.joinOnce = joinOnce
                 if !joinOnce { configuration.lifeTimeInDays = 1 }
 
