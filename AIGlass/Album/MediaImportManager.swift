@@ -142,6 +142,13 @@ enum MediaImportState: Equatable {
     case failed(String)
 }
 
+/// Credentials stay in memory only while this import owns the device hotspot.
+struct ManualGlassesWifiJoin: Identifiable, Equatable {
+    let id = UUID()
+    let ssid: String
+    let password: String
+}
+
 @MainActor
 final class MediaImportManager: ObservableObject {
     static let shared = MediaImportManager()
@@ -150,6 +157,39 @@ final class MediaImportManager: ObservableObject {
     @Published private(set) var lastFailureReport: MediaImportFailureReport?
     @Published private(set) var pendingGen1RecoveryCount = 0
     @Published private var isClosingGen1Hotspot = false
+
+    @Published private(set) var manualWifiJoin: ManualGlassesWifiJoin?
+    private var manualWifiRetryID: UUID?
+
+    func retryManualWifiJoin(id: UUID) {
+        guard manualWifiJoin?.id == id else { return }
+        manualWifiRetryID = id
+    }
+
+    func cancelManualWifiJoin(id: UUID) {
+        guard manualWifiJoin?.id == id else { return }
+        importTask?.cancel()
+    }
+
+    private func waitForManualWifiJoin(_ credentials: Gen1HotspotCredentials,
+                                       diagnostics: ImportDiagnosticContext) async throws {
+        let request = ManualGlassesWifiJoin(ssid: credentials.ssid, password: credentials.password)
+        manualWifiRetryID = nil
+        manualWifiJoin = request
+        diagnostics.log("一代：等待用户手动连接热点", detail: "ssid=\(credentials.ssid) timeout=300s hotspotPreserved=true retryKind=TCPOnly noApply=true noOpenHotspot=true")
+        defer { manualWifiJoin = nil; manualWifiRetryID = nil }
+        let deadline = ProcessInfo.processInfo.systemUptime + 300
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            try Task.checkCancellation()
+            if manualWifiRetryID == request.id {
+                diagnostics.log("一代：用户确认已连接，直接重试 TCP", detail: "retryKind=TCPOnly endpoint=192.168.4.1:8556")
+                return
+            }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        diagnostics.log("一代：手动连接等待超时，进入热点清理", detail: "timeout=300s")
+        throw DeviceWifiError.unreachable
+    }
 
     private let logTag = "[MediaImport]"
     private var connectedSSID: String?
@@ -188,6 +228,9 @@ final class MediaImportManager: ObservableObject {
     }
 
     var statusText: String {
+        if manualWifiJoin != nil {
+            return L10n.t("等待手动连接眼镜 Wi-Fi", "Waiting for manual glasses Wi-Fi connection")
+        }
         switch state {
         case .idle:
             return ""
@@ -724,40 +767,59 @@ final class MediaImportManager: ObservableObject {
             ssid = credentials.ssid
             try checkTarget()
             state = .connectingWifi
-            let host = try await DeviceWifiManager.connectGen1(
-                ssid: credentials.ssid, password: credentials.password,
-                diagnosticID: diagnostics.id, deviceEvidence: { diagnostics.deviceEvidence }
-            )
-            try checkTarget()
-            endpoint = "tcp://\(host):8556"
-            let transport = Gen1MediaTCPClient(host: host)
-            client = transport
-            // Keep observing after apply returns: its callback can precede the
-            // actual Wi-Fi switch and DHCP completion. This never gates TCP on SSID.
             do {
-                let networkDiagnostics = WifiDiagnosticSession(
-                    targetSSID: credentials.ssid, context: "gen1-tcp-connect", id: diagnostics.id,
-                    deviceEvidence: { diagnostics.deviceEvidence }, joinOnce: false
+                _ = try await DeviceWifiManager.connectGen1(
+                    ssid: credentials.ssid, password: credentials.password,
+                    diagnosticID: diagnostics.id, deviceEvidence: { diagnostics.deviceEvidence }
                 )
-                networkDiagnostics.recordSnapshot(phase: "tcp-connect-start", force: true)
-                let sampling = Task { @MainActor in
-                    while !Task.isCancelled {
-                        do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
-                        guard !Task.isCancelled else { return }
-                        networkDiagnostics.recordSnapshot(phase: "tcp-connect-waiting", force: true)
-                    }
-                }
-                defer { sampling.cancel(); networkDiagnostics.stop() }
+            } catch {
+                try checkTarget()
+                if case DeviceWifiError.userDenied = error { throw error }
+                diagnostics.log("一代：自动加入失败，保留热点供手动连接", detail: "error=\(error.localizedDescription)")
+                try await waitForManualWifiJoin(credentials, diagnostics: diagnostics)
+            }
+            endpoint = "tcp://192.168.4.1:8556"
+            var connectedTransport: Gen1MediaTCPClient?
+            while connectedTransport == nil {
+                try checkTarget()
+                let transport = Gen1MediaTCPClient(host: "192.168.4.1")
+                client = transport
                 do {
-                    try await transport.connect()
-                    networkDiagnostics.recordSnapshot(phase: "tcp-connect-ready", force: true)
+                    // Keep observing after apply returns: its callback can precede the
+                    // actual Wi-Fi switch and DHCP completion. This never gates TCP on SSID.
+                    do {
+                        let networkDiagnostics = WifiDiagnosticSession(
+                            targetSSID: credentials.ssid, context: "gen1-tcp-connect", id: diagnostics.id,
+                            deviceEvidence: { diagnostics.deviceEvidence }, joinOnce: false
+                        )
+                        networkDiagnostics.recordSnapshot(phase: "tcp-connect-start", force: true)
+                        let sampling = Task { @MainActor in
+                            while !Task.isCancelled {
+                                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                                guard !Task.isCancelled else { return }
+                                networkDiagnostics.recordSnapshot(phase: "tcp-connect-waiting", force: true)
+                            }
+                        }
+                        defer { sampling.cancel(); networkDiagnostics.stop() }
+                        do {
+                            try await transport.connect()
+                            networkDiagnostics.recordSnapshot(phase: "tcp-connect-ready", force: true)
+                        } catch {
+                            // Capture before outer cleanup removes the hotspot configuration.
+                            networkDiagnostics.recordSnapshot(phase: "tcp-connect-failed-before-cleanup", force: true)
+                            networkDiagnostics.log("一代：TCP 建连失败现场", detail: "endpoint=\(endpoint)\nerror=\(Self.formatErrorDetail(error))\nSSID_not_read_or_required; snapshot_does_not_prove_AP_authentication_or_service_failure")
+                            throw error
+                        }
+                    }
+                    connectedTransport = transport
                 } catch {
-                    // Capture before outer cleanup removes the hotspot configuration.
-                    networkDiagnostics.recordSnapshot(phase: "tcp-connect-failed-before-cleanup", force: true)
-                    networkDiagnostics.log("一代：TCP 建连失败现场", detail: "endpoint=\(endpoint)\nerror=\(Self.formatErrorDetail(error))\nSSID_not_read_or_required; snapshot_does_not_prove_AP_authentication_or_service_failure")
-                    throw error
+                    await transport.close()
+                    try checkTarget()
+                    diagnostics.log("一代：TCP 未连通，保留热点供手动连接", detail: "error=\(error.localizedDescription); fileListRequested=false")
+                    try await waitForManualWifiJoin(credentials, diagnostics: diagnostics)
                 }
             }
+            guard let transport = connectedTransport else { throw DeviceWifiError.unreachable }
             try checkTarget()
             state = .fetchingList
             listedNames = try await transport.fileList()

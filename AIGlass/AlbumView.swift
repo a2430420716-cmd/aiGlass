@@ -314,11 +314,46 @@ struct AlbumView: View {
 
     @ViewBuilder
     private var importCard: some View {
-        if importManager.isImporting {
+        if let request = importManager.manualWifiJoin {
+            manualWifiJoinCard(request)
+        } else if importManager.isImporting {
             importProgressCard
         } else {
             importPromptCard
         }
+    }
+
+    private func manualWifiJoinCard(_ request: ManualGlassesWifiJoin) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n.t("请手动连接眼镜 Wi-Fi", "Connect to glasses Wi-Fi manually"))
+                .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+            Text(L10n.t(
+                "自动连接未成功，眼镜热点已保留。请在手机「设置 → Wi-Fi」中连接下方热点；如提示无法访问互联网，请保持连接。返回本页后点击「已连接，重试」。请在 5 分钟内完成。",
+                "Automatic connection failed. The glasses hotspot remains on. Join the network below in Settings → Wi-Fi and stay connected even without internet. Return here and tap Connected, Retry within 5 minutes."
+            ))
+            Text(L10n.t("热点：\(request.ssid)", "Network: \(request.ssid)"))
+            if !request.password.isEmpty {
+                Text(L10n.t("密码：\(request.password)", "Password: \(request.password)"))
+                Button(L10n.t("复制密码", "Copy Password")) {
+                    UIPasteboard.general.string = request.password
+                }
+            }
+            HStack(spacing: 18) {
+                Button(L10n.t("已连接，重试", "Connected, Retry")) {
+                    importManager.retryManualWifiJoin(id: request.id)
+                }
+                Button(L10n.t("取消导入", "Cancel Import")) {
+                    importManager.cancelManualWifiJoin(id: request.id)
+                }
+            }
+        }
+        .font(AppTheme.notoSansSC(size: 14, weight: .regular))
+        .foregroundStyle(AppTheme.primaryText)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal, 20)
     }
 
     private var importPromptCard: some View {

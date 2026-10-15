@@ -147,6 +147,7 @@ struct HomeView: View {
     @State private var tabBarSuppressionCount = 0
     @State private var mediaActionAlertMessage: String?
     @State private var mediaActionToastMessage: String?
+    @State private var mediaActionToastID = UUID()
     @State private var navigateToNewbieGuide = false
     @State private var navigateToOperationGuide = false
     @State private var navigateToGlassesSettings = false
@@ -339,13 +340,16 @@ struct HomeView: View {
                 Text(mediaActionToastMessage)
                     .font(AppTheme.notoSansSC(size: 14, weight: .medium))
                     .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 11)
                     .background(Color.black.opacity(0.80))
                     .clipShape(Capsule())
                     .padding(.horizontal, 24)
-                    .padding(.bottom, 24)
+                    .padding(.bottom, (showsTabBar ? TabBarLayout.contentInset : 0) + 24)
                     .transition(.opacity)
+                    .allowsHitTesting(false)
             }
         }
         .alert(L10n.t("蓝牙音频未连接", "Bluetooth Audio Not Connected"), isPresented: Binding(
@@ -439,6 +443,8 @@ struct HomeView: View {
     }
 
     private var photoButtonTitle: String {
+        if ble.photoCompleted { return L10n.t("拍照完成", "Photo taken") }
+        if ble.isTakingPhoto { return L10n.t("拍照中...", "Taking photo...") }
         return L10n.t("拍照", "Photo")
     }
 
@@ -510,9 +516,11 @@ struct HomeView: View {
     }
 
     private func showMediaActionToast(_ message: String) {
+        let toastID = UUID()
+        mediaActionToastID = toastID
         mediaActionToastMessage = message
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            if mediaActionToastMessage == message {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            if mediaActionToastID == toastID {
                 mediaActionToastMessage = nil
             }
         }
@@ -769,7 +777,7 @@ struct HomeView: View {
                         )
                     }
                     .buttonStyle(.plain)
-                    .disabled(!ble.isDeviceAvailable)
+                    .disabled(!ble.isDeviceAvailable || ble.isTakingPhoto || ble.photoCompleted)
                     .opacity(ble.isDeviceAvailable ? 1 : 0.45)
                 }
 

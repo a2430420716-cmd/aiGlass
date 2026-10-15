@@ -3309,7 +3309,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         ) else { return }
         let remaining = homeVideoCapture.stopDelayRemaining(at: ProcessInfo.processInfo.systemUptime)
         guard remaining == 0 else {
-            mediaActionToastMessage = L10n.t("录制时间过短，请录制至少 3 秒", "Recording is too short. Please record for at least 3 seconds.")
+            let seconds = Int(ceil(remaining))
+            mediaActionToastMessage = L10n.t("录像至少需要 3 秒，请再等 \(seconds) 秒后点击结束录像", "Record for at least 3 seconds. Wait \(seconds) more second(s), then tap Stop Video.")
             logVideoCapture("stop-blocked", detail: "reason=minimum_duration remaining=\(String(format: "%.3f", remaining))s")
             return
         }
@@ -3402,6 +3403,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func finishPhotoCaptureSuccess() {
+        guard isTakingPhoto else { return }
         cancelMediaCompletionFallback()
         isTakingPhoto = false
         if deviceRuntimeStatus == .photoTaking {
@@ -3411,6 +3413,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             resetDeviceStatusQueryGate(reason: "photo-completion-without-standby")
         }
         showPhotoCompletedFeedback()
+        mediaActionToastMessage = L10n.t("拍照完成，请从相册中导入", "Photo taken. Import it from Album.")
         print("\(logTag) takephoto completed runtime=\(deviceRuntimeStatus.name)")
     }
 
@@ -3490,6 +3493,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             case .accepted:
                 print("\(logTag) stopvideo ACCEPTED status=\(response.currentStatus.name)")
                 if response.currentStatus != .standby {
+                    forceQueryDeviceStatus(reason: "video-stop-accepted-awaiting-standby")
                     scheduleMediaCompletionFallback(isPhoto: false)
                 }
             case .busy:
@@ -3526,7 +3530,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// Missing completion reports: photos retain their compatibility fallback;
     /// video stops query the real status and allow retry without claiming success.
-    private func scheduleMediaCompletionFallback(isPhoto: Bool) {
+    private func scheduleMediaCompletionFallback(isPhoto: Bool, didQueryVideoStatus: Bool = false) {
         cancelMediaCompletionFallback()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -3540,9 +3544,17 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                     self.finishPhotoCaptureSuccess()
                 }
             } else if !isPhoto, self.isVideoStopping || self.deviceRuntimeStatus == .videoRecording {
+                if !didQueryVideoStatus {
+                    // Give the status reply time to arrive before unlocking Stop.
+                    // Otherwise a successful stop with a missing ACK asks for a second tap.
+                    self.logVideoCapture("stop-awaiting-status", detail: "elapsed=4s action=query_status stopPending=\(self.isVideoStopping)")
+                    self.forceQueryDeviceStatus(reason: "video-stop-fallback")
+                    self.scheduleMediaCompletionFallback(isPhoto: false, didQueryVideoStatus: true)
+                    return
+                }
                 self.homeVideoCapture.stopRejectedOrUnconfirmed()
                 self.isVideoStopping = false
-                self.logVideoCapture("stop-unconfirmed", detail: "elapsed=4s action=query_status completion=false")
+                self.logVideoCapture("stop-unconfirmed", detail: "elapsed=8s action=query_status completion=false")
                 self.forceQueryDeviceStatus(reason: "video-stop-fallback")
                 self.mediaActionToastMessage = L10n.t("尚未确认录像已停止，正在查询设备状态，请稍后重试", "Recording stop is not confirmed. Checking device status; please try again shortly.")
             }

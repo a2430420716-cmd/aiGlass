@@ -163,7 +163,8 @@ enum DeviceWifiManager {
             try Task.checkCancellation()
             rememberTransferConfiguration(ssid)
             try await applyConfiguration(ssid: ssid, password: password, diagnostics: diagnostics,
-                                         includePasswordInDiagnostics: false, joinOnce: false, timeout: 45)
+                                         includePasswordInDiagnostics: false, joinOnce: false, timeout: 45,
+                                         retainConfigurationUntilSessionCleanup: true)
             try Task.checkCancellation()
             diagnostics.log("一代热点配置已应用，连接固定文件服务", detail: "ssid=\(ssid.debugDescription)"
                 + "\nserviceEndpoint=192.168.4.1:8556 TCPVerified=false associationConfirmed=false"
@@ -192,7 +193,8 @@ enum DeviceWifiManager {
         diagnostics: WifiDiagnosticSession,
         includePasswordInDiagnostics: Bool = true,
         joinOnce: Bool = true,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        retainConfigurationUntilSessionCleanup: Bool = false
     ) async throws {
         let started = ProcessInfo.processInfo.systemUptime
         let attemptID = UUID()
@@ -231,6 +233,13 @@ enum DeviceWifiManager {
                         // apply cannot be cancelled. A late callback must not resurrect a
                         // cancelled persistent network or remove a newer attempt's network.
                         if result.isResolved || configurationAttempts[ssid] != attemptID {
+                            if retainConfigurationUntilSessionCleanup,
+                               configurationAttempts[ssid] == attemptID {
+                                // A manual join can already be using this network. Only
+                                // the owning import session may remove its configuration.
+                                diagnostics.log("系统热点延迟回调已忽略，配置保留至会话清理", detail: "lateCallback=true removeConfiguration=false")
+                                return
+                            }
                             if configurationAttempts[ssid] == nil || configurationAttempts[ssid] == attemptID {
                                 removeTransferConfiguration(ssid)
                             }
