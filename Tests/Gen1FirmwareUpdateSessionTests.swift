@@ -214,7 +214,8 @@ enum Gen1FirmwareUpdateSessionTests {
                 }
                 return h.defaultSend(command, payload)
             }
-            await expectFailure(h, .wifiProvisionFailed)
+            let failure: Session.Failure = reply.map { $0 == 0 ? .wifiProvisionFailed : .wifiUnexpectedResult($0) } ?? .wifiResponseTimedOut
+            await expectFailure(h, failure)
             check(h.codes == [0x05, 0x06, 0x06, 0x17], "Provisioning gets two attempts, then diagnostic; OTA must never start")
             check(h.logs.contains { $0.contains("wifi diagnostic=") && $0.contains("<redacted>") }, "Wi-Fi diagnosis redacts passwords")
             check(!h.logs.contains { $0.contains("secret-password") }, "No diagnostic or normal log leaks the password")
@@ -257,9 +258,9 @@ enum Gen1FirmwareUpdateSessionTests {
         sendFailure.onSend = { command, payload in
             command == 0x06 ? false : sendFailure.defaultSend(command, payload)
         }
-        await expectFailure(sendFailure, .wifiProvisionFailed)
-        check(sendFailure.codes == [0x05, 0x06, 0x17], "A failed Wi-Fi send is not retried and never sends 0x09")
-        check(sendFailure.clock == 3, "An unanswered diagnostic has a bounded three-second wait")
+        await expectFailure(sendFailure, .sendFailed(0x06))
+        check(sendFailure.codes == [0x05, 0x06], "Unqueued provisioning stops immediately without claiming device/network failure")
+        check(sendFailure.clock == 0, "A failed local send must not spend time waiting for a device reply")
 
         let diagnosticFailure = Harness()
         diagnosticFailure.wifiReply = 0
@@ -268,6 +269,43 @@ enum Gen1FirmwareUpdateSessionTests {
         }
         await expectFailure(diagnosticFailure, .wifiProvisionFailed)
         check(diagnosticFailure.clock == 0, "Failed diagnostic send does not wait")
+    }
+
+    private static func testWifiFailureEvidence() async {
+        let malformed = Harness()
+        malformed.onSend = { command, payload in
+            if command == 0x06 {
+                malformed.reply(0x06, [1, 0])
+                return true
+            }
+            if command == 0x17 {
+                // Even a partial or reformatted password must never reach logs.
+                malformed.session.receive(command: 0x17, payload: Data("password=secret-".utf8))
+                return true
+            }
+            return malformed.defaultSend(command, payload)
+        }
+        await expectFailure(malformed, .wifiMalformedResponse)
+        check(!malformed.codes.contains(0x09), "Malformed success payload cannot authorize firmware download")
+        check(malformed.logs.contains { $0.contains("expected_exactly_one_status_byte") }, "Malformed replies retain framing evidence")
+        check(!malformed.logs.contains { $0.contains("secret-") }, "Raw diagnostics never expose partial credentials")
+
+        let disconnected = Harness()
+        disconnected.wifiReply = nil
+        disconnected.onSend = { command, payload in
+            if command == 0x06 { disconnected.after(1) { disconnected.connected = false }; return true }
+            return disconnected.defaultSend(command, payload)
+        }
+        await expectFailure(disconnected, .wifiConnectionLost)
+        check(disconnected.codes == [0x05, 0x06], "Disconnect is not disguised as wrong credentials or retried on dead GATT")
+        check(disconnected.logs.contains { $0.contains("bleConnected=false") }, "Connection transitions are recorded")
+
+        let timeout = Harness()
+        timeout.wifiReply = nil
+        await expectFailure(timeout, .wifiResponseTimedOut)
+        check(timeout.logs.contains { $0.contains("phaseElapsed=") && $0.contains("waiting") }, "Bounded wait records periodic phase/connection evidence")
+        check(timeout.logs.contains { $0.contains("OTA_command_0x09_not_sent=true") }, "Failure records that firmware download never began")
+        check(Session.Failure.wifiResponseTimedOut.errorDescription != Session.Failure.wifiProvisionFailed.errorDescription, "Timeout and explicit device rejection have distinct messages")
     }
 
     private static func testOTADeadlinesAndRejections() async throws {
@@ -399,7 +437,7 @@ enum Gen1FirmwareUpdateSessionTests {
             }
             return lateWifi.defaultSend(command, payload)
         }
-        await expectFailure(lateWifi, .wifiProvisionFailed)
+        await expectFailure(lateWifi, .wifiResponseTimedOut)
         check(!lateWifi.codes.contains(0x09), "Out-of-phase Wi-Fi/progress/version replies cannot skip provisioning")
 
         let oldRejection = Harness()
@@ -486,6 +524,7 @@ enum Gen1FirmwareUpdateSessionTests {
         try await testHappyPathAndFreshVersion()
         try await testBatteryGate()
         try await testWifiRetryAndDiagnostics()
+        await testWifiFailureEvidence()
         try await testOTADeadlinesAndRejections()
         await testRestartAndVersionFailures()
         try await testReconnectAndMonotonicProgress()

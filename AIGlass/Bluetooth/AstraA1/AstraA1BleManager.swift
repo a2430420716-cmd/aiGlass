@@ -4545,16 +4545,27 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
 
         let preferWithoutResponse = characteristic.properties.contains(.writeWithoutResponse)
+        if redactPayload {
+            let type: CBCharacteristicWriteType = preferWithoutResponse ? .withoutResponse : .withResponse
+            let maximum = peripheral.maximumWriteValueLength(for: type)
+            DebugLogStore.logBLEEvent("Gen1 Wi-Fi write plan", detail: "target=\(peripheral.identifier) characteristic=\(characteristic.uuid) notifying=\(notifyCharacteristic?.isNotifying ?? false) writeType=\(preferWithoutResponse ? "withoutResponse" : "withResponse") maximumWriteBytes=\(maximum) frameBytes=\(data.count) queuedFragmentsBefore=\(pendingBLEWrites.count); payload=<redacted> local_write_is_not_device_ack")
+        }
         if preferWithoutResponse {
             let chunkSize = max(1, peripheral.maximumWriteValueLength(for: .withoutResponse))
             let chunks = stride(from: 0, to: data.count, by: chunkSize).map {
                 data.subdata(in: $0..<min(data.count, $0 + chunkSize))
             }
             if pendingBLEWrites.count + chunks.count > maxPendingBLEWrites {
+                if redactPayload {
+                    DebugLogStore.logBLEEvent("Gen1 Wi-Fi write rejected", detail: "reason=queue_full queuedFragments=\(pendingBLEWrites.count) newFragments=\(chunks.count) limit=\(maxPendingBLEWrites); packet_not_queued=true")
+                }
                 print("\(logTag) sendCommand dropped: write queue full (\(maxPendingBLEWrites))")
                 return false
             }
             let packetID = UUID()
+            if redactPayload {
+                DebugLogStore.logBLEEvent("Gen1 Wi-Fi packet queued", detail: "packetID=\(packetID) fragments=\(chunks.count) fragmentSizes=\(chunks.map { $0.count }) frameBytes=\(data.count) payload=<redacted>")
+            }
             pendingBLEWrites.append(contentsOf: chunks.map {
                 PendingBLEWrite(data: $0, packetID: packetID, requiresAvailableDevice: requiresAvailableDevice, redactPayload: redactPayload)
             })
@@ -4582,6 +4593,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
         while !pendingBLEWrites.isEmpty {
             if !peripheral.canSendWriteWithoutResponse {
+                if pendingBLEWrites.contains(where: { $0.redactPayload }) {
+                    DebugLogStore.logBLEEvent("Gen1 Wi-Fi write waiting", detail: "queuedFragments=\(pendingBLEWrites.count) canSendWriteWithoutResponse=false; awaiting_peripheralIsReady")
+                }
                 print("\(logTag) write queue pause remaining=\(pendingBLEWrites.count)")
                 return
             }
@@ -4599,7 +4613,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             peripheral.writeValue(write.data, for: characteristic, type: .withoutResponse)
             print("\(logTag) sendCommand \(write.data.count) bytes to \(characteristic.uuid)")
             if write.redactPayload {
-                DebugLogStore.logBLEEvent("Gen1 Wi-Fi credential fragment sent", detail: "bytes=\(write.data.count) payload=<redacted>")
+                DebugLogStore.logBLEEvent("Gen1 Wi-Fi credential fragment sent", detail: "packetID=\(write.packetID) bytes=\(write.data.count) remainingPacketFragments=\(pendingBLEWrites.filter { $0.packetID == write.packetID }.count) payload=<redacted>; submitted_to_CoreBluetooth_not_device_ack")
             } else {
                 DebugLogStore.logBLESent(write.data)
             }
@@ -4609,6 +4623,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func clearPendingBLEWrites(reason: String) {
         guard !pendingBLEWrites.isEmpty else { return }
+        if pendingBLEWrites.contains(where: { $0.redactPayload }) {
+            DebugLogStore.logBLEEvent("Gen1 Wi-Fi pending writes cleared", detail: "reason=\(reason) queuedFragments=\(pendingBLEWrites.count); device_may_have_partial_packet=true")
+        }
         print("\(logTag) clear write queue count=\(pendingBLEWrites.count) reason=\(reason)")
         pendingBLEWrites.removeAll()
         activeBLEWritePacketID = nil
@@ -4860,10 +4877,16 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func handleGen1ControlData(_ data: Data, capturedAt: Date) {
         let decoded = gen1ControlDecoder.appendWithDiagnostics(data)
+        if gen1FirmwareUpgradeIdentity != nil {
+            DebugLogStore.logBLEEvent("Gen1 firmware control decode", detail: "target=\(connectedPeripheral?.identifier.uuidString ?? "nil") \(decoded.diagnosticSummary); payload=<redacted>", capturedAt: capturedAt)
+        }
         if gen1GuideEventSessionID != nil {
             DebugLogStore.logBLEEvent("Gen1 guide control decode", detail: "session=\(gen1GuideEventSessionID!.uuidString) target=\(connectedPeripheral?.identifier.uuidString ?? "nil") \(decoded.diagnosticSummary)", capturedAt: capturedAt)
         }
         for frame in decoded.frames {
+            if gen1FirmwareUpgradeIdentity != nil {
+                DebugLogStore.logBLEEvent("Gen1 firmware control frame", detail: "command=\(String(format: "0x%02X", frame.command)) sender=\(frame.sender) receiver=\(frame.receiver) payloadBytes=\(frame.payload.count) routingAccepted=\(frame.sender == 3 && frame.receiver == 2); payload=<redacted>", capturedAt: capturedAt)
+            }
             let guideRelated = frame.command == Gen1Commands.tutorial || Gen1GuideStepState.MediaAction(command: frame.command) != nil
             if guideRelated {
                 let raw = frame.raw.prefix(96).map { String(format: "%02X", $0) }.joined(separator: " ")
@@ -8021,6 +8044,11 @@ extension AstraA1BleManager: CBPeripheralDelegate {
                 || characteristic === batteryLevelCharacteristic || characteristic === batteryLevelStatusCharacteristic else { return }
             if deviceGeneration == .gen1G5K61,
                uuid == Self.gen1ControlUUID || uuid == Self.gen1VoiceUUID {
+                if gen1FirmwareUpgradeIdentity != nil, uuid == Self.gen1ControlUUID,
+                   errorCopy != nil || dataCopy == nil {
+                    let nsError = errorCopy.map { $0 as NSError }
+                    DebugLogStore.logBLEEvent("Gen1 firmware notify callback failed", detail: "target=\(peripheral.identifier) characteristic=\(uuid) payloadBytes=\(dataCopy?.count ?? 0) errorDomain=\(nsError?.domain ?? "none") errorCode=\(nsError?.code ?? 0); no_payload_dump", capturedAt: capturedAt)
+                }
                 guard errorCopy == nil, let data = dataCopy else { return }
                 if uuid == Self.gen1VoiceUUID { handleGen1VoiceData(data) }
                 else { handleGen1ControlData(data, capturedAt: capturedAt) }
