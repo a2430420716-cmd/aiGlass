@@ -732,7 +732,32 @@ final class MediaImportManager: ObservableObject {
             endpoint = "tcp://\(host):8556"
             let transport = Gen1MediaTCPClient(host: host)
             client = transport
-            try await transport.connect()
+            // Keep observing after apply returns: its callback can precede the
+            // actual Wi-Fi switch and DHCP completion. This never gates TCP on SSID.
+            do {
+                let networkDiagnostics = WifiDiagnosticSession(
+                    targetSSID: credentials.ssid, context: "gen1-tcp-connect", id: diagnostics.id,
+                    deviceEvidence: { diagnostics.deviceEvidence }
+                )
+                networkDiagnostics.recordSnapshot(phase: "tcp-connect-start", force: true)
+                let sampling = Task { @MainActor in
+                    while !Task.isCancelled {
+                        do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                        guard !Task.isCancelled else { return }
+                        networkDiagnostics.recordSnapshot(phase: "tcp-connect-waiting", force: true)
+                    }
+                }
+                defer { sampling.cancel(); networkDiagnostics.stop() }
+                do {
+                    try await transport.connect()
+                    networkDiagnostics.recordSnapshot(phase: "tcp-connect-ready", force: true)
+                } catch {
+                    // Capture before outer cleanup removes the hotspot configuration.
+                    networkDiagnostics.recordSnapshot(phase: "tcp-connect-failed-before-cleanup", force: true)
+                    networkDiagnostics.log("一代：TCP 建连失败现场", detail: "endpoint=\(endpoint)\nerror=\(Self.formatErrorDetail(error))\nSSID_not_read_or_required; snapshot_does_not_prove_AP_authentication_or_service_failure")
+                    throw error
+                }
+            }
             try checkTarget()
             state = .fetchingList
             listedNames = try await transport.fileList()

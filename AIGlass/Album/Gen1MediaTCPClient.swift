@@ -97,6 +97,12 @@ actor Gen1MediaTCPClient {
                 connection.stateUpdateHandler = { [weak self] state in
                     Task { await self?.connectionChanged(state) }
                 }
+                connection.pathUpdateHandler = { [weak self] path in
+                    let interfaces = path.availableInterfaces.map { "\($0.name):\($0.type)" }.sorted().joined(separator: ",")
+                    let reason = path.status == .unsatisfied ? String(describing: path.unsatisfiedReason) : "notApplicable"
+                    let detail = "connectionPath status=\(path.status) unsatisfiedReason=\(reason) usesWiFi=\(path.usesInterfaceType(.wifi)) supportsIPv4=\(path.supportsIPv4) interfaces=[\(interfaces)]; path_is_not_TCP_ready"
+                    Task { await self?.logConnection(detail) }
+                }
                 connectTimer = deadline(after: timing.connect, reason: "连接")
                 connection.start(queue: networkQueue)
             }
@@ -402,6 +408,7 @@ actor Gen1MediaTCPClient {
         state = .closed
         terminalError = error
         connection?.stateUpdateHandler = nil
+        connection?.pathUpdateHandler = nil
         connection?.cancel()
         connection = nil
         [connectTimer, readTimer, writeTimer, operationTimer, heartbeatTask].forEach { $0?.cancel() }

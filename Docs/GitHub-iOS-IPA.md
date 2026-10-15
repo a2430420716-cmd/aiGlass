@@ -1,6 +1,6 @@
 # GitHub 云打包
 
-Actions 工作流 `iOS IPA` 手动运行，使用明确的 `macos-26-intel` 构建机器，避开 `macos-latest` 当前指向的 ARM64 资源池；使用 CocoaPods 1.17.0、归档 Release、签名导出 IPA。当前版本 1.1.6，Build 136。证书/描述文件不进入源码或构建产物。
+Actions 工作流 `iOS IPA` 手动运行，使用明确的 `macos-26-intel` 构建机器，避开 `macos-latest` 当前指向的 ARM64 资源池；使用 CocoaPods 1.17.0、归档 Release、签名导出 IPA。当前版本 1.1.6，Build 137。证书/描述文件不进入源码或构建产物。
 
 仓库 Settings → Secrets and variables → Actions 添加：
 
