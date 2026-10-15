@@ -149,6 +149,8 @@ struct ManualGlassesWifiJoin: Identifiable, Equatable {
     let password: String
 }
 
+private enum ManualWifiJoinExit: Error { case restartHotspot }
+
 @MainActor
 final class MediaImportManager: ObservableObject {
     static let shared = MediaImportManager()
@@ -159,7 +161,10 @@ final class MediaImportManager: ObservableObject {
     @Published private var isClosingGen1Hotspot = false
 
     @Published private(set) var manualWifiJoin: ManualGlassesWifiJoin?
+    @Published private(set) var manualWifiHotspotMayBeOff = false
     private var manualWifiRetryID: UUID?
+    private var manualWifiRestartID: UUID?
+    private var restartGen1ImportAfterCleanup = false
 
     func retryManualWifiJoin(id: UUID) {
         guard manualWifiJoin?.id == id else { return }
@@ -168,19 +173,45 @@ final class MediaImportManager: ObservableObject {
 
     func cancelManualWifiJoin(id: UUID) {
         guard manualWifiJoin?.id == id else { return }
+        DebugLogStore.logWiFi("一代：用户取消手动连接", detail: "cancelReason=userCancelledManualJoin")
         importTask?.cancel()
     }
 
+    func restartManualWifiHotspot(id: UUID) {
+        guard manualWifiJoin?.id == id else { return }
+        manualWifiRestartID = id
+    }
+
     private func waitForManualWifiJoin(_ credentials: Gen1HotspotCredentials,
+                                       ble: AstraA1BleManager,
                                        diagnostics: ImportDiagnosticContext) async throws {
         let request = ManualGlassesWifiJoin(ssid: credentials.ssid, password: credentials.password)
         manualWifiRetryID = nil
+        manualWifiRestartID = nil
+        manualWifiHotspotMayBeOff = false
         manualWifiJoin = request
-        diagnostics.log("一代：等待用户手动连接热点", detail: "ssid=\(credentials.ssid) timeout=300s hotspotPreserved=true retryKind=TCPOnly noApply=true noOpenHotspot=true")
-        defer { manualWifiJoin = nil; manualWifiRetryID = nil }
+        diagnostics.log("一代：等待用户手动连接热点", detail: "ssid=\(credentials.ssid) timeout=300s appSentCloseHotspot=false deviceAPAvailability=unverified retryKind=TCPOnly noApply=true noOpenHotspot=true")
+        defer {
+            manualWifiJoin = nil
+            manualWifiRetryID = nil
+            manualWifiRestartID = nil
+            manualWifiHotspotMayBeOff = false
+        }
+        // Observe each report: SHUTTING_DOWN can be immediately followed by STANDBY.
+        // Polling only the latest status would miss that transition.
+        let statusObservation = ble.$deviceRuntimeStatus.dropFirst().sink { [weak self] status in
+            guard status == .shuttingDown, let self, !self.manualWifiHotspotMayBeOff else { return }
+            self.manualWifiHotspotMayBeOff = true
+            diagnostics.log("一代：手动连接期间设备主动报告收尾", detail: "appSentCloseHotspot=false deviceStatus=SHUTTING_DOWN APAvailability=unverified action=offerExplicitRestart")
+        }
+        defer { statusObservation.cancel() }
         let deadline = ProcessInfo.processInfo.systemUptime + 300
         while ProcessInfo.processInfo.systemUptime < deadline {
             try Task.checkCancellation()
+            if manualWifiRestartID == request.id {
+                diagnostics.log("一代：用户请求重新开启热点，先清理旧会话", detail: "restartReason=networkNotFound cleanupRequired=true")
+                throw ManualWifiJoinExit.restartHotspot
+            }
             if manualWifiRetryID == request.id {
                 diagnostics.log("一代：用户确认已连接，直接重试 TCP", detail: "retryKind=TCPOnly endpoint=192.168.4.1:8556")
                 return
@@ -288,12 +319,15 @@ final class MediaImportManager: ObservableObject {
         }
         lastFailureReport = nil
         importTask = Task { [weak self] in
-            await self?.startImport(
-                ble: ble,
-                library: library,
-                expectedFileCount: expectedFileCount,
-                autoSaveToPhotoLibrary: autoSaveToPhotoLibrary
-            )
+            repeat {
+                self?.restartGen1ImportAfterCleanup = false
+                await self?.startImport(
+                    ble: ble,
+                    library: library,
+                    expectedFileCount: expectedFileCount,
+                    autoSaveToPhotoLibrary: autoSaveToPhotoLibrary
+                )
+            } while self?.restartGen1ImportAfterCleanup == true && !Task.isCancelled
             self?.importTask = nil
         }
     }
@@ -776,7 +810,7 @@ final class MediaImportManager: ObservableObject {
                 try checkTarget()
                 if case DeviceWifiError.userDenied = error { throw error }
                 diagnostics.log("一代：自动加入失败，保留热点供手动连接", detail: "error=\(error.localizedDescription)")
-                try await waitForManualWifiJoin(credentials, diagnostics: diagnostics)
+                try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
             }
             endpoint = "tcp://192.168.4.1:8556"
             var connectedTransport: Gen1MediaTCPClient?
@@ -816,7 +850,7 @@ final class MediaImportManager: ObservableObject {
                     await transport.close()
                     try checkTarget()
                     diagnostics.log("一代：TCP 未连通，保留热点供手动连接", detail: "error=\(error.localizedDescription); fileListRequested=false")
-                    try await waitForManualWifiJoin(credentials, diagnostics: diagnostics)
+                    try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
                 }
             }
             guard let transport = connectedTransport else { throw DeviceWifiError.unreachable }
@@ -850,7 +884,13 @@ final class MediaImportManager: ObservableObject {
             try await transport.finishTransfer()
         } catch {
             finalError = ble.isGen1MediaImportCurrent(identity) ? error : Gen1APImportError.targetChanged
-            diagnostics.log("一代：导入流程失败", detail: "endpoint=\(endpoint) imported=\(importedNames.count) error=\(finalError!.localizedDescription)")
+            if finalError is ManualWifiJoinExit {
+                diagnostics.log("一代：准备重新开启热点", detail: "endpoint=\(endpoint) cleanupBeforeRestart=true")
+            } else if finalError is CancellationError {
+                diagnostics.log("一代：导入已取消", detail: "endpoint=\(endpoint) imported=\(importedNames.count) nextStage=hotspotCleanup")
+            } else {
+                diagnostics.log("一代：导入流程失败", detail: "endpoint=\(endpoint) imported=\(importedNames.count) error=\(finalError!.localizedDescription)")
+            }
         }
 
         // Finish all cleanup before publishing a terminal state or accepting a retry.
@@ -876,7 +916,23 @@ final class MediaImportManager: ObservableObject {
                 credentialSource: "Gen1 0x37", transportName: "TCP"
             )
         }
-        if let finalError {
+        if finalError is ManualWifiJoinExit, !cleanupPending, !Task.isCancelled,
+           ble.isGen1MediaImportCurrent(identity) {
+            // The old identity is ended by defer before the next import begins.
+            restartGen1ImportAfterCleanup = true
+            state = .idle
+        } else if finalError is ManualWifiJoinExit {
+            state = .failed(cleanupPending ? Gen1APImportError.hotspotCleanupPending.localizedDescription
+                            : Gen1APImportError.targetChanged.localizedDescription)
+        } else if finalError is CancellationError {
+            if cleanupPending {
+                state = .failed(Gen1APImportError.hotspotCleanupPending.localizedDescription)
+            } else if importedNames.isEmpty {
+                state = .idle
+            } else {
+                state = .completed(imported: importedNames.count, failedPhotos: failedPhotos, failedVideos: failedVideos)
+            }
+        } else if let finalError {
             let cleanupDetail = cleanupPending ? "\n\(Gen1APImportError.hotspotCleanupPending.localizedDescription)" : ""
             state = .failed(L10n.t("已导入 \(importedNames.count) 项。\(finalError.localizedDescription)；已下载完整的原件保留在手机，可再次导入恢复。\(cleanupDetail)", "Imported \(importedNames.count) item(s). \(finalError.localizedDescription). Completed originals are retained on this phone for recovery.\(cleanupDetail)"))
         } else if cleanupPending {

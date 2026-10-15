@@ -328,10 +328,20 @@ struct AlbumView: View {
             Text(L10n.t("请手动连接眼镜 Wi-Fi", "Connect to glasses Wi-Fi manually"))
                 .font(AppTheme.notoSansSC(size: 16, weight: .medium))
             Text(L10n.t(
-                "自动连接未成功，眼镜热点已保留。请在手机「设置 → Wi-Fi」中连接下方热点；如提示无法访问互联网，请保持连接。返回本页后点击「已连接，重试」。请在 5 分钟内完成。",
-                "Automatic connection failed. The glasses hotspot remains on. Join the network below in Settings → Wi-Fi and stay connected even without internet. Return here and tap Connected, Retry within 5 minutes."
+                "自动连接未成功，App 暂不关闭热点。请在手机「设置 → Wi-Fi」中连接下方热点；如提示无法访问互联网，请保持连接。返回后点击「已连接，重试」。找不到热点时可点击「重新开启热点」。请在 5 分钟内完成。",
+                "Automatic connection failed. The app has not closed the hotspot. Join the network below in Settings → Wi-Fi and stay connected even without internet. Return and tap Connected, Retry. If the network is missing, tap Restart Hotspot. Complete within 5 minutes."
             ))
-            Text(L10n.t("热点：\(request.ssid)", "Network: \(request.ssid)"))
+            if importManager.manualWifiHotspotMayBeOff {
+                Text(L10n.t("眼镜已报告关机或热点收尾，热点可能已关闭，请重新开启热点。", "The glasses reported shutdown or cleanup. The hotspot may be off. Restart the hotspot."))
+                    .foregroundStyle(.orange)
+            }
+            HStack {
+                Text(L10n.t("热点：\(request.ssid)", "Network: \(request.ssid)"))
+                Spacer(minLength: 8)
+                Button(L10n.t("复制名称", "Copy Name")) {
+                    UIPasteboard.general.string = request.ssid
+                }
+            }
             if !request.password.isEmpty {
                 Text(L10n.t("密码：\(request.password)", "Password: \(request.password)"))
                 Button(L10n.t("复制密码", "Copy Password")) {
@@ -345,6 +355,9 @@ struct AlbumView: View {
                 Button(L10n.t("取消导入", "Cancel Import")) {
                     importManager.cancelManualWifiJoin(id: request.id)
                 }
+            }
+            Button(L10n.t("找不到网络？重新开启热点", "Network missing? Restart Hotspot")) {
+                importManager.restartManualWifiHotspot(id: request.id)
             }
         }
         .font(AppTheme.notoSansSC(size: 14, weight: .regular))
