@@ -196,10 +196,11 @@ enum DeviceWifiManager {
         WifiConnectionDiagnostics.isGen1ClientIPv4(WifiDiagnosticSession.captureInterfaces().selectedIPv4)
     }
 
-    /// A short DHCP grace period replaces the former 30-second TCP timeout on
-    /// another LAN. Missing IP is not success. No SSID read or extra TCP probe.
+    /// Allow iOS to finish switching networks and acquiring DHCP even when its
+    /// apply callback arrives early. Never repeat apply or probe TCP on another LAN.
     private static func waitForGen1ClientIPv4(diagnostics: WifiDiagnosticSession) async throws -> Bool {
-        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        let deadline = ProcessInfo.processInfo.systemUptime + 30
+        diagnostics.log("等待手机切换至眼镜网段", detail: "connectionGrace=30s pollInterval=250ms repeatApply=false TCPAttempted=false")
         repeat {
             try Task.checkCancellation()
             let interfaces = WifiDiagnosticSession.captureInterfaces()
@@ -208,13 +209,9 @@ enum DeviceWifiManager {
                 diagnostics.log("眼镜网段检查通过", detail: "selectedIPv4=\(interfaces.selectedIPv4 ?? "none") TCPVerified=false")
                 return true
             }
-            if interfaces.selectedIPv4 != nil {
-                diagnostics.log("仍在其他网段，立即引导手动连接", detail: "selectedIPv4=\(interfaces.selectedIPv4 ?? "none") TCPAttempted=false")
-                return false
-            }
             try await Task.sleep(nanoseconds: 250_000_000)
         } while ProcessInfo.processInfo.systemUptime < deadline
-        diagnostics.log("尚未获取眼镜 IPv4，引导手动连接", detail: "dhcpGrace=10s TCPAttempted=false")
+        diagnostics.log("尚未获取眼镜 IPv4，引导手动连接并继续观察", detail: "connectionGrace=30s TCPAttempted=false")
         return false
     }
 

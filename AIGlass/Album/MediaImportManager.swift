@@ -184,6 +184,7 @@ final class MediaImportManager: ObservableObject {
 
     private func waitForManualWifiJoin(_ credentials: Gen1HotspotCredentials,
                                        ble: AstraA1BleManager,
+                                       requireLANRejoin: Bool = false,
                                        diagnostics: ImportDiagnosticContext) async throws {
         let request = ManualGlassesWifiJoin(ssid: credentials.ssid, password: credentials.password)
         manualWifiRetryID = nil
@@ -205,6 +206,9 @@ final class MediaImportManager: ObservableObject {
             diagnostics.log("一代：手动连接期间设备主动报告收尾", detail: "appSentCloseHotspot=false deviceStatus=SHUTTING_DOWN APAvailability=unverified action=offerExplicitRestart")
         }
         defer { statusObservation.cancel() }
+        // After a TCP failure, an unchanged LAN address must not trigger an
+        // endless retry loop. Resume automatically only after leaving and rejoining.
+        var observedOutsideLAN = !DeviceWifiManager.gen1HasClientIPv4
         let deadline = ProcessInfo.processInfo.systemUptime + 300
         while ProcessInfo.processInfo.systemUptime < deadline {
             try Task.checkCancellation()
@@ -214,6 +218,12 @@ final class MediaImportManager: ObservableObject {
             }
             if manualWifiRetryID == request.id {
                 diagnostics.log("一代：用户确认已连接，直接重试 TCP", detail: "retryKind=TCPOnly endpoint=192.168.4.1:8556")
+                return
+            }
+            let hasClientIPv4 = DeviceWifiManager.gen1HasClientIPv4
+            if !hasClientIPv4 { observedOutsideLAN = true }
+            if hasClientIPv4 && (!requireLANRejoin || observedOutsideLAN) {
+                diagnostics.log("一代：手动连接等待期间检测到眼镜网段，自动继续导入", detail: "targetLAN=192.168.4.0/24 retryKind=TCPOnly endpoint=192.168.4.1:8556 noApply=true noOpenHotspot=true requireLANRejoin=\(requireLANRejoin)")
                 return
             }
             try await Task.sleep(nanoseconds: 200_000_000)
@@ -855,7 +865,7 @@ final class MediaImportManager: ObservableObject {
                     await transport.close()
                     try checkTarget()
                     diagnostics.log("一代：TCP 未连通，保留热点供手动连接", detail: "error=\(error.localizedDescription); fileListRequested=false")
-                    try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
+                    try await waitForManualWifiJoin(credentials, ble: ble, requireLANRejoin: true, diagnostics: diagnostics)
                 }
             }
             guard let transport = connectedTransport else { throw DeviceWifiError.unreachable }
