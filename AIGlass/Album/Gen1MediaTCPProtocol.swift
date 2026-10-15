@@ -87,10 +87,14 @@ nonisolated enum Gen1MediaTCPProtocol {
         // Accept complete BE or LE response tuples, never independently swap
         // individual fields or accept echoed client routing (source=2,target=3).
         let legacy = version == 0 && source == 0 && target == 0
+        // ResponseFileList may leave both IDs zero while retaining version 1.
+        // This does not enable the legacy SEND_FILE length exceptions.
+        let zeroRouting = source == 0 && target == 0
+            && (version == 1 || littleEndianUInt16(2) == 1)
         let networkRouting = version == 1 && source == 3 && target == 2
         let hostRouting = littleEndianUInt16(2) == 1
             && littleEndianUInt16(6) == 3 && littleEndianUInt16(8) == 2
-        guard legacy || networkRouting || hostRouting else {
+        guard legacy || zeroRouting || networkRouting || hostRouting else {
             throw Gen1MediaTCPError.invalidFrame("invalid version/source/target")
         }
         guard uint16(10) == 0 else { throw Gen1MediaTCPError.invalidFrame("reserved field is not zero") }
@@ -104,7 +108,12 @@ nonisolated enum Gen1MediaTCPProtocol {
     }
 
     static func validateTrailer(_ data: Data) throws {
-        guard data == trailer else { throw Gen1MediaTCPError.invalidFrame("invalid AF8C trailer") }
+        // ResponseFileList sends host-order DefaultCRC on current firmware;
+        // ResponseFile sends htons(DefaultCRC). Both are fixed placeholders.
+        guard data == trailer || data == Data([0x8C, 0xAF]) else {
+            let bytes = data.prefix(8).map { String(format: "%02X", $0) }.joined(separator: " ")
+            throw Gen1MediaTCPError.invalidFrame("invalid AF8C trailer: received=\(bytes) bytes=\(data.count)")
+        }
     }
 
     static func validateFileName(_ name: String) throws -> Data {

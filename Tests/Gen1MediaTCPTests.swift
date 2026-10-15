@@ -127,6 +127,28 @@ enum Gen1MediaTCPTests {
             _ = try Gen1MediaTCPProtocol.fileLength(header: Gen1MediaTCPProtocol.parseResponseHeader(response(1).prefix(18)), requestedName: name)
         }
         try Gen1MediaTCPProtocol.validateTrailer(Data([0xAF, 0x8C]))
+        try Gen1MediaTCPProtocol.validateTrailer(Data([0x8C, 0xAF]))
+        for version in [hex("00 01"), hex("01 00")] {
+            for payload in [Data(), Data("photo.jpg,video.mp4".utf8)] {
+                var documented = response(3, payload, tail: hex("8C AF"))
+                documented.replaceSubrange(2..<4, with: version)
+                documented.replaceSubrange(6..<10, with: [0, 0, 0, 0])
+                let parsed = try Gen1MediaTCPProtocol.parseResponseHeader(documented.prefix(18))
+                try check(parsed.command == 3 && parsed.bodyLength == payload.count && !parsed.usesLegacyRouting,
+                          "documented version-1 zero IDs retain modern length rules")
+                try Gen1MediaTCPProtocol.validateTrailer(documented.suffix(2))
+                try check(try Gen1MediaTCPProtocol.parseFileList(documented.dropFirst(18).dropLast(2)) == (payload.isEmpty ? [] : ["photo.jpg", "video.mp4"]),
+                          "documented empty/populated list with LE trailer")
+            }
+        }
+        var zeroRoutingFile = response(1, body, external: 0)
+        zeroRoutingFile.replaceSubrange(6..<10, with: [0, 0, 0, 0])
+        try expectFailure("zero IDs with version 1 do not relax filename length validation") {
+            _ = try Gen1MediaTCPProtocol.fileLength(header: Gen1MediaTCPProtocol.parseResponseHeader(zeroRoutingFile.prefix(18)), requestedName: name)
+        }
+        for malformedTail in [Data(), hex("8C"), hex("AF 8C 00"), hex("8C 8C")] {
+            try expectFailure("malformed placeholder trailer rejected") { try Gen1MediaTCPProtocol.validateTrailer(malformedTail) }
+        }
         try expectFailure("nonconstant trailer rejected") { try Gen1MediaTCPProtocol.validateTrailer(Data([0, 0])) }
         try expectFailure("oversized outgoing payload rejected") {
             _ = try Gen1MediaTCPProtocol.request(.sendFile, payload: Data(repeating: 1, count: 65_536))
@@ -176,7 +198,7 @@ enum Gen1MediaTCPTests {
         let server = LoopbackPeer { command, payload in
             switch command {
             case 3:
-                return .fragmented(response(6, littleEndianRouting: true) + response(3, Data("first.jpg,movie.mp4,first.jpg,preview.jpg".utf8), littleEndianRouting: true), sizes: [1, 2, 7, 17])
+                return .fragmented(response(6, littleEndianRouting: true) + response(3, Data("first.jpg,movie.mp4,first.jpg,preview.jpg".utf8), tail: Data([0x8C, 0xAF]), littleEndianRouting: true), sizes: [1, 2, 7, 17])
             case 1:
                 let content = String(decoding: payload, as: UTF8.self) == "first.jpg" ? image : video
                 return .fragmented(response(6, Data([1])) + response(1, payload + content, external: payload.count, littleEndianRouting: true), sizes: [3, 17, 4096, 65_536], interval: 0.002)
