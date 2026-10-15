@@ -816,6 +816,11 @@ final class MediaImportManager: ObservableObject {
             var connectedTransport: Gen1MediaTCPClient?
             while connectedTransport == nil {
                 try checkTarget()
+                guard DeviceWifiManager.gen1HasClientIPv4 else {
+                    diagnostics.log("一代：IP 不在眼镜网段，直接提示手动连接", detail: "targetLAN=192.168.4.0/24 TCPAttempted=false")
+                    try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
+                    continue
+                }
                 let transport = Gen1MediaTCPClient(host: "192.168.4.1")
                 client = transport
                 do {
@@ -899,7 +904,7 @@ final class MediaImportManager: ObservableObject {
         isClosingGen1Hotspot = true
         diagnostics.log("一代：TCP 已关闭，先等待设备热点收尾", detail: "cleanupOrder=closeTCP,closeDeviceHotspot,removePhoneConfiguration")
         let cleanupPending = await hotspot.close() == .pending
-        if let ssid {
+        if let ssid, !cleanupPending {
             diagnostics.log("一代：设备热点收尾等待结束，清理手机配置", detail: "deviceCleanupPending=\(cleanupPending) removeReason=importSessionEnded")
             DeviceWifiManager.disconnect(from: ssid)
         }

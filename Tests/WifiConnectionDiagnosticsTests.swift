@@ -15,6 +15,12 @@ enum WifiConnectionDiagnosticsTests {
     }
 
     static func main() {
+        for address in ["192.168.4.20", "192.168.4.100", "192.168.4.254"] {
+            check(Diagnostics.isGen1ClientIPv4(address), "Glasses client LAN accepted: \(address)")
+        }
+        for address: String? in [nil, "", "192.168.31.75", "192.168.4.1", "192.168.4.0", "192.168.4.255", "192.168.4.256", "192.168.4.20.1", "169.254.4.20"] {
+            check(!Diagnostics.isGen1ClientIPv4(address), "Other LAN, gateway or invalid IPv4 cannot start TCP")
+        }
         missingSSIDDoesNotProveDisconnection()
         knownOtherNetworkCannotUseSubnetFallback()
         interfaceEvidencePreservesFailureBoundaries()

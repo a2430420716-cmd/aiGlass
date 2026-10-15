@@ -87,338 +87,81 @@ enum Gen1HotspotCleanupTests {
         func run() async -> Cleanup.Outcome { await cleanup.close(identity) }
     }
 
-    private static func testFieldTimeline() async {
-        // Delays measured in the three September 29 import attempts. A close
-        // reply with 0x02 is followed by transient standby and then shutdown.
-        for replyDelay in [30.452, 32.691, 32.366] {
-            let h = Harness()
-            h.status = 3
-            h.at(1) { h.pending("Queueing 0x38 must retain the barrier") }
-            h.at(replyDelay - 1) { h.pending("The old close may remain outstanding for over 30 seconds") }
-            h.at(replyDelay) {
-                h.reply(Gen1Commands.closeHotspot, [0x02])
-                h.pending("Undocumented 0x02 is a reply, not proof of closure")
-            }
-            h.at(replyDelay + 10) {
-                h.status = 0
-                h.reply(Gen1Commands.deviceStatusChanged, [0])
-            }
-            h.at(replyDelay + 12) { h.pending("Initial standby must not release the next import") }
-            h.at(replyDelay + 13) {
-                h.status = 4
-                h.reply(Gen1Commands.deviceStatusChanged, [4])
-                h.pending("SHUTTING_DOWN keeps the close barrier")
-            }
-            h.at(replyDelay + 17) {
-                h.status = 0
-                h.reply(Gen1Commands.deviceStatusChanged, [0])
-            }
-            h.at(replyDelay + 21) { h.pending("Final standby still needs a fresh stable observation interval") }
-
-            let outcome = await h.run()
-            check(outcome == .settled, "Field timeline eventually settles")
-            check(!h.cleanup.isPending(h.target), "Confirmed stable idle releases the barrier")
-            check(h.closeCommands.count == 1, "Only one close command per physical shutdown")
-            check(h.clock >= replyDelay + 22, "Transient standby cannot shorten final stability wait")
-            check(h.clock < 75, "Observed 30–33 second latency fits the bounded cleanup deadline")
-            check(!h.queries.isEmpty && h.queries.allSatisfy { $0.time >= replyDelay }, "Only query after firmware answers close")
-            check(h.logs.contains { $0.2.contains("reply_is_not_close_success") }, "Diagnostics explicitly avoid treating 0x02 as success")
-        }
-    }
-
-    private static func testConcurrentCloseAndParentCancellation() async {
-        let h = Harness()
-        h.status = 0
-        h.at(31) { h.reply(Gen1Commands.closeHotspot, [2]) }
-        let first = Task { await h.run() }
-        let second = Task { await h.run() }
-        first.cancel()
-        let firstOutcome = await first.value
-        let secondOutcome = await second.value
-        check(firstOutcome == .settled && secondOutcome == .settled, "Cancelled import and concurrent caller await one physical close")
-        check(h.closeCommands.count == 1, "Concurrent cleanup cannot duplicate 0x38")
-        check(h.commands.allSatisfy { !$0.cancelled }, "Cleanup worker does not inherit import cancellation")
-        check(h.clock >= 51, "Cancellation cannot bypass confirmation and settling")
-        check(!h.cleanup.isPending(h.target), "Worker completes cleanup after the parent was cancelled")
-    }
-
-    private static func testTimeoutAndResume() async {
-        let h = Harness()
-        check(await h.run() == .pending, "No reply times out as pending")
-        check(h.clock == 75, "Default cleanup deadline is 75 seconds")
-        h.pending("Timeout must retain the next-import barrier")
-        check(h.closeCommands.count == 1 && h.queries.isEmpty, "No blind queries or repeated close before reply")
-
-        h.status = 0
-        h.at(80) { h.reply(Gen1Commands.closeHotspot, [2]) }
-        h.cleanup.resume(h.target)
-        check(await h.run() == .settled, "Retry resumes observation of the old physical close")
-        check(h.closeCommands.count == 1, "Resuming after timeout never resends an already queued 0x38")
-        check(h.clock >= 100, "Late reply still requires the full settling interval")
-        check(h.logs.contains { $0.2.contains("retry_resumes_observation_without_resending_close") }, "Timeout diagnostics describe the retained barrier")
-    }
-
-    private static func testMissingReplyAndInvalidEvidence() async {
-        for malformed in [[], [2, 0], [0xE3]] as [[UInt8]] {
-            let h = Harness()
-            h.status = 0
-            h.at(1) { h.reply(Gen1Commands.closeHotspot, malformed) }
-            h.at(30) {
-                h.reply(Gen1Commands.deviceStatusQuery, [0])
-                h.reply(Gen1Commands.deviceStatusChanged, [0])
-            }
-            check(await h.run() == .pending, "Malformed/busy close reply cannot authorize reopening: \(malformed)")
-            h.pending("Malformed/busy response retains barrier")
-            check(h.queries.isEmpty, "Unowned 0x72 is not a solicited fresh status")
-            check(h.closeCommands.count == 1, "Bad reply never triggers a duplicate close")
-        }
-
-        let wrongTarget = Harness()
-        wrongTarget.status = 0
-        let unrelated = UUID()
-        wrongTarget.at(1) { wrongTarget.reply(Gen1Commands.closeHotspot, [2], target: unrelated) }
-        wrongTarget.at(30) { wrongTarget.reply(Gen1Commands.deviceStatusQuery, [0], target: unrelated) }
-        check(await wrongTarget.run() == .pending, "A different peripheral cannot confirm target shutdown")
-        check(!wrongTarget.cleanup.isPending(unrelated), "Unrelated responses do not create cleanup state")
-        check(wrongTarget.queries.isEmpty, "Wrong-target close reply cannot start verification")
-
-        let unsolicited = Harness()
-        unsolicited.connected = false
-        // Queue the close, lose BLE, then inject a well-formed reply and status
-        // without ever letting the coordinator actively query this connection.
-        unsolicited.connected = true
-        unsolicited.at(0.25) {
-            unsolicited.connected = false
-            unsolicited.cleanup.connectionInterrupted()
-            unsolicited.reply(Gen1Commands.closeHotspot, [2])
-        }
-        for time in [25.0, 35, 50, 70] {
-            unsolicited.at(time) { unsolicited.reply(Gen1Commands.deviceStatusQuery, [0]) }
-        }
-        check(await unsolicited.run() == .pending, "Unsolicited 0x72 cannot stand in for an active status query")
-        check(unsolicited.queries.isEmpty, "No query is sent while disconnected")
-
-        let malformedStatus = Harness()
-        malformedStatus.onSend = { target, command in
-            if command == Gen1Commands.deviceStatusQuery {
-                malformedStatus.reply(command, [0, 0], target: target)
-                malformedStatus.reply(Gen1Commands.deviceStatusChanged, [0, 0], target: target)
-            }
-            return true
-        }
-        malformedStatus.at(1) { malformedStatus.reply(Gen1Commands.closeHotspot, [2]) }
-        check(await malformedStatus.run() == .pending, "Malformed query replies and notifications cannot confirm stable idle")
-        malformedStatus.pending("Invalid status evidence retains shutdown barrier")
-    }
-
-    private static func testReconnectRestartsIdleEvidence() async {
-        for explicitlyInterrupted in [false, true] {
-            let h = Harness()
-            h.status = 0
-            h.at(1) { h.reply(Gen1Commands.closeHotspot, [2]) }
-            h.at(19) {
-                h.connected = false
-                if explicitlyInterrupted { h.cleanup.connectionInterrupted() }
-            }
-            h.at(22) { h.reply(Gen1Commands.deviceStatusQuery, [0]) }
-            h.at(25) { h.connected = true }
-            h.at(29) { h.pending("BLE reconnect cannot reuse idle evidence from the prior connection") }
-            check(await h.run() == .settled, "Reconnection eventually confirms fresh stable idle")
-            check(h.clock >= 31, "Reconnection requires new idle interval, whether reset by callback or disconnected poll")
-            check(h.closeCommands.count == 1, "BLE reconnect must not send another physical close")
-            check(!h.queries.contains { (19..<25).contains($0.time) }, "No status requests cross the disconnected interval")
-        }
-    }
-
-    private static func testAuthorizationLoss() async {
-        let initiallyInvalid = Harness()
-        initiallyInvalid.authorized = false
-        check(await initiallyInvalid.run() == .pending, "Unauthorized close leaves unresolved physical state")
-        check(initiallyInvalid.commands.isEmpty, "No close or query is sent without account ownership")
-        initiallyInvalid.pending("Account loss never silently clears barrier")
-        initiallyInvalid.authorized = true
-        initiallyInvalid.status = 0
-        initiallyInvalid.at(1) { initiallyInvalid.reply(Gen1Commands.closeHotspot, [2]) }
-        check(await initiallyInvalid.run() == .settled, "Restored ownership can finish a close that was never sent")
-        check(initiallyInvalid.closeCommands.count == 1, "Only the authorized resume submits the close")
-
-        let midClose = Harness()
-        midClose.status = 0
-        midClose.at(1) { midClose.reply(Gen1Commands.closeHotspot, [2]) }
-        midClose.at(5) { midClose.authorized = false }
-        check(await midClose.run() == .pending, "Ownership change pauses cleanup")
-        midClose.pending("Existing close remains blocked after account change")
-        let count = midClose.commands.count
-        midClose.cleanup.resume(midClose.target)
-        check(await midClose.run() == .pending, "Unauthorized retry cannot restart sending")
-        check(midClose.commands.count == count, "No command is added after losing account ownership")
-        midClose.authorized = true
-        midClose.advance(25)
-        let resumedAt = midClose.clock
-        check(await midClose.run() == .settled, "Restored ownership resumes the existing close")
-        check(midClose.clock >= resumedAt + 6, "Unobserved account-pause interval cannot count as stable idle")
-        check(midClose.closeCommands.count == 1, "Ownership pause cannot duplicate the physical close")
-
-        let lateReply = Harness()
-        lateReply.at(1) { lateReply.reply(Gen1Commands.closeHotspot, [2]) }
-        lateReply.onSend = { target, command in
-            guard command == Gen1Commands.deviceStatusQuery else { return true }
-            if lateReply.clock >= 21 {
-                lateReply.authorized = false
-                lateReply.reply(command, [0], target: target)
-            } else {
-                lateReply.reply(command, [0], target: target)
-            }
-            return true
-        }
-        check(await lateReply.run() == .pending, "Late reply after account change must not authorize reopening")
-        lateReply.pending("Receive path must preserve barrier once ownership is lost")
-    }
-
-    private static func testQueryTimeoutRestartsIdleEvidence() async {
-        let h = Harness()
-        h.at(1) { h.reply(Gen1Commands.closeHotspot, [2]) }
-        h.onSend = { target, command in
-            if command == Gen1Commands.deviceStatusQuery,
-               h.clock < 7 || h.clock >= 21 {
-                h.reply(command, [0], target: target)
-            }
-            return true
-        }
-        h.at(24) { h.pending("A long gap in query replies invalidates earlier stable-idle evidence") }
-        check(await h.run() == .settled, "Fresh status replies can recover after query timeouts")
-        check(h.clock >= 28, "Stable interval restarts after a missing-reply gap")
-        check(h.closeCommands.count == 1, "Status query timeout cannot resubmit physical shutdown")
-    }
-
-    private static func testObserverTimeoutGapDoesNotCountAsIdle() async {
-        let h = Harness()
-        h.status = 0
-        h.at(62) { h.reply(Gen1Commands.closeHotspot, [2]) }
-        check(await h.run() == .pending, "Late close reply can leave settling incomplete at overall deadline")
-        h.pending("Partially verified close remains blocked at timeout")
-        h.advance(100)
-        let resumedAt = h.clock
-        check(await h.run() == .settled, "Observation can resume after a long timeout gap")
-        check(h.clock >= resumedAt + 6, "Timeout gap cannot stand in for fresh stable status sampling")
-        check(h.closeCommands.count == 1, "Resuming partially verified close does not resend shutdown")
-    }
-
-    private static func testFailedStatusEnqueueRestartsIdleEvidence() async {
-        let h = Harness()
-        var rejectedQueries = 0
-        h.at(1) { h.reply(Gen1Commands.closeHotspot, [2]) }
-        h.onSend = { target, command in
-            guard command == Gen1Commands.deviceStatusQuery else { return true }
-            if (7..<21).contains(h.clock) {
-                rejectedQueries += 1
-                return false
-            }
-            h.reply(command, [0], target: target)
-            return true
-        }
-        h.at(22) { h.pending("First status after failed enqueues cannot reuse idle evidence from seconds 1–5") }
-        h.at(26) { h.pending("Recovered transport must produce a full fresh stable-idle interval") }
-        check(await h.run() == .settled, "Status sampling can recover after transport enqueue failures")
-        check(rejectedQueries == 7, "Regression exercises failed status sends at seconds 7 through 19")
-        check(h.clock >= 27, "Enqueue failures reset stable idle, delaying completion beyond the first reply at second 21")
-        check(h.closeCommands.count == 1, "Failed status enqueues cannot duplicate physical shutdown")
-    }
-
-    private static func testIndependentDevices() async {
-        let h = Harness()
-        check(await h.run() == .pending, "Device A retains a pending close")
-        let second = Gen1APImportIdentity(targetID: UUID(), token: UUID(), accountID: "account-a")
-        h.onSend = { target, command in
-            if target == second.targetID {
-                if command == Gen1Commands.closeHotspot { h.reply(command, [2], target: target) }
-                if command == Gen1Commands.deviceStatusQuery { h.reply(command, [0], target: target) }
-            }
-            return true
-        }
-        check(await h.cleanup.close(second) == .settled, "Device B shutdown is independent of A's missing reply")
-        h.pending("Completing B cannot clear A's pending close")
-        check(!h.cleanup.isPending(second.targetID), "B alone is released")
-        check(h.closeCommands.filter { $0.target == h.target }.count == 1, "B does not resend A's close")
-        check(h.closeCommands.filter { $0.target == second.targetID }.count == 1, "B has its own single close command")
-        let count = h.commands.count
-        h.cleanup.resume(UUID())
-        await Task.yield()
-        check(h.commands.count == count, "Resuming an unknown peripheral does nothing")
-    }
-
-    private static func testFailedQueueCanRetryWithoutFalseEvidence() async {
-        let h = Harness()
-        var attempts = 0
-        h.onSend = { target, command in
-            if command == Gen1Commands.closeHotspot {
-                attempts += 1
-                if attempts == 1 { return false }
-                h.reply(command, [2], target: target)
-            } else if command == Gen1Commands.deviceStatusQuery {
-                h.reply(command, [0], target: target)
-            }
-            return true
-        }
-        check(await h.run() == .settled, "A rejected transport enqueue can be attempted again")
-        check(attempts == 2, "Retry only applies to close that was not enqueued")
-        check(h.closeCommands[1].time > h.closeCommands[0].time, "Failed enqueue uses bounded polling instead of spinning")
-        check(h.clock >= 20.25, "An immediate device reply still requires actual settling time")
-    }
-
-    private static func testNotificationOnlyFirmware() async {
-        let h = Harness()
-        // The real device sends 0x73 transitions and does not answer 0x72.
-        h.at(30.674) { h.reply(Gen1Commands.closeHotspot, [2]) }
-        h.at(81.581) { h.reply(Gen1Commands.deviceStatusChanged, [0]) }
-        h.at(81.590) { h.reply(Gen1Commands.deviceStatusChanged, [4]) }
-        h.at(84.613) { h.reply(Gen1Commands.deviceStatusChanged, [0]) }
-        h.at(85.153) { h.reply(Gen1Commands.deviceStatusChanged, [0]) }
-        h.at(89) { h.pending("Shutdown transition must restart the five-second idle window") }
-        check(await h.run() == .pending, "Field device remains busy beyond the initial UI deadline")
-        h.advance(6.75)
-        check(await h.run() == .settled, "Fresh 0x73 stable idle releases notification-only firmware")
-        check(h.clock >= 89.613 && h.clock < 92, "Late field timeline recovers without unsupported 0x72 replies")
-        check(h.closeCommands.count == 1, "Notification recovery does not duplicate close")
-
-        let late = Harness()
-        late.at(30) { late.reply(Gen1Commands.closeHotspot, [2]) }
-        check(await late.run() == .pending, "No idle notification preserves the timeout barrier")
-        late.advance(20)
-        let eventAt = late.clock
-        late.reply(Gen1Commands.deviceStatusChanged, [0])
-        check(await late.run() == .settled, "Late 0x73 resumes cleanup automatically")
-        check(late.clock >= eventAt + 5, "Unobserved timeout gap is not counted as idle")
-        check(late.closeCommands.count == 1, "Late state does not resend close")
-
-        let disconnected = Harness()
-        disconnected.at(1) { disconnected.reply(Gen1Commands.closeHotspot, [2]) }
-        disconnected.at(21) { disconnected.reply(Gen1Commands.deviceStatusChanged, [0]) }
-        disconnected.at(23) {
-            disconnected.connected = false
-            disconnected.cleanup.connectionInterrupted()
-        }
-        disconnected.at(30) { disconnected.connected = true }
-        check(await disconnected.run() == .pending, "Disconnect invalidates notification idle evidence")
-    }
-
     static func main() async {
-        let defaults = Cleanup.Timing()
-        check(defaults.timeout == 75, "Production cleanup has a 75-second overall deadline")
-        check(defaults.replySettleInterval == 20, "Transient post-reply standby is guarded for 20 seconds")
-        check(defaults.idleInterval == 5, "Final idle must remain stable for five seconds")
-        await testFieldTimeline()
-        await testConcurrentCloseAndParentCancellation()
-        await testTimeoutAndResume()
-        await testMissingReplyAndInvalidEvidence()
-        await testReconnectRestartsIdleEvidence()
-        await testAuthorizationLoss()
-        await testQueryTimeoutRestartsIdleEvidence()
-        await testObserverTimeoutGapDoesNotCountAsIdle()
-        await testFailedStatusEnqueueRestartsIdleEvidence()
-        await testIndependentDevices()
-        await testFailedQueueCanRetryWithoutFalseEvidence()
-        await testNotificationOnlyFirmware()
+        let success = Harness()
+        success.at(0.5) { success.reply(Gen1Commands.closeHotspot, [0]) }
+        check(await success.run() == .settled, "00 immediately completes cleanup")
+        check(success.clock < 2, "No twenty-second settle or five-second idle wait")
+        success.reply(Gen1Commands.deviceStatusChanged, [4])
+        check(!success.cleanup.isPending(success.target), "Post-ACK shutdown is normal and cannot restore barrier")
+        check(success.queries.isEmpty, "No 0x72 queries")
+        check(success.closeCommands.count == 1, "Successful close sent once")
+
+        let malformed = Harness()
+        malformed.at(0.25) {
+            malformed.reply(Gen1Commands.closeHotspot, [])
+            malformed.reply(Gen1Commands.closeHotspot, [0, 0])
+            malformed.reply(Gen1Commands.closeHotspot, [0], target: UUID())
+            malformed.reply(Gen1Commands.deviceStatusChanged, [0])
+            malformed.reply(Gen1Commands.deviceStatusQuery, [0])
+        }
+        check(await malformed.run() == .pending, "Only exact single-byte 0x38 from owner accepted")
+        check(malformed.queries.isEmpty, "Runtime status never used for cleanup")
+        malformed.reply(Gen1Commands.closeHotspot, [0])
+        check(!malformed.cleanup.isPending(malformed.target), "Late valid ACK releases timeout barrier")
+
+        let retry = Harness()
+        retry.onSend = { target, command in
+            if retry.closeCommands.count == 1 { retry.reply(command, [2], target: target) }
+            else { retry.reply(command, [0], target: target) }
+            return true
+        }
+        check(await retry.run() == .settled, "Process failure retries and then succeeds")
+        check(retry.closeCommands.count == 2, "02 permits one additional close")
+        check(retry.closeCommands[1].time - retry.closeCommands[0].time >= 2, "Retry is delayed")
+
+        let repeatedFailure = Harness()
+        repeatedFailure.onSend = { target, command in
+            repeatedFailure.reply(command, [2], target: target)
+            return true
+        }
+        check(await repeatedFailure.run() == .pending, "Repeated 02 remains blocked")
+        check(repeatedFailure.closeCommands.count == 2, "No endless process failure retries")
+        check(repeatedFailure.queries.isEmpty, "Failure does not query runtime")
+
+        let busy = Harness()
+        busy.onSend = { target, command in
+            busy.reply(command, [0xE3], target: target)
+            return true
+        }
+        check(await busy.run() == .pending, "Busy never treated as close success")
+        check(busy.closeCommands.count == 3, "Busy retry budget is bounded")
+
+        let unknown = Harness()
+        unknown.at(0.5) { unknown.reply(Gen1Commands.closeHotspot, [1]) }
+        check(await unknown.run() == .pending, "Unknown/failure code does not release barrier")
+
+        let unauthorized = Harness()
+        unauthorized.at(0.5) {
+            unauthorized.authorized = false
+            unauthorized.reply(Gen1Commands.closeHotspot, [0])
+        }
+        check(await unauthorized.run() == .pending, "Lost account authorization rejects ACK")
+
+        let synchronous = Harness()
+        synchronous.onSend = { target, command in
+            synchronous.reply(command, [0], target: target)
+            return true
+        }
+        check(await synchronous.run() == .settled, "Synchronous ACK cannot be overwritten")
+        check(!synchronous.cleanup.isPending(synchronous.target), "Synchronous success leaves no barrier")
+
+        let cancelled = Harness()
+        cancelled.at(1) { cancelled.reply(Gen1Commands.closeHotspot, [0]) }
+        let task = Task { await cancelled.run() }
+        task.cancel()
+        check(await task.value == .settled, "Import cancellation does not cancel owned cleanup worker")
+        check(cancelled.closeCommands.count == 1, "Parent cancellation does not duplicate close")
         print("Gen1HotspotCleanupTests passed: \(assertions) assertions")
     }
 }

@@ -44,6 +44,7 @@ jobs:
           bash Tests/run-gatt-recovery-tests.sh
           bash Tests/run-gen1-hotspot-cleanup-tests.sh
           bash Tests/run-gen1-media-tcp-tests.sh
+          bash Tests/run-wifi-diagnostics-tests.sh
           bash Tests/run-home-video-capture-tests.sh
           bash Tests/run-gen1-firmware-tests.sh
       - name: 签名、归档、导出 IPA
@@ -55,7 +56,7 @@ jobs:
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
-          name: AIGlass-1.1.6-142-${{ inputs.export_method }}
+          name: AIGlass-1.1.6-143-${{ inputs.export_method }}
           path: build/ipa/*.ipa
           if-no-files-found: error
           retention-days: 7

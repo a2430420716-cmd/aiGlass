@@ -6836,7 +6836,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if command == "toopenwifi" || command == "closewifi" || command == "closewifi0"
             || command == "deletefile"
             || command == "takephoto0" || command == "startvideo" || command == "stopvideo0" {
-            let ok = AstraA1BleProtocol.parseStatusResponse(data) ?? false
+            let isGen1Close = deviceGeneration == .gen1G5K61 && (command == "closewifi" || command == "closewifi0")
+            let ok = isGen1Close ? (data.count == 13 && data[10] == 1 && data[11] == 0 && data[12] == 0)
+                : (AstraA1BleProtocol.parseStatusResponse(data) ?? false)
             if command == "toopenwifi", ok, isFirmwareUpgradeFlowBusy,
                wifiConfigContinuation != nil || statusContinuationCommand == "toopenwifi",
                deviceGeneration == .gen2, let id = connectedPeripheral?.identifier {

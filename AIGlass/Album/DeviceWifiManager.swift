@@ -127,7 +127,7 @@ enum DeviceWifiManager {
     }
 
     /// Gen1 firmware serves media at a fixed endpoint. Apply the device's SSID,
-    /// then let the Wi-Fi-only TCP connection verify reachability without SSID/gateway reads.
+    /// then require the glasses LAN IPv4 before the Wi-Fi-only TCP connection.
     static func connectGen1(
         ssid: String,
         password: String,
@@ -143,11 +143,15 @@ enum DeviceWifiManager {
             joinOnce: false
         )
         defer { diagnostics.stop() }
+        if gen1HasClientIPv4 {
+            diagnostics.log("已在眼镜网段，跳过系统加入申请", detail: "applySkipped=true target_LAN_IPv4_is_required_before_TCP=true endpoint=192.168.4.1:8556")
+            return "192.168.4.1"
+        }
         diagnostics.log(
             "开始加入一代眼镜热点",
             detail: "targetSSID=\(ssid.debugDescription) passwordUTF8Bytes=\(password.utf8.count)"
                 + "\nserviceEndpoint=192.168.4.1:8556 endpointSource=fixedFirmwareAddress"
-                + "\nidentityPolicy=applyDeviceSSIDThenWiFiOnlyTCP ssidReadRequired=false gatewayReadRequired=false",
+                + "\nidentityPolicy=applyThenRequireGlassesLANThenTCP ssidReadRequired=false gatewayReadRequired=false",
             direction: .sent
         )
         do {
@@ -162,20 +166,56 @@ enum DeviceWifiManager {
             }
             try Task.checkCancellation()
             rememberTransferConfiguration(ssid)
-            try await applyConfiguration(ssid: ssid, password: password, diagnostics: diagnostics,
-                                         includePasswordInDiagnostics: false, joinOnce: false, timeout: 45,
-                                         retainConfigurationUntilSessionCleanup: true)
+            do {
+                try await applyConfiguration(ssid: ssid, password: password, diagnostics: diagnostics,
+                                             includePasswordInDiagnostics: false, joinOnce: false, timeout: 45,
+                                             retainConfigurationUntilSessionCleanup: true)
+            } catch {
+                try Task.checkCancellation()
+                // Some iOS joins report failure while DHCP is still completing.
+                // Verify the LAN before reporting an application failure.
+                diagnostics.log("系统加入回调报错，仍检查眼镜网段", detail: "error=\(error.localizedDescription) applicationFailureNotPublished=true")
+            }
+            guard try await waitForGen1ClientIPv4(diagnostics: diagnostics) else {
+                throw DeviceWifiError.unreachable
+            }
             try Task.checkCancellation()
             diagnostics.log("一代热点配置已应用，连接固定文件服务", detail: "ssid=\(ssid.debugDescription)"
-                + "\nserviceEndpoint=192.168.4.1:8556 TCPVerified=false associationConfirmed=false"
+                + "\nserviceEndpoint=192.168.4.1:8556 TCPVerified=false glassesLANIPv4Confirmed=true"
                 + "\nnextStage=WiFiOnlyTCPMediaTransport ssidReadRequired=false gatewayReadRequired=false", direction: .received)
             return "192.168.4.1"
         } catch {
-            diagnostics.log("一代热点连接失败，交由导入会话关闭热点后清理配置", detail: "ssid=\(ssid.debugDescription)"
+            diagnostics.log("一代热点尚未就绪，交由导入会话处理", detail: "ssid=\(ssid.debugDescription)"
                 + "\ncancelled=\(error is CancellationError || Task.isCancelled) error=\(error.localizedDescription)"
                 + "\nserviceEndpoint=192.168.4.1:8556 TCPVerified=false", direction: .received)
             throw error
         }
+    }
+
+    static var gen1HasClientIPv4: Bool {
+        WifiConnectionDiagnostics.isGen1ClientIPv4(WifiDiagnosticSession.captureInterfaces().selectedIPv4)
+    }
+
+    /// A short DHCP grace period replaces the former 30-second TCP timeout on
+    /// another LAN. Missing IP is not success. No SSID read or extra TCP probe.
+    private static func waitForGen1ClientIPv4(diagnostics: WifiDiagnosticSession) async throws -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        repeat {
+            try Task.checkCancellation()
+            let interfaces = WifiDiagnosticSession.captureInterfaces()
+            diagnostics.recordSnapshot(phase: "gen1-lan-before-tcp", interfaces: interfaces)
+            if WifiConnectionDiagnostics.isGen1ClientIPv4(interfaces.selectedIPv4) {
+                diagnostics.log("眼镜网段检查通过", detail: "selectedIPv4=\(interfaces.selectedIPv4 ?? "none") TCPVerified=false")
+                return true
+            }
+            if interfaces.selectedIPv4 != nil {
+                diagnostics.log("仍在其他网段，立即引导手动连接", detail: "selectedIPv4=\(interfaces.selectedIPv4 ?? "none") TCPAttempted=false")
+                return false
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        diagnostics.log("尚未获取眼镜 IPv4，引导手动连接", detail: "dhcpGrace=10s TCPAttempted=false")
+        return false
     }
 
     static func disconnect(from ssid: String) {

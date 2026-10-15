@@ -1,29 +1,24 @@
 import Foundation
 
-/// Owns the physical AP shutdown beyond an album task's lifetime. A queued 0x38
-/// is not completion: field logs show its reply arriving 30–33 seconds later.
+/// Only the owning device's single-byte 0x38 acknowledgement completes AP shutdown.
+/// Runtime idle/shutdown notifications are not hotspot-close acknowledgements.
 @MainActor
 final class Gen1HotspotCleanup {
     nonisolated struct Timing: Sendable {
         var timeout: TimeInterval = 75
         var pollInterval: TimeInterval = 0.25
-        var queryInterval: TimeInterval = 2
-        var queryTimeout: TimeInterval = 5
-        // An initial standby was followed by SHUTTING_DOWN ~13 seconds after
-        // the close reply. Do not release on that transient standby.
-        var replySettleInterval: TimeInterval = 20
-        var idleInterval: TimeInterval = 5
+        var retryInterval: TimeInterval = 2
+        var maxAttempts = 3
     }
 
     enum Outcome: Equatable { case settled, pending }
     private struct Pending {
         let identity: Gen1APImportIdentity
         var queuedAt: TimeInterval?
-        var replyAt: TimeInterval?
-        var idleSince: TimeInterval?
-        var idleFromNotification = false
-        var querySentAt: TimeInterval?
-        var lastQueryAt: TimeInterval?
+        var attempts = 0
+        var processFailureRetries = 0
+        var retryAt: TimeInterval?
+        var failed = false
     }
 
     private let timing: Timing
@@ -60,90 +55,57 @@ final class Gen1HotspotCleanup {
         if pending[identity.targetID] == nil {
             pending[identity.targetID] = Pending(identity: identity)
         }
-        // An unstructured worker does not inherit cancellation from the import.
-        // Multiple callers await the same close; never enqueue another 0x38.
         return await worker(for: identity.targetID).value
     }
 
-    /// A retry resumes observation of the old shutdown, not a second shutdown.
+    /// Explicit recovery may retry a device-rejected close; missing ACKs are
+    /// observed without blindly resending an already accepted command.
     func resume(_ targetID: UUID) {
-        guard isPending(targetID) else { return }
+        guard var state = pending[targetID], workers[targetID] == nil else { return }
+        if state.failed {
+            state.failed = false
+            state.attempts = 0
+            state.processFailureRetries = 0
+            state.retryAt = now() + timing.retryInterval
+            pending[targetID] = state
+        }
         _ = worker(for: targetID)
     }
 
     func connectionInterrupted() {
-        for id in Array(pending.keys) {
-            pending[id]?.idleSince = nil
-            pending[id]?.idleFromNotification = false
-            pending[id]?.querySentAt = nil
-            pending[id]?.lastQueryAt = nil
-        }
+        // A later 0x38 reply is still required. No cached runtime state is used.
     }
 
     func receive(targetID: UUID, command: UInt8, payload: Data) {
-        guard var state = pending[targetID], state.queuedAt != nil else { return }
-        guard isAuthorized(state.identity), canSend(targetID) else {
-            pending[targetID]?.idleSince = nil
-            pending[targetID]?.idleFromNotification = false
-            pending[targetID]?.querySentAt = nil
+        guard command == Gen1Commands.closeHotspot,
+              payload.count == 1,
+              var state = pending[targetID], state.queuedAt != nil,
+              isAuthorized(state.identity), canSend(targetID) else { return }
+        let code = payload[0]
+        log("一代：收到热点关闭回包", "target=\(targetID) code=\(String(format: "0x%02X", code)) attempts=\(state.attempts)")
+        if code == 0 {
+            pending[targetID] = nil
+            log("一代：热点已确认关闭，允许下一次导入", "target=\(targetID) evidence=0x38_payload_00 runtimeStatusNotRequired=true")
             return
         }
-        let time = now()
-        if command == Gen1Commands.closeHotspot {
-            guard payload.count == 1 else { return }
-            // 0x02 is deliberately NOT decoded as success. It is only evidence
-            // that firmware has responded; fresh stable idle is also required.
-            state.replyAt = payload.first == 0xE3 ? nil : time
-            state.idleSince = nil
-            state.idleFromNotification = false
-            state.querySentAt = nil
-            state.lastQueryAt = nil
-            log("一代：收到热点关闭回包，继续等待稳定空闲",
-                "target=\(targetID) code=\(String(format: "0x%02X", payload[0])) elapsed=\(time - state.queuedAt!); reply_is_not_close_success")
-        } else if command == Gen1Commands.deviceStatusQuery || command == Gen1Commands.deviceStatusChanged {
-            guard payload.count == 1 else { return }
-            if payload[0] != 0 {
-                state.idleSince = nil
-                state.idleFromNotification = false
-                state.querySentAt = nil
-            } else if command == Gen1Commands.deviceStatusChanged, state.replyAt != nil {
-                // Firmware reports state transitions through 0x73 even when it
-                // never answers 0x72. This is a fresh event, not cached status.
-                if state.idleSince == nil || workers[targetID] == nil { state.idleSince = time }
-                state.idleFromNotification = true
-                state.querySentAt = nil
-                log("一代：收到热点收尾期间空闲通知", "target=\(targetID) command=0x73; waiting_for_stable_idle")
-            } else if command == Gen1Commands.deviceStatusQuery,
-                      let replyAt = state.replyAt, let queryAt = state.querySentAt,
-                      queryAt >= replyAt, time - queryAt <= timing.queryTimeout {
-                state.querySentAt = nil
-                if state.idleSince == nil { state.idleSince = time }
-                if queryAt - replyAt >= timing.replySettleInterval,
-                   queryAt - state.idleSince! >= timing.idleInterval {
-                    pending[targetID] = nil
-                    log("一代：热点收尾等待结束，允许下一次导入",
-                        "target=\(targetID) elapsed=\(time - state.queuedAt!) evidence=close_reply_then_fresh_stable_idle")
-                    return
-                }
-            }
+        // Duplicate replies while waiting for the retry must not consume its budget.
+        guard state.retryAt == nil, !state.failed else { return }
+        if code == 0x02, state.processFailureRetries < 1, state.attempts < timing.maxAttempts {
+            state.processFailureRetries += 1
+            state.retryAt = now() + timing.retryInterval
+            log("一代：热点进程未退出，将重试关闭一次", "target=\(targetID) code=0x02 retryDelay=\(timing.retryInterval)s")
+        } else if code == 0xE3, state.attempts < timing.maxAttempts {
+            state.retryAt = now() + timing.retryInterval
+            log("一代：设备忙，稍后重试关闭热点", "target=\(targetID) code=0xE3 retryDelay=\(timing.retryInterval)s")
+        } else {
+            state.failed = true
+            log("一代：热点关闭失败，保留阻断", "target=\(targetID) code=\(String(format: "0x%02X", code)) attempts=\(state.attempts)")
         }
         pending[targetID] = state
-        if state.idleFromNotification, workers[targetID] == nil {
-            // A late event can arrive after the UI's cleanup deadline. Observe
-            // from this new event without requiring another tap or another close.
-            _ = worker(for: targetID, resetObservation: false)
-        }
     }
 
-    private func worker(for targetID: UUID, resetObservation: Bool = true) -> Task<Outcome, Never> {
+    private func worker(for targetID: UUID) -> Task<Outcome, Never> {
         if let task = workers[targetID] { return task }
-        // A paused/timed-out observer cannot count the unobserved gap as idle.
-        if resetObservation {
-            pending[targetID]?.idleSince = nil
-            pending[targetID]?.idleFromNotification = false
-        }
-        pending[targetID]?.querySentAt = nil
-        pending[targetID]?.lastQueryAt = nil
         let task = Task { [self] in
             defer { workers[targetID] = nil }
             return await run(targetID)
@@ -155,56 +117,26 @@ final class Gen1HotspotCleanup {
     private func run(_ targetID: UUID) async -> Outcome {
         let deadline = now() + timing.timeout
         while now() < deadline {
-            guard let state = pending[targetID] else { return .settled }
-            guard isAuthorized(state.identity) else {
-                pending[targetID]?.idleSince = nil
-                pending[targetID]?.idleFromNotification = false
-                pending[targetID]?.querySentAt = nil
-                log("一代：热点收尾暂停，保留重试阻断", "target=\(targetID) reason=account_or_target_changed")
-                return .pending
-            }
-            if canSend(targetID) {
-                if state.idleFromNotification, let idleSince = state.idleSince,
-                   let replyAt = state.replyAt,
-                   now() - replyAt >= timing.replySettleInterval,
-                   now() - idleSince >= timing.idleInterval {
-                    pending[targetID] = nil
-                    log("一代：热点收尾等待结束，允许下一次导入",
-                        "target=\(targetID) evidence=close_reply_then_fresh_0x73_stable_idle")
-                    return .settled
+            guard var state = pending[targetID] else { return .settled }
+            guard isAuthorized(state.identity), !state.failed else { return .pending }
+            if canSend(targetID), state.queuedAt == nil || state.retryAt.map({ now() >= $0 }) == true {
+                let previous = state
+                state.queuedAt = now()
+                state.retryAt = nil
+                state.attempts += 1
+                // Install before send so synchronous replies cannot be overwritten.
+                pending[targetID] = state
+                if !send(targetID, Gen1Commands.closeHotspot) {
+                    pending[targetID] = previous
+                } else {
+                    log("一代：请求关闭热点，等待 0x38 确认", "target=\(targetID) attempt=\(state.attempts) runtimeQueries=false")
                 }
-                if state.queuedAt == nil {
-                    // Install before sending so even an immediate reply is owned.
-                    pending[targetID]?.queuedAt = now()
-                    if !send(targetID, Gen1Commands.closeHotspot) {
-                        pending[targetID]?.queuedAt = nil
-                    } else {
-                        log("一代：请求关闭热点，等待设备收尾", "target=\(targetID) queued=true; queued_is_not_device_ack")
-                    }
-                } else if state.replyAt != nil,
-                          state.lastQueryAt.map({ now() - $0 >= timing.queryInterval }) ?? true,
-                          state.querySentAt.map({ now() - $0 > timing.queryTimeout }) ?? true {
-                    if state.querySentAt != nil, !state.idleFromNotification {
-                        pending[targetID]?.idleSince = nil
-                    }
-                    pending[targetID]?.querySentAt = now()
-                    pending[targetID]?.lastQueryAt = now()
-                    if !send(targetID, Gen1Commands.deviceStatusQuery) {
-                        pending[targetID]?.querySentAt = nil
-                        if !state.idleFromNotification { pending[targetID]?.idleSince = nil }
-                    }
-                }
-            } else {
-                pending[targetID]?.idleSince = nil
-                pending[targetID]?.idleFromNotification = false
-                pending[targetID]?.querySentAt = nil
-                pending[targetID]?.lastQueryAt = nil
             }
             do { try await sleep(timing.pollInterval) }
-            catch { return .pending } // Keep the barrier even if the worker is cancelled.
+            catch { return .pending }
         }
         if !isPending(targetID) { return .settled }
-        log("一代：热点收尾超时，禁止再次开启热点", "target=\(targetID) timeout=\(timing.timeout); retry_resumes_observation_without_resending_close")
+        log("一代：热点关闭确认超时，保留阻断", "target=\(targetID) timeout=\(timing.timeout)s expected=0x38_payload_00")
         return .pending
     }
 }

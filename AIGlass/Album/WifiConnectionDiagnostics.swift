@@ -2,6 +2,14 @@ import Foundation
 
 /// Describes observable connection evidence without inferring association or DHCP failures.
 nonisolated enum WifiConnectionDiagnostics {
+    static func isGen1ClientIPv4(_ address: String?) -> Bool {
+        guard let address else { return false }
+        let parts = address.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4, parts[0] == "192", parts[1] == "168", parts[2] == "4",
+              let host = Int(parts[3]), (2...254).contains(host) else { return false }
+        return true
+    }
+
     /// Logs only credential TLVs, preserving bytes before the protocol parser trims
     /// whitespace and NUL padding. This evidence is never used as connection input.
     static func credentialFields(in packet: Data) -> String {
