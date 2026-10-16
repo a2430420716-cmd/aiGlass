@@ -157,6 +157,7 @@ final class MediaImportManager: ObservableObject {
 
     @Published private(set) var state: MediaImportState = .idle
     @Published private(set) var lastFailureReport: MediaImportFailureReport?
+    @Published private(set) var completionNotice: String?
     @Published private(set) var pendingGen1RecoveryCount = 0
     @Published private var isClosingGen1Hotspot = false
 
@@ -328,6 +329,7 @@ final class MediaImportManager: ObservableObject {
             return
         }
         lastFailureReport = nil
+        completionNotice = nil
         importTask = Task { [weak self] in
             repeat {
                 self?.restartGen1ImportAfterCleanup = false
@@ -671,6 +673,7 @@ final class MediaImportManager: ObservableObject {
         defer { UIApplication.shared.isIdleTimerDisabled = previousIdle; refreshGen1Recovery(ble: ble) }
         state = .fetchingList
         lastFailureReport = nil
+        completionNotice = nil
         let startedAt = Date()
         var importedNames: [String] = []
         var listedNames: [String] = []
@@ -761,6 +764,7 @@ final class MediaImportManager: ObservableObject {
         var failedPhotos = 0
         var failedVideos = 0
         var finalError: Error?
+        var transferFinishWarning = false
         let identityWatch = Task { [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
@@ -971,7 +975,19 @@ final class MediaImportManager: ObservableObject {
             try checkTarget()
             state = .finishing
             // Match Android: batch completion once, not a deletion ACK after each file.
-            try await (client ?? transport).finishTransfer()
+            let finishingTransport = client ?? transport
+            do {
+                try await finishingTransport.finishTransfer()
+            } catch {
+                try checkTarget()
+                let recoverable = await finishingTransport.canRetryAfterPathChange(error)
+                guard AlbumTransferPolicy.canReportSavedFilesAfterFinishError(
+                    listed: listedNames.count, imported: importedNames.count,
+                    failed: failures.count, recoverableNetworkError: recoverable
+                ) else { throw error }
+                transferFinishWarning = true
+                diagnostics.log("一代：全部文件已保存，传输结束指令发送失败", detail: "imported=\(importedNames.count) listed=\(listedNames.count) stage=transferComplete allFilesCommitted=true completionCommandDelivery=unconfirmed resendOnNewTCP=false nextStage=closeTCPThen0x38 error=\(Self.formatErrorDetail(error))")
+            }
         } catch {
             finalError = ble.isGen1MediaImportCurrent(identity) ? error : Gen1APImportError.targetChanged
             if finalError is ManualWifiJoinExit {
@@ -1025,6 +1041,16 @@ final class MediaImportManager: ObservableObject {
         } else if let finalError {
             let cleanupDetail = cleanupPending ? "\n\(Gen1APImportError.hotspotCleanupPending.localizedDescription)" : ""
             state = .failed(L10n.t("已导入 \(importedNames.count) 项。\(finalError.localizedDescription)；已下载完整的原件保留在手机，可再次导入恢复。\(cleanupDetail)", "Imported \(importedNames.count) item(s). \(finalError.localizedDescription). Completed originals are retained on this phone for recovery.\(cleanupDetail)"))
+        } else if transferFinishWarning {
+            let cleanupDetail = cleanupPending
+                ? L10n.t("眼镜热点关闭尚未确认，暂不能再次导入或升级，请稍后重试。", "Hotspot shutdown is not yet confirmed. Wait before importing or upgrading again.")
+                : L10n.t("眼镜热点已确认关闭。", "The glasses hotspot has been confirmed closed.")
+            completionNotice = L10n.t(
+                "已导入 \(importedNames.count) 项，文件已保存在 App 相册，无需重复导入。设备传输结束通知未确认。\(cleanupDetail)",
+                "Imported \(importedNames.count) item(s), saved in the app album. No need to import them again. The device transfer-end notification is unconfirmed. \(cleanupDetail)"
+            )
+            diagnostics.log("一代：文件导入完成，附带设备收尾提示", detail: "imported=\(importedNames.count) transferCompleteUnconfirmed=true hotspotCleanupPending=\(cleanupPending) nextImportBlocked=\(cleanupPending)")
+            state = .completed(imported: importedNames.count)
         } else if cleanupPending {
             state = .failed(L10n.t("已导入 \(importedNames.count) 项。\(Gen1APImportError.hotspotCleanupPending.localizedDescription)", "Imported \(importedNames.count) item(s). \(Gen1APImportError.hotspotCleanupPending.localizedDescription)"))
         } else {

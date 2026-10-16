@@ -3245,24 +3245,38 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         return sendCommand(AstraA1BleProtocol.buildStopVideoCommand())
     }
 
+    private var homePhotoAttemptID: UUID?
+    private var homePhotoObservedTaking = false
+    private var homePhotoBaselineCount = 0
+
+    private func logPhotoCapture(_ event: String, detail: String = "") {
+        DebugLogStore.logBLEEvent("Photo capture \(event)", detail: "attempt=\(homePhotoAttemptID?.uuidString ?? "none") target=\(deviceBluetoothIdentifier ?? "none") generation=\(deviceGeneration) runtime=\(deviceRuntimeStatus.name) pending=\(isTakingPhoto) observedTaking=\(homePhotoObservedTaking) baselineCount=\(homePhotoBaselineCount) currentCount=\(pendingImportFileCount) \(detail)")
+    }
+
     func takePhotoFromHome() {
         guard !isBatteryTooLowForMedia else {
             mediaActionAlertMessage = lowBatteryMediaMessage
             return
         }
         guard ensureMediaActionAllowed(busy: isTakingPhoto || photoCompleted) else { return }
+        homePhotoAttemptID = UUID()
+        homePhotoObservedTaking = false
+        homePhotoBaselineCount = pendingImportFileCount
         isTakingPhoto = true
         photoCompleted = false
+        logPhotoCapture("request", detail: "command=takephoto0 gen1Command=0x60")
         guard takePhoto() else {
+            logPhotoCapture("send-failed", detail: "completion=false")
             isTakingPhoto = false
             mediaActionAlertMessage = L10n.t("发送拍照命令失败，请重试", "Failed to send photo command. Try again.")
             return
         }
-        // Android 发送成功后即认为本次首页操作已受理；状态回包只用于补充反馈。
+        logPhotoCapture("sent", detail: "writeQueued=true deviceCompletionConfirmed=false")
+        // A queued write does not confirm device execution.
         // 旧固件不回 devstatus0/actionrsp0 时，也不能让本地 busy 永久卡住。
         scheduleHomePhotoNewFileQuery()
         scheduleMediaCompletionFallback(isPhoto: true)
-        mediaActionToastMessage = L10n.t("眼镜开始拍照，请从相册中导入", "Photo started. Import it from Album.")
+        mediaActionToastMessage = L10n.t("已发送拍照指令，等待眼镜确认", "Photo command sent. Waiting for glasses confirmation.")
         print("\(logTag) takephoto0 sent, wait PHOTO_TAKING→STANDBY")
     }
 
@@ -3353,6 +3367,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         _ status: AstraA1BleProtocol.DeviceRuntimeStatus,
         source: String,
         receivedFromDevice: Bool = false,
+        allowsPhotoCompletion: Bool = true,
         allowsVideoCompletion: Bool = true
     ) {
         if receivedFromDevice {
@@ -3367,6 +3382,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             cancelDeviceStatusSyncRetry()
         }
         handleDeviceRuntimeStatusTransition(from: previous, to: status,
+                                            allowsPhotoCompletion: receivedFromDevice && allowsPhotoCompletion,
                                             allowsVideoCompletion: receivedFromDevice && allowsVideoCompletion)
     }
 
@@ -3374,10 +3390,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private func handleDeviceRuntimeStatusTransition(
         from previous: AstraA1BleProtocol.DeviceRuntimeStatus,
         to current: AstraA1BleProtocol.DeviceRuntimeStatus,
+        allowsPhotoCompletion: Bool = true,
         allowsVideoCompletion: Bool = true
     ) {
         if current == .photoTaking {
+            homePhotoObservedTaking = true
             isTakingPhoto = true
+        }
+        if isTakingPhoto {
+            logPhotoCapture("device-status", detail: "previous=\(previous.name) current=\(current.name)")
         }
         let videoFinished = homeVideoCapture.receive(
             current, at: ProcessInfo.processInfo.systemUptime, allowsCompletion: allowsVideoCompletion
@@ -3389,8 +3410,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             logVideoCapture("device-status", detail: "previous=\(previous.name) current=\(current.name) completionAllowed=\(allowsVideoCompletion)")
         }
 
-        if previous == .photoTaking, current == .standby {
-            finishPhotoCaptureSuccess()
+        if allowsPhotoCompletion, isTakingPhoto, homePhotoObservedTaking, current == .standby {
+            finishPhotoCaptureSuccess(evidence: "device_photo_taking_then_standby")
         }
         if videoFinished {
             finishVideoCaptureSuccess()
@@ -3402,8 +3423,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
     }
 
-    private func finishPhotoCaptureSuccess() {
+    private func finishPhotoCaptureSuccess(evidence: String) {
         guard isTakingPhoto else { return }
+        logPhotoCapture("completed", detail: "confirmed=true evidence=\(evidence)")
         cancelMediaCompletionFallback()
         isTakingPhoto = false
         if deviceRuntimeStatus == .photoTaking {
@@ -3444,7 +3466,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             logVideoCapture("action-response", detail: "action=\(response.action.rawValue) result=\(response.rawResult) status=\(response.currentStatus.name)")
         }
         // actionrsp0 里的 current_status 也走同一套全局状态更新。
+        if response.action == .takePhoto {
+            logPhotoCapture("action-response", detail: "result=\(response.rawResult) status=\(response.currentStatus.name)")
+        }
         applyDeviceRuntimeStatus(response.currentStatus, source: "actionrsp0", receivedFromDevice: true,
+                                 allowsPhotoCompletion: response.action != .takePhoto || response.result == .accepted,
                                  allowsVideoCompletion: !stopRejected && !startRejected)
 
         switch response.action {
@@ -3452,12 +3478,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             switch response.result {
             case .accepted:
                 print("\(logTag) takephoto ACCEPTED status=\(response.currentStatus.name)")
-                // 对齐安卓：ACCEPTED 即业务侧可反馈；STANDBY 立刻收尾，PHOTO_TAKING 等跳变并兜底。
-                if response.currentStatus == .standby {
-                    finishPhotoCaptureSuccess()
-                } else {
-                    scheduleMediaCompletionFallback(isPhoto: true)
-                }
+                logPhotoCapture("accepted", detail: "deviceAccepted=true completionNotImplied=true")
+                if isTakingPhoto { scheduleMediaCompletionFallback(isPhoto: true) }
             case .busy:
                 isTakingPhoto = false
                 cancelMediaCompletionFallback()
@@ -3528,21 +3550,23 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private var mediaCompletionFallbackWorkItem: DispatchWorkItem?
 
-    /// Missing completion reports: photos retain their compatibility fallback;
-    /// video stops query the real status and allow retry without claiming success.
-    private func scheduleMediaCompletionFallback(isPhoto: Bool, didQueryVideoStatus: Bool = false) {
+    /// Query missing completion evidence once; a timeout unlocks retry without
+    /// claiming success or automatically repeating a capture command.
+    private func scheduleMediaCompletionFallback(isPhoto: Bool, didQueryVideoStatus: Bool = false, didQueryPhotoStatus: Bool = false) {
         cancelMediaCompletionFallback()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             if isPhoto, self.isTakingPhoto || self.deviceRuntimeStatus == .photoTaking {
-                print("\(self.logTag) photo completion fallback: query status / finish")
-                self.forceQueryDeviceStatus(reason: "photo-fallback")
-                if self.deviceRuntimeStatus == .standby
-                    || self.deviceRuntimeStatus == .photoTaking
-                    || self.deviceRuntimeStatus == .unknown {
-                    // 仍无 STANDBY 上报时，对齐安卓：ACCEPTED 后可结束 UI 等待
-                    self.finishPhotoCaptureSuccess()
+                if !didQueryPhotoStatus {
+                    self.logPhotoCapture("awaiting-confirmation", detail: "elapsed=4s action=query_status_and_files completion=false")
+                    self.forceQueryDeviceStatus(reason: "photo-fallback")
+                    self.queryPendingImportFiles()
+                    self.scheduleMediaCompletionFallback(isPhoto: true, didQueryPhotoStatus: true)
+                    return
                 }
+                self.logPhotoCapture("unconfirmed", detail: "elapsed=8s completion=false noAutomaticResend=true")
+                self.isTakingPhoto = false
+                self.mediaActionAlertMessage = L10n.t("未确认拍照完成，请重试", "Photo completion not confirmed. Please try again.")
             } else if !isPhoto, self.isVideoStopping || self.deviceRuntimeStatus == .videoRecording {
                 if !didQueryVideoStatus {
                     // Give the status reply time to arrive before unlocking Stop.
@@ -3723,6 +3747,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func resetHomeMediaCaptureState() {
         homeVideoCapture.reset()
+        homePhotoAttemptID = nil
+        homePhotoObservedTaking = false
+        homePhotoBaselineCount = 0
         cancelMediaCompletionFallback()
         photoCompletedResetTask?.cancel()
         videoCompletedResetTask?.cancel()
@@ -4896,7 +4923,16 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if gen1GuideEventSessionID != nil {
             DebugLogStore.logBLEEvent("Gen1 guide control decode", detail: "session=\(gen1GuideEventSessionID!.uuidString) target=\(connectedPeripheral?.identifier.uuidString ?? "nil") \(decoded.diagnosticSummary)", capturedAt: capturedAt)
         }
+        if gen1APImportIdentity != nil {
+            DebugLogStore.logBLEEvent("Gen1 AP control decode", detail: "target=\(connectedPeripheral?.identifier.uuidString ?? "nil") \(decoded.diagnosticSummary); credentialPayload=<redacted>", capturedAt: capturedAt)
+        }
         for frame in decoded.frames {
+            if frame.command == Gen1Commands.openHotspot || frame.command == Gen1Commands.closeHotspot {
+                let header = frame.raw.prefix(6).map { String(format: "%02X", $0) }.joined(separator: " ")
+                let checksum = frame.raw.suffix(2).map { String(format: "%02X", $0) }.joined(separator: " ")
+                let payload = frame.payload.count == 1 ? frame.payload.map { String(format: "%02X", $0) }.joined() : "<credentials-redacted>"
+                DebugLogStore.logBLEEvent("Gen1 hotspot raw frame received", detail: "target=\(connectedPeripheral?.identifier.uuidString ?? "nil") command=\(String(format: "0x%02X", frame.command)) sender=\(frame.sender) receiver=\(frame.receiver) routingAccepted=\(frame.sender == 3 && frame.receiver == 2) apActive=\(gen1APImportIdentity != nil) rawBytes=\(frame.raw.count) header=\(header) payloadBytes=\(frame.payload.count) payload=\(payload) checksum=\(checksum)", capturedAt: capturedAt)
+            }
             if gen1FirmwareUpgradeIdentity != nil {
                 DebugLogStore.logBLEEvent("Gen1 firmware control frame", detail: "command=\(String(format: "0x%02X", frame.command)) sender=\(frame.sender) receiver=\(frame.receiver) payloadBytes=\(frame.payload.count) routingAccepted=\(frame.sender == 3 && frame.receiver == 2); payload=<redacted>", capturedAt: capturedAt)
             }
@@ -6685,8 +6721,13 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             } else {
                 pendingImportFileCount = info.hasNew ? max(0, info.fileCount) : 0
                 print("\(logTag) hasnewfile media hasNew=\(info.hasNew) fileCount=\(info.fileCount) pending=\(pendingImportFileCount)")
-                if info.hasNew, isTakingPhoto {
-                    finishPhotoCaptureSuccess()
+                if isTakingPhoto {
+                    logPhotoCapture("files-reported", detail: "hasNew=\(info.hasNew) count=\(info.fileCount) increased=\(pendingImportFileCount > homePhotoBaselineCount)")
+                    // Existing files alone cannot confirm this photo request.
+                    if info.hasNew, homePhotoObservedTaking,
+                       pendingImportFileCount > homePhotoBaselineCount {
+                        finishPhotoCaptureSuccess(evidence: "photo_taking_and_file_count_increased")
+                    }
                 }
                 if info.hasNew, isVideoStopping {
                     // Counts may describe an older photo/video; they do not confirm this stop.
@@ -8033,6 +8074,10 @@ extension AstraA1BleManager: CBPeripheralDelegate {
             if uuid == Self.gen1ControlUUID, gen1GuideEventSessionID != nil || errorCopy != nil {
                 let nsError = errorCopy.map { $0 as NSError }
                 DebugLogStore.logBLEEvent("Gen1 guide GATT callback", detail: "session=\(gen1GuideEventSessionID?.uuidString ?? "nil") source=\(peripheral.identifier) characteristic=\(uuid) currentPeripheral=\(connectedPeripheral === peripheral) currentCharacteristic=\(notifyCharacteristic === characteristic) bytes=\(dataCopy?.count ?? 0) valuePresent=\(dataCopy != nil) error=\(nsError.map { "\($0.domain)/\($0.code): \($0.localizedDescription)" } ?? "none"); payload_logged_after_control_frame_validation", capturedAt: capturedAt)
+            }
+            if uuid == Self.gen1ControlUUID, gen1APImportIdentity != nil {
+                let nsError = errorCopy.map { $0 as NSError }
+                DebugLogStore.logBLEEvent("Gen1 AP raw callback", detail: "source=\(peripheral.identifier) characteristic=\(uuid) currentPeripheral=\(connectedPeripheral === peripheral) currentCharacteristic=\(notifyCharacteristic === characteristic) bytes=\(dataCopy?.count ?? 0) error=\(nsError.map { "\($0.domain)/\($0.code)" } ?? "none") payload=<credentials-redacted>", capturedAt: capturedAt)
             }
             // 必须在拆帧和旧连接过滤之前记录。无命令头的续包也应留下证据；
             // CoreBluetooth 的 read 与 notify 共用此回调，不能凭等待标志断言来源。

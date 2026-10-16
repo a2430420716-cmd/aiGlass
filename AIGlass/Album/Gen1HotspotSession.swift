@@ -16,7 +16,23 @@ final class Gen1HotspotSession {
     }
 
     func open(timeout: TimeInterval = 20) async throws -> Gen1HotspotCredentials {
-        try await requireStandbyBeforeOpen()
+        do {
+            return try await openOnce(timeout: timeout)
+        } catch Gen1APImportError.hotspotTimeout {
+            try Task.checkCancellation()
+            guard ble.isGen1MediaImportCurrent(identity) else { throw Gen1APImportError.targetChanged }
+            DebugLogStore.logWiFi("一代：热点信息超时，准备唯一一次自动重试", detail: "target=\(identity.targetID) retry=1/1 next=close_0x38_then_fresh_standby")
+            let reportSequenceBeforeClose = ble.deviceRuntimeStatusReportSequence
+            guard await close() == .settled else { throw Gen1APImportError.hotspotCleanupPending }
+            needsCleanup = false
+            try Task.checkCancellation()
+            guard ble.isGen1MediaImportCurrent(identity) else { throw Gen1APImportError.targetChanged }
+            return try await openOnce(timeout: timeout, requiresFreshStandby: true, reportSequenceBeforeClose: reportSequenceBeforeClose)
+        }
+    }
+
+    private func openOnce(timeout: TimeInterval, requiresFreshStandby: Bool = false, reportSequenceBeforeClose: Int? = nil) async throws -> Gen1HotspotCredentials {
+        try await requireStandbyBeforeOpen(requiresFresh: requiresFreshStandby, reportSequenceBeforeClose: reportSequenceBeforeClose)
         response = nil
         subscription = ble.gen1ControlSubject.sink { [weak self] frame in
             guard let self, frame.command == Gen1Commands.openHotspot,
@@ -48,8 +64,16 @@ final class Gen1HotspotSession {
 
     /// Prefer fresh query/notification evidence; change-only firmware can fall
     /// back to its last reported standby if the current session is still idle.
-    private func requireStandbyBeforeOpen() async throws {
+    private func requireStandbyBeforeOpen(requiresFresh: Bool = false, reportSequenceBeforeClose: Int? = nil) async throws {
         var latestStatus: Gen1DomainDeviceStatus?
+        // A fresh idle report received during the confirmed close also counts;
+        // change-only firmware may not repeat it in response to another query.
+        if let sequence = reportSequenceBeforeClose,
+           ble.deviceRuntimeStatusReportSequence > sequence,
+           ble.deviceRuntimeStatus == .standby,
+           ble.lastReportedDeviceRuntimeStatus == .standby {
+            latestStatus = .standby
+        }
         var latestCommand: UInt8?
         let observation = ble.gen1ControlSubject.sink { [weak self] frame in
             guard let self, self.ble.isGen1MediaImportCurrent(self.identity),
@@ -81,6 +105,10 @@ final class Gen1HotspotSession {
         }
         try Task.checkCancellation()
         guard ble.isGen1MediaImportCurrent(identity) else { throw Gen1APImportError.targetChanged }
+        if requiresFresh {
+            DebugLogStore.logWiFi("一代：自动重试未取得新的空闲回报，停止重开热点", detail: "target=\(identity.targetID) retry=1/1 openSent=false cachedStandbyNotAccepted=true")
+            throw Gen1APImportError.statusUnconfirmed
+        }
         let current = Gen1DomainDeviceStatus(rawValue: ble.deviceRuntimeStatus.rawValue) ?? .unknown
         let reported = Gen1DomainDeviceStatus(rawValue: ble.lastReportedDeviceRuntimeStatus.rawValue) ?? .unknown
         do {

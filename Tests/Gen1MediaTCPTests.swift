@@ -61,6 +61,10 @@ enum Gen1MediaTCPTests {
     }
 
     static func protocolTests() throws {
+        try check(AlbumTransferPolicy.canReportSavedFilesAfterFinishError(listed: 1, imported: 1, failed: 0, recoverableNetworkError: true), "saved batch survives transient end-of-batch transport failure")
+        for (listed, imported, failed, network) in [(1, 0, 0, true), (2, 1, 0, true), (1, 1, 1, true), (0, 0, 0, true), (1, 1, 0, false)] {
+            try check(!AlbumTransferPolicy.canReportSavedFilesAfterFinishError(listed: listed, imported: imported, failed: failed, recoverableNetworkError: network), "partial, empty, locally failed and non-network batches must not become successful")
+        }
         let fileRequest = try Gen1MediaTCPProtocol.request(.sendFile, payload: Data("A.JPG".utf8))
         try check(fileRequest == hex("AF 8C 00 01 00 01 00 02 00 03 00 00 00 05 00 00 00 19 41 2E 4A 50 47 AF 8C"), "documented filename request layout")
         let heartbeat = try Gen1MediaTCPProtocol.request(.heartbeat)

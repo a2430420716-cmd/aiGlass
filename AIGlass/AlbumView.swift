@@ -141,6 +141,8 @@ struct AlbumView: View {
                         videos: failedVideos
                     )
                     showImportPartialFailureDialog = true
+                } else if let notice = importManager.completionNotice {
+                    importNoticeMessage = notice
                 } else if imported == 0 {
                     importNoticeMessage = L10n.t("眼镜中暂无可导入的照片或视频", "No photos or videos to import from the glasses")
                 }
