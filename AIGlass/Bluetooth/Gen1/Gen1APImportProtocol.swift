@@ -43,6 +43,16 @@ enum Gen1APImportError: LocalizedError, Equatable {
 }
 
 enum Gen1APImportProtocol {
+    /// Firmware may answer status queries using 0x73, or only notify on changes.
+    /// A fresh busy/unknown report always overrides a previously recorded idle.
+    static func requireStandby(fresh: Gen1DomainDeviceStatus?, current: Gen1DomainDeviceStatus,
+                               lastReported: Gen1DomainDeviceStatus) throws {
+        let status = fresh ?? current
+        guard status != .unknown else { throw Gen1APImportError.statusUnconfirmed }
+        guard status == .standby else { throw Gen1APImportError.deviceBusy }
+        if fresh == nil, lastReported != .standby { throw Gen1APImportError.statusUnconfirmed }
+    }
+
     static func isRecordingRequest(command: UInt8, payload: Data) -> Bool {
         command == Gen1Commands.aiRecord && payload.count == 1
     }

@@ -43,6 +43,7 @@ jobs:
         run: |
           bash Tests/run-gatt-recovery-tests.sh
           bash Tests/run-gen1-hotspot-cleanup-tests.sh
+          bash Tests/run-gen1-ap-import-tests.sh
           bash Tests/run-gen1-media-tcp-tests.sh
           bash Tests/run-wifi-diagnostics-tests.sh
           bash Tests/run-home-video-capture-tests.sh

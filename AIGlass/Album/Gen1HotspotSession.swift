@@ -16,7 +16,7 @@ final class Gen1HotspotSession {
     }
 
     func open(timeout: TimeInterval = 20) async throws -> Gen1HotspotCredentials {
-        try await requireFreshStandby()
+        try await requireStandbyBeforeOpen()
         response = nil
         subscription = ble.gen1ControlSubject.sink { [weak self] frame in
             guard let self, frame.command == Gen1Commands.openHotspot,
@@ -46,11 +46,11 @@ final class Gen1HotspotSession {
         throw Gen1APImportError.hotspotTimeout
     }
 
-    /// Cached idle/busy values can outlive the preceding AP session. Require a
-    /// fresh query response before starting another AP; notifications alone do not authorize it.
-    private func requireFreshStandby() async throws {
-        var queryAnswered = false
+    /// Prefer fresh query/notification evidence; change-only firmware can fall
+    /// back to its last reported standby if the current session is still idle.
+    private func requireStandbyBeforeOpen() async throws {
         var latestStatus: Gen1DomainDeviceStatus?
+        var latestCommand: UInt8?
         let observation = ble.gen1ControlSubject.sink { [weak self] frame in
             guard let self, self.ble.isGen1MediaImportCurrent(self.identity),
                   self.ble.deviceBluetoothIdentifier == self.identity.targetID.uuidString,
@@ -58,7 +58,7 @@ final class Gen1HotspotSession {
                   let rawStatus = frame.payload.first,
                   (frame.command == Gen1Commands.deviceStatusQuery
                     || frame.command == Gen1Commands.deviceStatusChanged) else { return }
-            if frame.command == Gen1Commands.deviceStatusQuery { queryAnswered = true }
+            latestCommand = frame.command
             latestStatus = Gen1DeviceStatusMapper.toDomainStatus(rawStatus)
         }
         defer { observation.cancel() }
@@ -72,16 +72,24 @@ final class Gen1HotspotSession {
         while ProcessInfo.processInfo.systemUptime < deadline {
             try Task.checkCancellation()
             guard ble.isGen1MediaImportCurrent(identity) else { throw Gen1APImportError.targetChanged }
-            if queryAnswered, let latestStatus {
-                DebugLogStore.logWiFi("一代：开启热点前状态确认", detail: "freshQuery=true status=\(latestStatus) allowOpen=\(latestStatus == .standby) target=\(identity.targetID)")
-                guard latestStatus != .unknown else { throw Gen1APImportError.statusUnconfirmed }
-                guard latestStatus == .standby else { throw Gen1APImportError.deviceBusy }
+            if let latestStatus {
+                DebugLogStore.logWiFi("一代：开启热点前状态确认", detail: "freshDeviceReport=true sourceCommand=\(latestCommand.map { String(format: "0x%02X", $0) } ?? "none") status=\(latestStatus) allowOpen=\(latestStatus == .standby) target=\(identity.targetID)")
+                try Gen1APImportProtocol.requireStandby(fresh: latestStatus, current: .unknown, lastReported: .unknown)
                 return
             }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
-        DebugLogStore.logWiFi("一代：状态查询超时，未开启热点", detail: "target=\(identity.targetID) openSent=false wifiApply=false")
-        throw Gen1APImportError.statusUnconfirmed
+        try Task.checkCancellation()
+        guard ble.isGen1MediaImportCurrent(identity) else { throw Gen1APImportError.targetChanged }
+        let current = Gen1DomainDeviceStatus(rawValue: ble.deviceRuntimeStatus.rawValue) ?? .unknown
+        let reported = Gen1DomainDeviceStatus(rawValue: ble.lastReportedDeviceRuntimeStatus.rawValue) ?? .unknown
+        do {
+            try Gen1APImportProtocol.requireStandby(fresh: latestStatus, current: current, lastReported: reported)
+            DebugLogStore.logWiFi("一代：状态查询无回包，兼容设备已报告的空闲状态", detail: "target=\(identity.targetID) current=\(current) lastReported=\(reported) freshReport=false fallback=reportedStandby deviceBusyReplyStillRequired=true")
+        } catch {
+            DebugLogStore.logWiFi("一代：状态未满足空闲条件，未开启热点", detail: "target=\(identity.targetID) current=\(current) lastReported=\(reported) openSent=false wifiApply=false error=\(error.localizedDescription)")
+            throw error
+        }
     }
 
     /// The manager owns cleanup beyond cancellation, timeout and session teardown.

@@ -10,6 +10,20 @@ struct Gen1APImportTests {
     }
 
     static func main() throws {
+        try Gen1APImportProtocol.requireStandby(fresh: .standby, current: .networkOperating, lastReported: .networkOperating)
+        try Gen1APImportProtocol.requireStandby(fresh: nil, current: .standby, lastReported: .standby)
+        for (fresh, current, reported, expected) in [
+            (Gen1DomainDeviceStatus.networkOperating, Gen1DomainDeviceStatus.standby, Gen1DomainDeviceStatus.standby, Gen1APImportError.deviceBusy),
+            (.unknown, .standby, .standby, .statusUnconfirmed),
+            (nil, .networkOperating, .standby, .deviceBusy),
+            (nil, .unknown, .standby, .statusUnconfirmed),
+            (nil, .standby, .unknown, .statusUnconfirmed)
+        ] as [(Gen1DomainDeviceStatus?, Gen1DomainDeviceStatus, Gen1DomainDeviceStatus, Gen1APImportError)] {
+            do {
+                try Gen1APImportProtocol.requireStandby(fresh: fresh, current: current, lastReported: reported)
+                preconditionFailure("Busy or unconfirmed state allowed hotspot open")
+            } catch { expect(error as? Gen1APImportError == expected, "Fresh reports override cache; unconfirmed idle is rejected") }
+        }
         let raw = Data([0xAA, 3, 2, 0x37, 0, 20]) + Data("Lunima_L1/L13d4f5g6h".utf8) + Data([0x72, 0x63])
         let frame = Gen1ControlCodec.parse(raw)!
         let credentials = try Gen1APImportProtocol.credentials(from: frame.payload)
