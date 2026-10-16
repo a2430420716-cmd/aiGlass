@@ -4773,7 +4773,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if let importIdentity = gen1APImportIdentity,
            importIdentity.targetID == connectedPeripheral?.identifier,
            requiresAvailableDevice,
-           !(command == Gen1Commands.openHotspot && payload.isEmpty) {
+           !(command == Gen1Commands.openHotspot && payload.isEmpty),
+           command != Gen1Commands.deviceStatusQuery {
             DebugLogStore.logBLEEvent("Gen1 command deferred during AP import", detail: "command=\(String(format: "0x%02X", command))")
             return false
         }

@@ -9,6 +9,8 @@ enum Gen1APImportError: LocalizedError, Equatable {
     case invalidCredentials
     case hotspotRejected(UInt8)
     case hotspotTimeout
+    case deviceBusy
+    case statusUnconfirmed
     case hotspotCleanupPending
     case targetChanged
     case unavailable
@@ -29,6 +31,8 @@ enum Gen1APImportError: LocalizedError, Equatable {
             }
             return "\(reason)（0x\(String(format: "%02X", code))）"
         case .hotspotTimeout: return "等待眼镜热点信息超时，请检查眼镜连接后重试"
+        case .deviceBusy: return "设备正在处理，请稍等，待设备空闲后再次导入"
+        case .statusUnconfirmed: return "暂未确认设备状态，请稍等后再次导入"
         case .hotspotCleanupPending: return "上次眼镜热点仍在收尾，暂不能再次导入或升级，请稍候重试；若持续无法恢复，请重启眼镜和 App"
         case .targetChanged: return "绑定或连接的眼镜已改变，本次导入已停止"
         case .unavailable: return "眼镜当前不可导入，请先结束录音、拍摄或升级"
