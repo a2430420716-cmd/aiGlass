@@ -437,6 +437,11 @@ struct AlbumView: View {
                 .progressViewStyle(.linear)
                 .tint(AppTheme.accent)
                 .animation(.easeInOut(duration: 0.25), value: importManager.progress)
+            if pairingCoordinator.astraA1BleManager.deviceGeneration == .gen1G5K61 {
+                Text(L10n.t("导入期间请保持连接眼镜 Wi-Fi；若系统提示未接入互联网，请选择「继续尝试使用无线局域网」。", "Stay connected to glasses Wi-Fi during import. If iOS says there is no internet, choose Keep Trying Wi-Fi."))
+                    .font(AppTheme.notoSansSC(size: 12, weight: .regular))
+                    .foregroundStyle(AppTheme.secondaryText)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 18)

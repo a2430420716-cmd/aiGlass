@@ -44,6 +44,14 @@ enum Gen1MediaTCPTests {
         }
         defer { watchdog.cancel() }
         try protocolTests()
+        let recoveryClient = Gen1MediaTCPClient(host: "192.168.4.1")
+        let networkDown = await recoveryClient.canRetryAfterPathChange(NWError.posix(.ENETDOWN))
+        let aborted = await recoveryClient.canRetryAfterPathChange(NWError.posix(.ECONNABORTED))
+        let cancelled = await recoveryClient.canRetryAfterPathChange(CancellationError())
+        let badFrame = await recoveryClient.canRetryAfterPathChange(Gen1MediaTCPError.invalidFrame("bad trailer"))
+        let refused = await recoveryClient.canRetryAfterPathChange(NWError.posix(.ECONNREFUSED))
+        try check(networkDown && aborted, "transient path errors permit TCP recovery")
+        try check(!cancelled && !badFrame && !refused, "cancellation, protocol corruption and service refusal are not path retries")
         #if GEN1_MEDIA_TCP_TESTING
         if !CommandLine.arguments.contains("--protocol-only") {
             try await integrationTests()

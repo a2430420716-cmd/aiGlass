@@ -56,6 +56,55 @@ actor Gen1MediaTCPClient {
     private var writeTimer: Task<Void, Never>?
     private var pendingRead: ReadRequest?
     private var readTimer: Task<Void, Never>?
+    private var pathSatisfiedSince: TimeInterval?
+    private var observedLocalNetworkDenied = false
+    private var heartbeatSequence = 0
+    private var lastHeartbeatStartedAt: TimeInterval?
+    private var heartbeatReplies = 0
+
+    /// Permission-looking errors can be transient during SoftAP path rebinding.
+    func canRetryAfterPathChange(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        guard let networkError = error as? NWError, case .posix(let code) = networkError else { return false }
+        if code == .ENETDOWN || code == .ECONNABORTED { return true }
+        return observedLocalNetworkDenied
+            && (code == .EACCES || code == .EPERM || code == .ENETUNREACH || code == .EHOSTUNREACH)
+    }
+
+    func hadLocalNetworkDenial() -> Bool { observedLocalNetworkDenied }
+
+    private func observePath(_ path: NWPath) {
+        logConnection("observedWiFiPath status=\(path.status) unsatisfiedReason=\(path.status == .unsatisfied ? String(describing: path.unsatisfiedReason) : "notApplicable")")
+        if path.status == .satisfied && path.usesInterfaceType(.wifi) {
+            if pathSatisfiedSince == nil { pathSatisfiedSince = ProcessInfo.processInfo.systemUptime }
+        } else {
+            pathSatisfiedSince = nil
+        }
+        if path.status == .unsatisfied && path.unsatisfiedReason == .localNetworkDenied {
+            observedLocalNetworkDenied = true
+        }
+    }
+
+    private func waitForStableWiFiPath() async throws {
+        guard requiresWiFi else { return }
+        let monitor = NWPathMonitor(requiredInterfaceType: .wifi)
+        pathSatisfiedSince = nil
+        monitor.pathUpdateHandler = { [weak self] path in
+            Task { await self?.observePath(path) }
+        }
+        monitor.start(queue: networkQueue)
+        defer { monitor.cancel() }
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            try Task.checkCancellation()
+            if let since = pathSatisfiedSince, ProcessInfo.processInfo.systemUptime - since >= 1 {
+                logConnection("wifiPathStable=1s; association_and_TCP_not_yet_verified")
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw NWError.posix(.ENETDOWN)
+    }
 
     init(host: String, port: UInt16 = 8556) {
         self.host = host
@@ -81,6 +130,7 @@ actor Gen1MediaTCPClient {
             return
         }
         guard state == .idle else { throw terminalError ?? Gen1MediaTCPError.operationInProgress }
+        try await waitForStableWiFiPath()
         guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let endpointPort = NWEndpoint.Port(rawValue: port) else {
             throw Gen1MediaTCPError.invalidFrame("invalid host or port")
         }
@@ -101,7 +151,10 @@ actor Gen1MediaTCPClient {
                     let interfaces = path.availableInterfaces.map { "\($0.name):\($0.type)" }.sorted().joined(separator: ",")
                     let reason = path.status == .unsatisfied ? String(describing: path.unsatisfiedReason) : "notApplicable"
                     let detail = "connectionPath status=\(path.status) unsatisfiedReason=\(reason) usesWiFi=\(path.usesInterfaceType(.wifi)) supportsIPv4=\(path.supportsIPv4) interfaces=[\(interfaces)]; path_is_not_TCP_ready"
-                    Task { await self?.logConnection(detail) }
+                    Task {
+                        await self?.observePath(path)
+                        await self?.logConnection(detail)
+                    }
                 }
                 connectTimer = deadline(after: timing.connect, reason: "连接")
                 connection.start(queue: networkQueue)
@@ -254,7 +307,19 @@ actor Gen1MediaTCPClient {
 
     private func sendHeartbeat() async {
         guard state == .ready, !Task.isCancelled else { return }
-        do { try await send(.heartbeat) } catch { transportFailed(error) }
+        heartbeatSequence += 1
+        let sequence = heartbeatSequence
+        let started = ProcessInfo.processInfo.systemUptime
+        let gap = lastHeartbeatStartedAt.map { started - $0 }
+        lastHeartbeatStartedAt = started
+        logConnection("heartbeat=send sequence=\(sequence) gapSeconds=\(gap ?? 0) fileTransferActive=\(fileTransferActive) queuedWrites=\(pendingWrites.count)")
+        do {
+            try await send(.heartbeat)
+            logConnection("heartbeat=writeCompleted sequence=\(sequence) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - started) deviceReceiptConfirmed=false")
+        } catch {
+            logConnection("heartbeat=failed sequence=\(sequence) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - started) error=\(String(reflecting: error))")
+            transportFailed(error)
+        }
     }
 
     private func send(_ command: Gen1MediaTCPCommand, payload: Data = Data()) async throws {
@@ -298,6 +363,8 @@ actor Gen1MediaTCPClient {
                 }
                 _ = try await readExactly(Int(header.bodyLength))
                 try Gen1MediaTCPProtocol.validateTrailer(try await readExactly(2))
+                heartbeatReplies += 1
+                logConnection("heartbeat=replyConsumed count=\(heartbeatReplies) note=consumedDuringFileOrListRead_notReceiptTimestamp")
                 continue
             }
             guard header.command == expected.rawValue else { throw Gen1MediaTCPError.unexpectedCommand(header.command) }

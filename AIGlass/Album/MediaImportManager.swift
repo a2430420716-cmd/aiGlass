@@ -624,6 +624,12 @@ final class MediaImportManager: ObservableObject {
         validateOwnership: () throws -> Void
     ) async throws -> StoredMediaItem {
         try validateOwnership()
+        let processingStarted = ProcessInfo.processInfo.systemUptime
+        var processingCompleted = false
+        DebugLogStore.logWiFi("一代：开始处理已下载原件", detail: "file=\(entry.fileName) appState=\(UIApplication.shared.applicationState.rawValue) glassesLANIPv4=\(DeviceWifiManager.gen1HasClientIPv4) processingOrder=perFile")
+        defer {
+            DebugLogStore.logWiFi("一代：已下载原件处理退出", detail: "file=\(entry.fileName) completed=\(processingCompleted) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - processingStarted) appState=\(UIApplication.shared.applicationState.rawValue) glassesLANIPv4=\(DeviceWifiManager.gen1HasClientIPv4) taskCancelled=\(Task.isCancelled)")
+        }
         let item = try await library.importGen1Original(fileURL: inbox.fileURL(for: entry), fileName: entry.fileName)
         try validateOwnership()
         if autoSave {
@@ -642,6 +648,7 @@ final class MediaImportManager: ObservableObject {
         // retried safely because the library receipt deduplicates this exact source URL.
         do { try inbox.removeCommitted(entry) }
         catch { DebugLogStore.logWiFi("一代：待恢复目录清理失败", detail: "file=\(entry.fileName) error=\(error.localizedDescription)") }
+        processingCompleted = true
         return item
     }
 
@@ -823,6 +830,57 @@ final class MediaImportManager: ObservableObject {
                 try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
             }
             endpoint = "tcp://192.168.4.1:8556"
+            // One bounded recovery budget across connection, list and file transfer.
+            // Keep AP ownership and phone configuration until recovery is exhausted.
+            var pathRetryCount = 0
+            func withPathRecovery<T>(
+                _ initial: Gen1MediaTCPClient,
+                operation: (Gen1MediaTCPClient) async throws -> T
+            ) async throws -> T {
+                var current = initial
+                while true {
+                    try checkTarget()
+                    while !DeviceWifiManager.gen1HasClientIPv4 {
+                        try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
+                        try checkTarget()
+                    }
+                    do {
+                        try await current.connect()
+                        let result = try await operation(current)
+                        client = current
+                        return result
+                    } catch {
+                        try checkTarget()
+                        guard await current.canRetryAfterPathChange(error) else { throw error }
+                        let denied = await current.hadLocalNetworkDenial()
+                        await current.close()
+                        guard pathRetryCount < 3 else {
+                            diagnostics.log("一代：网络抖动重试耗尽", detail: "retryCount=3 localNetworkDenied=\(denied) error=\(Self.formatErrorDetail(error))")
+                            if denied && DeviceWifiManager.gen1HasClientIPv4 {
+                                throw DeviceWifiError.joinFailed("本地网络连接持续受限，请检查「设置 → App → 本地网络」权限；若使用 VPN，请暂时关闭后重试")
+                            }
+                            throw error
+                        }
+                        while !DeviceWifiManager.gen1HasClientIPv4 {
+                            diagnostics.log("一代：传输中离开眼镜网段，等待手动连接", detail: "keptHotspot=true noApply=true noOpenHotspot=true")
+                            try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
+                        }
+                        let delays: [UInt64] = [500_000_000, 1_000_000_000, 2_000_000_000]
+                        let delay = delays[pathRetryCount]
+                        pathRetryCount += 1
+                        let interfaces = WifiDiagnosticSession.captureInterfaces()
+                        let tunnelInterfaces = Set(interfaces.addresses.filter { $0.name.hasPrefix("utun") }.map(\.name)).sorted().joined(separator: ",")
+                        diagnostics.log("一代：仍在眼镜网段，重试 TCP", detail: "retryIndex=\(pathRetryCount) maxRetries=3 selectedIPv4=\(interfaces.selectedIPv4 ?? "none") tunnelInterfaces=\(tunnelInterfaces) tunnelDoesNotProveVPN=true delayNs=\(delay) keptHotspot=true localNetworkDenied=\(denied) noApply=true noOpenHotspot=true error=\(Self.formatErrorDetail(error))")
+                        try await Task.sleep(nanoseconds: delay)
+                        try checkTarget()
+                        while !DeviceWifiManager.gen1HasClientIPv4 {
+                            try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
+                        }
+                        current = Gen1MediaTCPClient(host: "192.168.4.1")
+                        client = current
+                    }
+                }
+            }
             var connectedTransport: Gen1MediaTCPClient?
             while connectedTransport == nil {
                 try checkTarget()
@@ -851,7 +909,9 @@ final class MediaImportManager: ObservableObject {
                         }
                         defer { sampling.cancel(); networkDiagnostics.stop() }
                         do {
-                            try await transport.connect()
+                            try await withPathRecovery(transport, operation: { _ in
+                                try Task.checkCancellation()
+                            })
                             networkDiagnostics.recordSnapshot(phase: "tcp-connect-ready", force: true)
                         } catch {
                             // Capture before outer cleanup removes the hotspot configuration.
@@ -860,10 +920,12 @@ final class MediaImportManager: ObservableObject {
                             throw error
                         }
                     }
-                    connectedTransport = transport
+                    connectedTransport = client
                 } catch {
                     await transport.close()
+                    await client?.close()
                     try checkTarget()
+                    if pathRetryCount >= 3 { throw error }
                     diagnostics.log("一代：TCP 未连通，保留热点供手动连接", detail: "error=\(error.localizedDescription); fileListRequested=false")
                     try await waitForManualWifiJoin(credentials, ble: ble, requireLANRejoin: true, diagnostics: diagnostics)
                 }
@@ -871,7 +933,7 @@ final class MediaImportManager: ObservableObject {
             guard let transport = connectedTransport else { throw DeviceWifiError.unreachable }
             try checkTarget()
             state = .fetchingList
-            listedNames = try await transport.fileList()
+            listedNames = try await withPathRecovery(transport) { try await $0.fileList() }
             remainingFileCount = listedNames.count
             diagnostics.log("一代：TCP 文件列表已获取", detail: "endpoint=\(endpoint) count=\(listedNames.count); BLE_ready_not_required_during_transfer")
             for (index, name) in listedNames.enumerated() {
@@ -880,7 +942,20 @@ final class MediaImportManager: ObservableObject {
                 let entry = try inbox.prepare(targetID: targetID, fileName: name, accountID: identity.accountID)
                 do {
                     diagnostics.log("一代：开始传输原始文件", detail: "file=\(name) fileTimeout=\(AlbumTransferPolicy.fileTimeout)s; read_and_write_use_file_deadline", direction: .sent)
-                    let bytes = try await transport.downloadFile(named: name, to: inbox.fileURL(for: entry))
+                    var restartingFile = false
+                    let destination = inbox.fileURL(for: entry)
+                    let bytes = try await withPathRecovery(client ?? transport) { activeTransport in
+                        // Retry only this incomplete file. Fully published originals and
+                        // the original file list remain untouched.
+                        if restartingFile {
+                            let partial = destination.appendingPathExtension("partial")
+                            if FileManager.default.fileExists(atPath: partial.path) {
+                                try FileManager.default.removeItem(at: partial)
+                            }
+                        }
+                        restartingFile = true
+                        return try await activeTransport.downloadFile(named: name, to: destination)
+                    }
                     remainingFileCount = max(0, (remainingFileCount ?? 0) - 1)
                     diagnostics.log("一代：原始文件已完整落盘", detail: "file=\(name) bytes=\(bytes) original=\(inbox.fileURL(for: entry).path)")
                 } catch {
@@ -896,7 +971,7 @@ final class MediaImportManager: ObservableObject {
             try checkTarget()
             state = .finishing
             // Match Android: batch completion once, not a deletion ACK after each file.
-            try await transport.finishTransfer()
+            try await (client ?? transport).finishTransfer()
         } catch {
             finalError = ble.isGen1MediaImportCurrent(identity) ? error : Gen1APImportError.targetChanged
             if finalError is ManualWifiJoinExit {
