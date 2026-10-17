@@ -3,8 +3,14 @@ import UIKit
 
 /// PixSmart 视频防抖 Swift 封装。处理失败返回 false，由导入流程保留原视频。
 enum PixSmartVideoEIS {
+    /// Temporary Build 148 comparison: bypass Gen1 EIS, retain rotation/audio.
+    static let gen1StabilizationEnabled = false
     /// Explicit entry point prevents a Gen1 import from inheriting Gen2 parameters.
     static func stabilizeGen1Video(from inputURL: URL, to outputURL: URL) async -> Bool {
+        guard gen1StabilizationEnabled else {
+            DebugLogStore.logWiFi("一代：临时测试版跳过视频防抖", detail: "file=\(inputURL.lastPathComponent) stabilizationEnabled=false rotationEnabled=true audioPreserved=true testVariant=gen1-no-eis")
+            return false
+        }
         try? FileManager.default.removeItem(at: outputURL)
         let cancellation = Gen1VideoCancellation()
         let diagnosticID = UUID().uuidString

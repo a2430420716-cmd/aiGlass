@@ -800,10 +800,14 @@ final class MediaImportManager: ObservableObject {
         do {
             // License activation may need internet. Finish this while still on the
             // phone's normal network, before switching to the glasses' local AP.
-            let licensed = await Task.detached(priority: .utility) {
-                PixSmartImageStabilizer.prewarmLicense()
-            }.value
-            diagnostics.log("一代：视频防抖预鉴权结束", detail: "licensed=\(licensed); failure_keeps_original_video")
+            if PixSmartVideoEIS.gen1StabilizationEnabled {
+                let licensed = await Task.detached(priority: .utility) {
+                    PixSmartImageStabilizer.prewarmLicense()
+                }.value
+                diagnostics.log("一代：视频防抖预鉴权结束", detail: "licensed=\(licensed); failure_keeps_original_video")
+            } else {
+                diagnostics.log("一代：临时测试版跳过视频防抖预鉴权", detail: "testVariant=gen1-no-eis stabilizationEnabled=false")
+            }
             try checkTarget()
             // Restore previously completed downloads first; do not ask glasses to send
             // those deleted originals again after a processing failure or app restart.
