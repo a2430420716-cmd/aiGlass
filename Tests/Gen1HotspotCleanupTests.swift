@@ -88,6 +88,80 @@ enum Gen1HotspotCleanupTests {
     }
 
     static func main() async {
+        let normal = Harness()
+        check(normal.cleanup.prepareForTransferCompletion(normal.identity), "Arm normal shutdown before writing TCP end")
+        normal.at(0.25) { normal.reply(Gen1Commands.deviceStatusChanged, [4]) }
+        normal.at(0.5) { normal.reply(Gen1Commands.deviceStatusChanged, [0]) }
+        check(await normal.cleanup.waitForTransferCompletion(normal.identity) == .settled, "TCP end followed by 4 then 0 closes hotspot")
+        check(normal.commands.isEmpty, "Normal completion sends neither 0x38 nor status queries")
+        check(normal.clock < 2, "Normal shutdown settles immediately after idle")
+
+        let earlyReports = Harness()
+        check(earlyReports.cleanup.prepareForTransferCompletion(earlyReports.identity), "Arm before TCP completion callback")
+        earlyReports.reply(Gen1Commands.deviceStatusChanged, [4])
+        earlyReports.reply(Gen1Commands.deviceStatusChanged, [0])
+        check(await earlyReports.cleanup.waitForTransferCompletion(earlyReports.identity) == .settled, "Reports before close begins are retained")
+        earlyReports.cleanup.transferCompletionFailed(earlyReports.identity)
+        check(!earlyReports.cleanup.isPending(earlyReports.target), "Late write failure cannot recreate a settled barrier")
+        check(earlyReports.commands.isEmpty, "Early reports do not trigger a forced close")
+
+        let normalTimeout = Harness()
+        check(normalTimeout.cleanup.prepareForTransferCompletion(normalTimeout.identity), "Arm shutdown timeout test")
+        normalTimeout.at(0.5) { normalTimeout.reply(Gen1Commands.deviceStatusChanged, [0]) }
+        normalTimeout.onSend = { target, command in
+            normalTimeout.reply(command, [0], target: target)
+            return true
+        }
+        check(await normalTimeout.cleanup.waitForTransferCompletion(normalTimeout.identity) == .settled, "Incomplete normal sequence falls back to forced ACK")
+        check(normalTimeout.closeCommands.count == 1, "Normal timeout forces one close")
+        check(normalTimeout.closeCommands[0].time >= 30, "Idle alone cannot release barrier before normal shutdown deadline")
+
+        let wrongSequence = Harness()
+        wrongSequence.reply(Gen1Commands.deviceStatusChanged, [4])
+        check(wrongSequence.cleanup.prepareForTransferCompletion(wrongSequence.identity), "Prepare new batch after stale shutdown")
+        wrongSequence.at(0.25) {
+            wrongSequence.reply(Gen1Commands.deviceStatusChanged, [0])
+            wrongSequence.reply(Gen1Commands.deviceStatusChanged, [4], target: UUID())
+            wrongSequence.reply(Gen1Commands.deviceStatusChanged, [0])
+            wrongSequence.reply(Gen1Commands.deviceStatusChanged, [4, 0])
+            wrongSequence.reply(Gen1Commands.deviceStatusChanged, [0])
+            wrongSequence.reply(Gen1Commands.deviceStatusQuery, [4])
+            wrongSequence.reply(Gen1Commands.deviceStatusChanged, [0])
+            wrongSequence.reply(Gen1Commands.deviceStatusChanged, [4])
+            wrongSequence.reply(Gen1Commands.deviceStatusChanged, [2])
+            wrongSequence.reply(Gen1Commands.deviceStatusChanged, [0])
+        }
+        check(await wrongSequence.cleanup.waitForTransferCompletion(wrongSequence.identity) == .pending, "Stale, foreign, malformed or interrupted status sequences cannot confirm shutdown")
+        check(wrongSequence.closeCommands.count == 2, "Abnormal fallback retains bounded missing ACK retry")
+        wrongSequence.reply(Gen1Commands.deviceStatusChanged, [4])
+        wrongSequence.reply(Gen1Commands.deviceStatusChanged, [0])
+        check(!wrongSequence.cleanup.isPending(wrongSequence.target), "Late valid normal shutdown sequence releases barrier")
+
+        let interrupted = Harness()
+        check(interrupted.cleanup.prepareForTransferCompletion(interrupted.identity), "Arm disconnect sequence test")
+        interrupted.reply(Gen1Commands.deviceStatusChanged, [4])
+        interrupted.cleanup.connectionInterrupted()
+        interrupted.reply(Gen1Commands.deviceStatusChanged, [0])
+        check(interrupted.cleanup.isPending(interrupted.target), "Do not join reports across BLE connections")
+
+        let normalUnauthorized = Harness()
+        check(normalUnauthorized.cleanup.prepareForTransferCompletion(normalUnauthorized.identity), "Arm account change test")
+        normalUnauthorized.authorized = false
+        normalUnauthorized.reply(Gen1Commands.deviceStatusChanged, [4])
+        normalUnauthorized.reply(Gen1Commands.deviceStatusChanged, [0])
+        check(await normalUnauthorized.cleanup.waitForTransferCompletion(normalUnauthorized.identity) == .pending, "Account switch rejects normal completion reports")
+        check(normalUnauthorized.commands.isEmpty, "No forced close after authorization is lost")
+
+        let writeFailed = Harness()
+        check(writeFailed.cleanup.prepareForTransferCompletion(writeFailed.identity), "Arm write failure test")
+        writeFailed.cleanup.transferCompletionFailed(writeFailed.identity)
+        writeFailed.onSend = { target, command in
+            writeFailed.reply(command, [0], target: target)
+            return true
+        }
+        check(await writeFailed.cleanup.waitForTransferCompletion(writeFailed.identity) == .settled, "TCP end write failure uses abnormal close")
+        check(writeFailed.closeCommands.count == 1 && writeFailed.closeCommands[0].time < 1, "Write failure does not wait for normal shutdown deadline")
+
         let success = Harness()
         success.at(0.5) { success.reply(Gen1Commands.closeHotspot, [0]) }
         check(await success.run() == .settled, "00 immediately completes cleanup")

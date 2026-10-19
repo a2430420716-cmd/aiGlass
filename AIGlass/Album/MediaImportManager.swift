@@ -981,8 +981,10 @@ final class MediaImportManager: ObservableObject {
             // Match Android: batch completion once, not a deletion ACK after each file.
             let finishingTransport = client ?? transport
             do {
+                try hotspot.prepareForTransferCompletion()
                 try await finishingTransport.finishTransfer()
             } catch {
+                hotspot.transferCompletionFailed()
                 try checkTarget()
                 let recoverable = await finishingTransport.canRetryAfterPathChange(error)
                 guard AlbumTransferPolicy.canReportSavedFilesAfterFinishError(
@@ -1007,7 +1009,7 @@ final class MediaImportManager: ObservableObject {
         state = .finishing
         await client?.close()
         isClosingGen1Hotspot = true
-        diagnostics.log("一代：TCP 已关闭，先等待设备热点收尾", detail: "cleanupOrder=closeTCP,closeDeviceHotspot,removePhoneConfiguration")
+        diagnostics.log("一代：TCP 已关闭，先等待设备热点收尾", detail: "cleanupOrder=closeTCP,waitNormalShutdownOrAbnormal0x38,removePhoneConfiguration")
         let cleanupPending = await hotspot.close() == .pending
         if let ssid, !cleanupPending {
             diagnostics.log("一代：设备热点收尾等待结束，清理手机配置", detail: "deviceCleanupPending=\(cleanupPending) removeReason=importSessionEnded")

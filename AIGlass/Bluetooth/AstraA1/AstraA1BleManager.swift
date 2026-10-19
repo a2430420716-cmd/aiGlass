@@ -4756,6 +4756,19 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         throw Gen1APImportError.hotspotCleanupPending
     }
 
+    func prepareGen1TransferCompletion(_ identity: Gen1APImportIdentity) -> Bool {
+        guard isGen1MediaImportCurrent(identity) else { return false }
+        return gen1HotspotCleanup.prepareForTransferCompletion(identity)
+    }
+
+    func gen1TransferCompletionFailed(_ identity: Gen1APImportIdentity) {
+        gen1HotspotCleanup.transferCompletionFailed(identity)
+    }
+
+    func waitForGen1TransferCompletion(_ identity: Gen1APImportIdentity) async -> Gen1HotspotCleanup.Outcome {
+        await gen1HotspotCleanup.waitForTransferCompletion(identity)
+    }
+
     func closeGen1Hotspot(_ identity: Gen1APImportIdentity) async -> Gen1HotspotCleanup.Outcome {
         await gen1HotspotCleanup.close(identity)
     }

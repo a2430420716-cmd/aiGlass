@@ -9,6 +9,7 @@ final class Gen1HotspotSession {
     private var subscription: AnyCancellable?
     private var response: Result<Gen1HotspotCredentials, Error>?
     private var needsCleanup = false
+    private var awaitingTransferShutdown = false
 
     init(ble: AstraA1BleManager, identity: Gen1APImportIdentity) {
         self.ble = ble
@@ -120,9 +121,25 @@ final class Gen1HotspotSession {
         }
     }
 
+    /// Must run before the TCP write, so fast 4 -> 0 notifications are retained.
+    func prepareForTransferCompletion() throws {
+        guard needsCleanup, ble.prepareGen1TransferCompletion(identity) else {
+            throw Gen1APImportError.targetChanged
+        }
+        awaitingTransferShutdown = true
+    }
+
+    func transferCompletionFailed() {
+        guard awaitingTransferShutdown else { return }
+        ble.gen1TransferCompletionFailed(identity)
+    }
+
     /// The manager owns cleanup beyond cancellation, timeout and session teardown.
     func close() async -> Gen1HotspotCleanup.Outcome {
         guard needsCleanup else { return .settled }
+        if awaitingTransferShutdown {
+            return await ble.waitForGen1TransferCompletion(identity)
+        }
         return await ble.closeGen1Hotspot(identity)
     }
 }
