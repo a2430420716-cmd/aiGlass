@@ -3,8 +3,8 @@ import UIKit
 
 /// PixSmart 视频防抖 Swift 封装。处理失败返回 false，由导入流程保留原视频。
 enum PixSmartVideoEIS {
-    /// Temporary Build 148 comparison: bypass Gen1 EIS, retain rotation/audio.
-    static let gen1StabilizationEnabled = false
+    /// Enable Gen1 stabilization and its import-time license preflight.
+    static let gen1StabilizationEnabled = true
     /// Explicit entry point prevents a Gen1 import from inheriting Gen2 parameters.
     static func stabilizeGen1Video(from inputURL: URL, to outputURL: URL) async -> Bool {
         guard gen1StabilizationEnabled else {
