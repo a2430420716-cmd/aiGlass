@@ -19,6 +19,8 @@ struct ProfileView: View {
         CompatibleNavigationStack {
             content
                 .mainTabRootContent()
+                // Paint the tab bar reservation as well as the page content.
+                .background(AppTheme.background.ignoresSafeArea())
         }
         .environment(\.tabBarSuppressionCount, $tabBarSuppressionCount)
         .onChangeCompat(of: tabBarSuppressionCount) { _ in

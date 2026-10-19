@@ -1,10 +1,9 @@
 import SwiftUI
-import UIKit
 
 struct LanguageSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var languageManager = AppLanguageManager.shared
-    @Environment(\.openURL) private var openURL
+    @State private var selectedLanguage = AppSettings.language
 
     var body: some View {
         VStack(spacing: 0) {
@@ -12,23 +11,18 @@ struct LanguageSettingsView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 12) {
-                    SettingsSelectionRow(
-                        title: AppSettings.language.title,
-                        isSelected: true
-                    )
-                    Text(L10n.t("请在系统设置中修改 App 语言，让界面和权限提示保持一致。如果未显示语言选项，请先在系统的语言与地区设置中添加另一种首选语言。", "Change the app language in Settings so the interface and permission dialogs use the same language. If no language option appears, add another preferred language in Settings > General > Language & Region."))
-                        .font(.system(size: 14))
-                        .foregroundStyle(AppTheme.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button {
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
-                            openURL(url)
+                    ForEach(AppLanguageOption.allCases) { option in
+                        Button {
+                            selectedLanguage = option
+                            languageManager.apply(option)
+                        } label: {
+                            SettingsSelectionRow(
+                                title: option.title,
+                                isSelected: selectedLanguage == option
+                            )
                         }
-                    } label: {
-                        Text(L10n.t("前往系统设置", "Open Settings"))
-                            .frame(maxWidth: .infinity, minHeight: 44)
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.borderedProminent)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
