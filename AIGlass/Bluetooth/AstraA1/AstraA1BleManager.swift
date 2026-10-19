@@ -3350,6 +3350,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             mediaActionAlertMessage = L10n.t("设备未连接", "Not connected")
             return false
         }
+        if deviceGeneration == .gen1G5K61, let targetID = connectedPeripheral?.identifier,
+           gen1HotspotCleanup.isPending(targetID) {
+            mediaActionAlertMessage = L10n.t("眼镜热点关闭尚未确认，暂不能拍照或录像，请稍后重试。若持续无法恢复，请重启眼镜。", "Hotspot shutdown is not yet confirmed. Wait before taking photos or videos. Restart the glasses if this persists.")
+            DebugLogStore.logBLEEvent("Home media action blocked during hotspot cleanup", detail: "target=\(targetID) commandNotSent=true")
+            return false
+        }
         if deviceRuntimeStatus == .unknown {
             // Android 将 UNKNOWN 与 STANDBY 都视为空闲。这里保留补查，但不再阻断动作。
             forceQueryDeviceStatus(reason: "media-action-unknown")

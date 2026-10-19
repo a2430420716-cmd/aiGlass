@@ -7,6 +7,7 @@ final class Gen1HotspotCleanup {
     nonisolated struct Timing: Sendable {
         var timeout: TimeInterval = 75
         var pollInterval: TimeInterval = 0.25
+        var acknowledgementTimeout: TimeInterval = 10
         var retryInterval: TimeInterval = 2
         var maxAttempts = 3
     }
@@ -17,6 +18,8 @@ final class Gen1HotspotCleanup {
         var queuedAt: TimeInterval?
         var attempts = 0
         var processFailureRetries = 0
+        var missingAcknowledgementRetries = 0
+        var awaitingReply = false
         var retryAt: TimeInterval?
         var failed = false
     }
@@ -58,8 +61,8 @@ final class Gen1HotspotCleanup {
         return await worker(for: identity.targetID).value
     }
 
-    /// Explicit recovery may retry a device-rejected close; missing ACKs are
-    /// observed without blindly resending an already accepted command.
+    /// Explicit recovery may retry a device-rejected close. A missing ACK gets
+    /// only one retry over the lifetime of this pending shutdown.
     func resume(_ targetID: UUID) {
         guard var state = pending[targetID], workers[targetID] == nil else { return }
         if state.failed {
@@ -81,6 +84,7 @@ final class Gen1HotspotCleanup {
               payload.count == 1,
               var state = pending[targetID], state.queuedAt != nil,
               isAuthorized(state.identity), canSend(targetID) else { return }
+        state.awaitingReply = false
         let code = payload[0]
         log("一代：收到热点关闭回包", "target=\(targetID) code=\(String(format: "0x%02X", code)) attempts=\(state.attempts)")
         if code == 0 {
@@ -89,6 +93,7 @@ final class Gen1HotspotCleanup {
             return
         }
         // Duplicate replies while waiting for the retry must not consume its budget.
+        pending[targetID] = state
         guard state.retryAt == nil, !state.failed else { return }
         if code == 0x02, state.processFailureRetries < 1, state.attempts < timing.maxAttempts {
             state.processFailureRetries += 1
@@ -119,11 +124,24 @@ final class Gen1HotspotCleanup {
         while now() < deadline {
             guard var state = pending[targetID] else { return .settled }
             guard isAuthorized(state.identity), !state.failed else { return .pending }
+            if state.awaitingReply, let sentAt = state.queuedAt,
+               now() - sentAt >= timing.acknowledgementTimeout {
+                guard state.missingAcknowledgementRetries < 1, state.attempts < timing.maxAttempts else {
+                    log("一代：热点关闭补发后仍未收到确认，保留阻断", "target=\(targetID) attempts=\(state.attempts) expected=0x38_payload_00 lateAcknowledgementAccepted=true")
+                    return .pending
+                }
+                state.missingAcknowledgementRetries += 1
+                state.awaitingReply = false
+                state.retryAt = now()
+                pending[targetID] = state
+                log("一代：热点关闭回包缺失，补发一次", "target=\(targetID) acknowledgementTimeout=\(timing.acknowledgementTimeout)s retryBudget=1 runtimeStatusNotUsed=true")
+            }
             if canSend(targetID), state.queuedAt == nil || state.retryAt.map({ now() >= $0 }) == true {
                 let previous = state
                 state.queuedAt = now()
                 state.retryAt = nil
                 state.attempts += 1
+                state.awaitingReply = true
                 // Install before send so synchronous replies cannot be overwritten.
                 pending[targetID] = state
                 if !send(targetID, Gen1Commands.closeHotspot) {

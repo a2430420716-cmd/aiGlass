@@ -1056,7 +1056,12 @@ final class MediaImportManager: ObservableObject {
             diagnostics.log("一代：文件导入完成，附带设备收尾提示", detail: "imported=\(importedNames.count) transferCompleteUnconfirmed=true hotspotCleanupPending=\(cleanupPending) nextImportBlocked=\(cleanupPending)")
             state = .completed(imported: importedNames.count)
         } else if cleanupPending {
-            state = .failed(L10n.t("已导入 \(importedNames.count) 项。\(Gen1APImportError.hotspotCleanupPending.localizedDescription)", "Imported \(importedNames.count) item(s). \(Gen1APImportError.hotspotCleanupPending.localizedDescription)"))
+            completionNotice = L10n.t(
+                "已导入 \(importedNames.count) 项，文件已保存在 App 相册，无需重复导入。眼镜热点关闭尚未确认，暂不能再次导入、升级或拍摄，请稍后重试。",
+                "Imported \(importedNames.count) item(s), saved in the app album. No need to import them again. Hotspot shutdown is not yet confirmed. Wait before importing, upgrading, or capturing again."
+            )
+            diagnostics.log("一代：文件已保存，热点关闭未确认", detail: "imported=\(importedNames.count) failedPhotos=\(failedPhotos) failedVideos=\(failedVideos) hotspotCleanupPending=true importFailure=false")
+            state = .completed(imported: importedNames.count, failedPhotos: failedPhotos, failedVideos: failedVideos)
         } else {
             state = .completed(imported: importedNames.count, failedPhotos: failedPhotos, failedVideos: failedVideos)
         }

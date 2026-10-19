@@ -110,6 +110,31 @@ enum Gen1HotspotCleanupTests {
         malformed.reply(Gen1Commands.closeHotspot, [0])
         check(!malformed.cleanup.isPending(malformed.target), "Late valid ACK releases timeout barrier")
 
+        let missingThenSuccess = Harness()
+        missingThenSuccess.onSend = { target, command in
+            if missingThenSuccess.closeCommands.count == 2 {
+                missingThenSuccess.reply(command, [0], target: target)
+            }
+            return true
+        }
+        check(await missingThenSuccess.run() == .settled, "Missing ACK retries once and accepts success")
+        check(missingThenSuccess.closeCommands.count == 2, "Exactly one missing ACK retry")
+        check(missingThenSuccess.closeCommands[1].time >= 10, "Do not resend before ACK timeout")
+
+        let noAcknowledgement = Harness()
+        check(await noAcknowledgement.run() == .pending, "Missing ACK never fabricates close success")
+        check(noAcknowledgement.closeCommands.count == 2, "Missing ACK resend remains bounded")
+        check(noAcknowledgement.clock <= 21, "No 75-second wait after retry is exhausted")
+        check(await noAcknowledgement.run() == .pending, "Reentering cleanup preserves missing ACK budget")
+        check(noAcknowledgement.closeCommands.count == 2, "Reentry cannot create an endless resend loop")
+        noAcknowledgement.reply(Gen1Commands.closeHotspot, [0])
+        check(!noAcknowledgement.cleanup.isPending(noAcknowledgement.target), "Late ACK after retry releases barrier")
+
+        let disconnected = Harness()
+        disconnected.at(1) { disconnected.connected = false }
+        check(await disconnected.run() == .pending, "Disconnected cleanup remains pending")
+        check(disconnected.closeCommands.count == 1, "No retry sent to disconnected device")
+
         let retry = Harness()
         retry.onSend = { target, command in
             if retry.closeCommands.count == 1 { retry.reply(command, [2], target: target) }

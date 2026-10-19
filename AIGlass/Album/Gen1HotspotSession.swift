@@ -15,7 +15,7 @@ final class Gen1HotspotSession {
         self.identity = identity
     }
 
-    func open(timeout: TimeInterval = 20) async throws -> Gen1HotspotCredentials {
+    func open(timeout: TimeInterval = 30) async throws -> Gen1HotspotCredentials {
         do {
             return try await openOnce(timeout: timeout)
         } catch Gen1APImportError.hotspotTimeout {
