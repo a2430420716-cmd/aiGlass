@@ -170,6 +170,7 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
+				"zh-Hans",
 				Base,
 			);
 			mainGroup = 587506662FF121D100E16599;
@@ -363,7 +364,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 150;
+				CURRENT_PROJECT_VERSION = 151;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = G8X6YGC2WL;
 				ENABLE_PREVIEWS = YES;
@@ -396,13 +397,13 @@
 				);
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "MOCO AI";
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "需要使用蓝牙连接 MOCO AI 眼镜设备";
-				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "需要使用蓝牙连接 MOCO AI 眼镜设备";
-				INFOPLIST_KEY_NSCameraUsageDescription = "需要访问相机以拍摄头像、反馈图片和视频";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "需要连接眼镜 Wi-Fi 热点以导入照片和视频";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "需要访问麦克风以进行同声传译录音和录制反馈视频";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "开启自动保存后，需要将眼镜导入的照片和视频添加到手机相册";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "需要访问相册以选择头像和反馈图片、视频";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Bluetooth connects to your MOCO AI glasses to control photos and videos and sync device information.";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "Bluetooth connects to your MOCO AI glasses to control photos and videos and sync device information.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Use the camera to take a profile photo and capture photos or videos for feedback.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to your glasses over the local Wi-Fi network to import photos and videos and transfer firmware updates.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Use the microphone to record speech for translation and audio for feedback videos.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "When Auto Save is enabled, save photos and videos imported from your glasses to your photo library.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Choose a profile photo and select photos or videos from your library to include in feedback.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -455,7 +456,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 150;
+				CURRENT_PROJECT_VERSION = 151;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = G8X6YGC2WL;
 				ENABLE_PREVIEWS = YES;
@@ -488,13 +489,13 @@
 				);
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "MOCO AI";
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "需要使用蓝牙连接 MOCO AI 眼镜设备";
-				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "需要使用蓝牙连接 MOCO AI 眼镜设备";
-				INFOPLIST_KEY_NSCameraUsageDescription = "需要访问相机以拍摄头像、反馈图片和视频";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "需要连接眼镜 Wi-Fi 热点以导入照片和视频";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "需要访问麦克风以进行同声传译录音和录制反馈视频";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "开启自动保存后，需要将眼镜导入的照片和视频添加到手机相册";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "需要访问相册以选择头像和反馈图片、视频";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Bluetooth connects to your MOCO AI glasses to control photos and videos and sync device information.";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "Bluetooth connects to your MOCO AI glasses to control photos and videos and sync device information.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Use the camera to take a profile photo and capture photos or videos for feedback.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect to your glasses over the local Wi-Fi network to import photos and videos and transfer firmware updates.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Use the microphone to record speech for translation and audio for feedback videos.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "When Auto Save is enabled, save photos and videos imported from your glasses to your photo library.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Choose a profile photo and select photos or videos from your library to include in feedback.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

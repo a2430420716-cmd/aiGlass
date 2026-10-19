@@ -35,6 +35,11 @@ final class AuthSession: ObservableObject {
         token = restored ? savedToken : nil
 
         if restored {
+            if defaults.string(forKey: BackendRouting.accountOriginKey) == nil {
+                // Preserve the business API origin used by earlier app releases.
+                defaults.set(BackendRouting.domesticOrigin, forKey: BackendRouting.accountOriginKey)
+                defaults.set(BackendRouting.domesticOrigin, forKey: BackendRouting.selectedOriginKey)
+            }
             print("[Auth] restored session phone=\(savedPhone ?? "") token=\(token != nil)")
             Task { await refreshUserInfo() }
         } else {
@@ -54,6 +59,7 @@ final class AuthSession: ObservableObject {
         // 作废登录前可能还在飞的旧 userinfo，避免旧「未登录」把新会话踢掉。
         invalidateInFlightUserInfoRefresh(reason: "applyLogin")
 
+        BackendRouting.pinAccountOrigin()
         let normalizedAccount = phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines)
         self.phoneNumber = normalizedAccount.isEmpty ? nil : normalizedAccount
         self.token = result?.resolvedToken
@@ -86,6 +92,7 @@ final class AuthSession: ObservableObject {
     /// `phoneNumber` 可为空，后续 `refreshUserInfo` 会用 userinfo.phone 回填。
     func applyLogin(phoneNumber: String, token: String?) {
         invalidateInFlightUserInfoRefresh(reason: "applyLogin(token)")
+        BackendRouting.pinAccountOrigin()
 
         self.phoneNumber = phoneNumber.isEmpty ? nil : phoneNumber
         self.token = token
@@ -334,6 +341,7 @@ final class AuthSession: ObservableObject {
         defaults.set(false, forKey: loggedInKey)
         defaults.removeObject(forKey: phoneKey)
         defaults.removeObject(forKey: tokenKey)
+        defaults.removeObject(forKey: BackendRouting.accountOriginKey)
         defaults.synchronize()
         print("[Auth] logged out")
     }

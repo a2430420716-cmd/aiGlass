@@ -147,7 +147,7 @@ private struct DiscardedJSONValue: Decodable {
 }
 
 enum MediaURLResolver {
-    private static let assetBaseURLString = "https://glasses.kaimou.net/"
+    private static var assetBaseURLString: String { BackendRouting.rootURL.absoluteString }
 
     static func url(for path: String?) -> URL? {
         let trimmed = path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

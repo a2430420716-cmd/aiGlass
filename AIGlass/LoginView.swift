@@ -16,7 +16,7 @@ struct LoginView: View {
     @EnvironmentObject private var authSession: AuthSession
     @FocusState private var focusedField: Field?
 
-    @State private var loginMode: LoginMode = .sms
+    @State private var loginMode: LoginMode = .password
     @State private var phoneNumber = ""
     @State private var verificationCode = ""
     @State private var password = ""

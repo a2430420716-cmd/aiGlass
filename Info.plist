@@ -2,6 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>zh-Hans</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -44,10 +49,12 @@
 		<string>_http._tcp</string>
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>用于读取手机当前连接的 Wi-Fi 名称，自动填写眼镜联网配置，减少手动输入。</string>
+	<string>Use location access to read the name of your current Wi-Fi network and fill it in when configuring your glasses.</string>
 	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
 	<dict>
 		<key>WiFiSSIDAutofill</key>
+		<string>Allow temporary precise location access to read your current Wi-Fi network name and fill it in when configuring your glasses.</string>
+		<key>WiFiSSIDAutofillChinese</key>
 		<string>允许临时使用精确位置权限，以读取当前 Wi-Fi 名称并自动填写眼镜联网配置。</string>
 	</dict>
 	<key>UIAppFonts</key>

@@ -82,6 +82,7 @@ target = project.targets.find { |item| item.name == 'AIGlass' }
 raise 'AIGlass target missing' unless target
 target.build_configurations.each do |config|
   config.build_settings.keys.grep(/\A(?:DEVELOPMENT_TEAM|CODE_SIGN_IDENTITY|PROVISIONING_PROFILE)/).each { |key| config.build_settings.delete(key) }
+  config.build_settings['TARGETED_DEVICE_FAMILY'] = '1'
   config.build_settings['CODE_SIGN_STYLE'] = 'Manual'
   config.build_settings['DEVELOPMENT_TEAM'] = settings.fetch('team')
   config.build_settings['CODE_SIGN_IDENTITY'] = settings.fetch('identity')
@@ -94,6 +95,29 @@ xcodebuild -workspace AIGlass.xcworkspace -scheme AIGlass -configuration Release
   -destination 'generic/platform=iOS' -archivePath "$PWD/build/AIGlass.xcarchive" \
   SWIFT_OPTIMIZATION_LEVEL=-Onone \
   archive 2>&1 | tee build/logs/archive.log
+# Verify the archived app, not just the source settings, before exporting.
+python3 - <<'PY'
+import json, pathlib, plistlib, subprocess
+app = pathlib.Path('build/AIGlass.xcarchive/Products/Applications/AIGlass.app')
+info = plistlib.loads((app / 'Info.plist').read_bytes())
+assert info.get('UIDeviceFamily') == [1], '归档 App 必须仅支持 iPhone'
+keys = {
+    'NSBluetoothAlwaysUsageDescription', 'NSBluetoothPeripheralUsageDescription',
+    'NSCameraUsageDescription', 'NSMicrophoneUsageDescription',
+    'NSPhotoLibraryUsageDescription', 'NSPhotoLibraryAddUsageDescription',
+    'NSLocalNetworkUsageDescription', 'NSLocationWhenInUseUsageDescription'
+}
+for locale in ('en', 'zh-Hans'):
+    path = app / (locale + '.lproj') / 'InfoPlist.strings'
+    assert path.is_file(), '缺少权限本地化资源: ' + locale
+    strings = json.loads(subprocess.check_output(['plutil', '-convert', 'json', '-o', '-', str(path)]))
+    assert keys.issubset(strings), '权限本地化不完整: ' + locale
+    assert all(isinstance(strings[key], str) and strings[key].strip() for key in keys)
+precise = info.get('NSLocationTemporaryUsageDescriptionDictionary', {})
+assert precise.get('WiFiSSIDAutofill') and precise.get('WiFiSSIDAutofillChinese'), '缺少临时精确位置权限说明'
+print('Archived app verified: iPhone only; English and Simplified Chinese permission descriptions present.')
+PY
+
 xcodebuild -exportArchive -archivePath "$PWD/build/AIGlass.xcarchive" \
   -exportOptionsPlist "$PWD/build/ExportOptions.plist" -exportPath "$PWD/build/ipa" \
   2>&1 | tee build/logs/export.log

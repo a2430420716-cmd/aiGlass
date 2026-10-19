@@ -1,0 +1,9 @@
+/* System permission descriptions follow the iOS app language. */
+"NSBluetoothAlwaysUsageDescription" = "Bluetooth connects to your MOCO AI glasses to control photos and videos and sync device information.";
+"NSBluetoothPeripheralUsageDescription" = "Bluetooth connects to your MOCO AI glasses to control photos and videos and sync device information.";
+"NSCameraUsageDescription" = "Use the camera to take a profile photo and capture photos or videos for feedback.";
+"NSLocalNetworkUsageDescription" = "Connect to your glasses over the local Wi-Fi network to import photos and videos and transfer firmware updates.";
+"NSMicrophoneUsageDescription" = "Use the microphone to record speech for translation and audio for feedback videos.";
+"NSPhotoLibraryAddUsageDescription" = "When Auto Save is enabled, save photos and videos imported from your glasses to your photo library.";
+"NSPhotoLibraryUsageDescription" = "Choose a profile photo and select photos or videos from your library to include in feedback.";
+"NSLocationWhenInUseUsageDescription" = "Use location access to read the name of your current Wi-Fi network and fill it in when configuring your glasses.";

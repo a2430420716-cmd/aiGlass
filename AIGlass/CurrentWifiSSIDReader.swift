@@ -64,7 +64,7 @@ final class CurrentWifiSSIDReader: NSObject, ObservableObject, CLLocationManager
                 requestedAccuracy = true
                 accuracyRequestInFlight = true
                 log("request temporary precise authorization")
-                locationManager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: "WiFiSSIDAutofill") { [weak self] error in
+                locationManager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: L10n.usesEnglish ? "WiFiSSIDAutofill" : "WiFiSSIDAutofillChinese") { [weak self] error in
                     let errorCode = (error as NSError?)?.code
                     Task { @MainActor [weak self] in
                         guard let self, self.requestID == requestID else { return }

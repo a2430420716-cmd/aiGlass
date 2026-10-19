@@ -1,0 +1,9 @@
+/* System permission descriptions follow the iOS app language. */
+"NSBluetoothAlwaysUsageDescription" = "用于连接 MOCO AI 眼镜，控制拍照、录像并同步设备信息。";
+"NSBluetoothPeripheralUsageDescription" = "用于连接 MOCO AI 眼镜，控制拍照、录像并同步设备信息。";
+"NSCameraUsageDescription" = "用于拍摄头像，以及提交反馈时拍摄图片和视频。";
+"NSLocalNetworkUsageDescription" = "用于通过眼镜 Wi-Fi 热点导入照片和视频，并与眼镜传输固件升级数据。";
+"NSMicrophoneUsageDescription" = "用于翻译功能录音，以及提交反馈时录制视频声音。";
+"NSPhotoLibraryAddUsageDescription" = "开启自动保存后，用于将从眼镜导入的照片和视频保存到手机相册。";
+"NSPhotoLibraryUsageDescription" = "用于从手机相册选择头像，以及提交反馈所需的图片和视频。";
+"NSLocationWhenInUseUsageDescription" = "用于读取手机当前连接的 Wi-Fi 名称，自动填写眼镜联网配置，减少手动输入。";

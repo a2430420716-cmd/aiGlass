@@ -55,25 +55,16 @@ extension Notification.Name {
 }
 
 enum AppSettings {
-    /// 与 `L10n.usesEnglish` 里直接读取的 key 保持一致。
-    private static let languageKey = "app.language"
     private static let dataStorageKey = "app.dataStorage"
     private static let imageWatermarkEnabledKey = "app.imageWatermarkEnabled"
     private static let imageWatermarkStyleKey = "app.imageWatermarkStyle"
     private static let videoWatermarkEnabledKey = "app.videoWatermarkEnabled"
 
+    /// Use the same bundle localization as iOS permission dialogs. Legacy
+    /// app.language preferences no longer override the system's app language.
     static var language: AppLanguageOption {
-        get {
-            guard let raw = UserDefaults.standard.string(forKey: languageKey),
-                  let option = AppLanguageOption(rawValue: raw) else {
-                return .simplifiedChinese
-            }
-            return option
-        }
-        set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: languageKey)
-            NotificationCenter.default.post(name: .appLanguageChanged, object: nil)
-        }
+        let preferred = Bundle.main.preferredLocalizations.first ?? "en"
+        return preferred.hasPrefix("zh") ? .simplifiedChinese : .englishUS
     }
 
     static var dataStorageRegion: DataStorageRegion {

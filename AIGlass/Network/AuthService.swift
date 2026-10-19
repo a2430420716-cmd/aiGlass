@@ -103,27 +103,13 @@ struct WeChatLoginResult: Decodable {
 }
 
 enum AuthService {
-    private static let appleLoginURL = URL(string: "https://glasses.mocoviso.com/api/login/login_by_apple")!
+    private static var appleLoginURL: URL { BackendRouting.apiURL.appendingPathComponent("login/login_by_apple") }
 
-    /// 根据服务端识别的客户端 IP 判断是否中国：中国手机号登录，海外邮箱登录。
-    /// 解析失败或请求失败时由调用方 fallback 为手机号模式。
+    /// Dispatch before presenting login; account type follows the selected
+    /// backend, not a second IP lookup which could disagree with the pinned route.
     static func fetchIsChinaIP() async throws -> Bool {
-        let data = try await APIClient.postRaw(path: "login/is_china_ip", body: [:])
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw APIError.decoding
-        }
-        let code = (json["code"] as? Int)
-            ?? (json["code"] as? NSNumber)?.intValue
-        guard code == 0 else {
-            throw APIError.server(
-                message: (json["msg"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? L10n.t("请求失败", "Request failed"),
-                code: code ?? -1
-            )
-        }
-        guard let parsed = parseChinaIPResult(json["result"]) else {
-            throw APIError.decoding
-        }
-        return parsed
+        try await ServerDispatch.resolveBeforeLogin()
+        return BackendRouting.isChina
     }
 
     /// 登录/忘记密码获取验证码。type: 1登录 2修改密码 3忘记密码

@@ -52,7 +52,7 @@ struct EmptyResult: Decodable {}
 
 enum APIClient {
     /// 注意末尾必须带 `/`，否则 `URL(relativeTo:)` 会把 `api` 当成文件名替换掉。
-    static let baseURL = URL(string: "https://glasses.kaimou.net/api/")!
+    static var baseURL: URL { BackendRouting.apiURL }
 
     static func post<T: Decodable>(
         path: String,

@@ -228,7 +228,7 @@ enum ArkChatService {
         if value.hasPrefix("http://") || value.hasPrefix("https://") {
             return percentEncodedMediaURL(value)
         }
-        let root = URL(string: "https://glasses.kaimou.net/")!
+        let root = BackendRouting.rootURL
         let relative = value.hasPrefix("/") ? String(value.dropFirst()) : value
         let absolute = URL(string: relative, relativeTo: root)?.absoluteURL.absoluteString ?? value
         return percentEncodedMediaURL(absolute)
