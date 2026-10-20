@@ -9,6 +9,18 @@ struct TranslationAudioSessionTests {
             precondition(condition(), message)
         }
 
+        var pcm = TranslationPCMStatistics()
+        check(pcm.rms == 0 && pcm.durationMs == 0, "Empty PCM has finite diagnostics")
+        pcm.append(Data([0, 0, 0, 0x80, 0xFF, 0x7F]))
+        check(pcm.samples == 3 && pcm.bytes == 6, "Count PCM16 samples")
+        check(pcm.peak == 32_768, "Negative full scale must not overflow Int16")
+        check(abs(pcm.rms - sqrt((Double(32_768) * 32_768 + Double(32_767) * 32_767) / 3)) < 0.001,
+              "Read signed little-endian audio when computing energy")
+        var silence = TranslationPCMStatistics()
+        silence.append(Data(repeating: 0, count: 32_000))
+        check(silence.durationMs == 1_000 && silence.peak == 0 && silence.rms == 0,
+              "One second of silence remains distinguishable from missing audio")
+
         var attempt = TranslationConnectionAttempt()
         check(!attempt.isCurrent(0), "No callback is current before connect")
         let first = attempt.begin()

@@ -5140,20 +5140,35 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func emitGen1TranslationStatus(_ status: UInt8) {
+        DebugLogStore.logBLEEvent("Gen1 translation route status", detail: "status=\(status) handlerPresent=\(translationVoiceNotifyHandler != nil) frames=\(gen1TranslationFrameCount) opusBytes=\(gen1TranslationOpusBytes)")
         translationVoiceNotifyHandler?("trslatests", AstraA1BleProtocol.buildPacket(command: "trslatests", payload: Data([status])))
     }
+
+    private var gen1TranslationFrameCount = 0
+    private var gen1TranslationOpusBytes = 0
 
     private func routeGen1Voice(_ route: Gen1VoiceRoute) {
         switch route {
         case .ai(let frame):
             switch frame.type {
-            case .start: aiVoiceNotifyHandler?("gen1voiceStart", Data())
+            case .start:
+                DebugLogStore.logBLEEvent("Gen1 audio routed to AI", detail: "translationHandlerPresent=\(translationVoiceNotifyHandler != nil)")
+                aiVoiceNotifyHandler?("gen1voiceStart", Data())
             case .data: aiVoiceNotifyHandler?("gen1opus00", frame.payload)
             case .end:
                 if frame.flags == 0x80 { aiVoiceNotifyHandler?("gen1voiceEnd", Data()) }
             }
-        case .translationStarted: emitGen1TranslationStatus(1)
-        case .translationData(_, let opus): translationVoiceNotifyHandler?("gen1trdat0", opus)
+        case .translationStarted:
+            gen1TranslationFrameCount = 0
+            gen1TranslationOpusBytes = 0
+            emitGen1TranslationStatus(1)
+        case .translationData(let sequence, let opus):
+            gen1TranslationFrameCount += 1
+            gen1TranslationOpusBytes += opus.count
+            if gen1TranslationFrameCount == 1 || gen1TranslationFrameCount.isMultiple(of: 100) {
+                DebugLogStore.logBLEEvent("Gen1 translation DATA routed", detail: "sequence=\(sequence) frames=\(gen1TranslationFrameCount) opusBytes=\(gen1TranslationOpusBytes) handlerPresent=\(translationVoiceNotifyHandler != nil)")
+            }
+            translationVoiceNotifyHandler?("gen1trdat0", opus)
         case .translationStopped: emitGen1TranslationStatus(0)
         case .translationStartFailed, .translationStreamError: emitGen1TranslationStatus(2)
         case .ignore: break

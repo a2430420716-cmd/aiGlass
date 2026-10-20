@@ -1,5 +1,33 @@
 import Foundation
 
+/// Inspect PCM16 little-endian without retaining microphone audio in diagnostics.
+struct TranslationPCMStatistics {
+    private(set) var bytes = 0
+    private(set) var samples = 0
+    private(set) var peak = 0
+    private var energy = 0.0
+
+    var durationMs: Int { samples * 1_000 / 16_000 }
+    var rms: Double { samples > 0 ? sqrt(energy / Double(samples)) : 0 }
+
+    mutating func append(_ pcm: Data) {
+        bytes += pcm.count
+        pcm.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            for index in 0..<(raw.count / 2) {
+                let bits = UInt16(raw[index * 2]) | (UInt16(raw[index * 2 + 1]) << 8)
+                let sample = Int(Int16(bitPattern: bits))
+                peak = max(peak, abs(sample))
+                energy += Double(sample) * Double(sample)
+                samples += 1
+            }
+        }
+    }
+
+    var detail: String {
+        "pcmBytes=\(bytes) durationMs=\(durationMs) peak=\(peak) rms=\(String(format: "%.1f", rms)) sampleRate=16000 channels=1"
+    }
+}
+
 /// Invalidates asynchronous URL lookups and socket callbacks when a session closes.
 struct TranslationConnectionAttempt {
     private(set) var current: UInt64 = 0

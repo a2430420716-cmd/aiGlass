@@ -46,6 +46,14 @@ final class RealtimeTranslationManager: NSObject {
     private var receiveLoopRunning = false
     private var connectionAttempt = TranslationConnectionAttempt()
     private var connectionTask: Task<Void, Never>?
+    private let diagnosticID = String(UUID().uuidString.prefix(8))
+    private var pcmQueuedChunks = 0
+    private var pcmQueuedBytes = 0
+    private var pcmSentChunks = 0
+    private var pcmSentBytes = 0
+    private var pcmDroppedBytes = 0
+    private var pcmSendErrors = 0
+    private var receivedEvents: [String: Int] = [:]
 
     /// 对齐安卓输入门控：只有本地录制开启且未收尾时才允许发 PCM。
     private var inputState = TranslationAudioInputState()
@@ -74,6 +82,14 @@ final class RealtimeTranslationManager: NSObject {
         currentTargetLanguage = targetLanguage
         currentVoice = voice
         let attempt = connectionAttempt.begin()
+        pcmQueuedChunks = 0
+        pcmQueuedBytes = 0
+        pcmSentChunks = 0
+        pcmSentBytes = 0
+        pcmDroppedBytes = 0
+        pcmSendErrors = 0
+        receivedEvents.removeAll()
+        logFlow("connect", "source=\(sourceLanguage) target=\(targetLanguage)")
         connectionTask = Task { [weak self] in
             await self?.fetchAndOpen(token: token, attempt: attempt)
         }
@@ -99,6 +115,9 @@ final class RealtimeTranslationManager: NSObject {
         guard !data.isEmpty else { return false }
         // 未过输入门控直接丢弃，对齐安卓 pcm dropped。
         guard canSendAudio() else {
+            let firstDrop = pcmDroppedBytes == 0
+            pcmDroppedBytes += data.count + pendingPCM.count
+            if firstDrop { logFlow("PCM gated", gateDetail) }
             pendingPCM.removeAll(keepingCapacity: true)
             return false
         }
@@ -114,17 +133,32 @@ final class RealtimeTranslationManager: NSObject {
         guard canSendAudio(), !chunk.isEmpty, let task = webSocketTask else {
             return false
         }
-        task.send(.data(chunk)) { error in
-            if let error {
-                print("[RealtimeTranslation] pcm send failed: \(error.localizedDescription)")
+        let attempt = connectionAttempt.current
+        pcmQueuedChunks += 1
+        pcmQueuedBytes += chunk.count
+        task.send(.data(chunk)) { [weak self] error in
+            Task { @MainActor in
+                guard let self, self.connectionAttempt.isCurrent(attempt), self.webSocketTask === task else { return }
+                if let error {
+                    self.pcmSendErrors += 1
+                    self.handleSocketFailure(error, task: task, operation: "PCM send")
+                } else {
+                    self.pcmSentChunks += 1
+                    self.pcmSentBytes += chunk.count
+                    if self.pcmSentChunks == 1 || self.pcmSentChunks.isMultiple(of: 50) {
+                        self.logFlow("PCM send completed", self.audioSummary)
+                    }
+                }
             }
         }
+        // Accepted into URLSession's queue. Actual send completion is logged separately.
         return true
     }
 
     @discardableResult
     func markLocalRecordingStarted() -> Bool {
         let allowed = inputState.start(opened: opened, ready: ready, now: Date())
+        logFlow("input start", "allowed=\(allowed) \(gateDetail)")
         print("[RealtimeTranslation] record input opened allowed=\(allowed)")
         return allowed
     }
@@ -133,6 +167,7 @@ final class RealtimeTranslationManager: NSObject {
         // Callers close the recording gate before finish(). Flush the final <100ms first.
         flushPendingPCM()
         inputState.stop(now: Date())
+        logFlow("input stop", "reason=\(reason) \(audioSummary)")
         print("[RealtimeTranslation] record input closed reason=\(reason)")
     }
 
@@ -209,6 +244,7 @@ final class RealtimeTranslationManager: NSObject {
     }
 
     func finish() {
+        logFlow("finish", "\(gateDetail) \(audioSummary)")
         flushPendingPCM()
         pendingPCM.removeAll(keepingCapacity: true)
         turnBusyRecoveryTask?.cancel()
@@ -222,6 +258,9 @@ final class RealtimeTranslationManager: NSObject {
     }
 
     func close() {
+        if webSocketTask != nil || connectionTask != nil {
+            logFlow("close", audioSummary)
+        }
         connectionAttempt.cancel()
         connectionTask?.cancel()
         connectionTask = nil
@@ -253,18 +292,22 @@ final class RealtimeTranslationManager: NSObject {
             print("[RealtimeTranslation] ws_url response: \(raw)")
             guard let wsURLString = Self.parseWsURL(from: data),
                   let wsURL = URL(string: wsURLString) else {
+                logFlow("URL invalid")
                 callback?.onError("WebSocket url is empty")
                 return
             }
             openWebSocket(wsURL)
         } catch {
             guard connectionAttempt.isCurrent(attempt), !Task.isCancelled else { return }
+            logFlow("URL request failed", error.localizedDescription)
             callback?.onError(error.localizedDescription)
         }
     }
 
     private func openWebSocket(_ url: URL) {
         currentWsURL = url.absoluteString
+        // Deliberately exclude URL query/user info, which may carry credentials.
+        logFlow("socket requested", "host=\(url.host ?? "") port=\(url.port ?? (url.scheme == "wss" ? 443 : 80))")
         print("[RealtimeTranslation] connect websocket: \(currentWsURL)")
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 15
@@ -303,19 +346,13 @@ final class RealtimeTranslationManager: NSObject {
                       self.webSocketTask === task else { return }
                 switch result {
                 case .failure(let error):
-                    self.receiveLoopRunning = false
-                    self.opened = false
-                    self.ready = false
-                    self.inputState.close()
-                    self.stopPlayback()
-                    print("[RealtimeTranslation] websocket failed: \(error.localizedDescription)")
-                    self.callback?.onError(error.localizedDescription)
-                    self.callback?.onClosed()
+                    self.handleSocketFailure(error, task: task, operation: "receive")
                 case .success(let message):
                     switch message {
                     case .string(let text):
                         self.handleTextMessage(text)
                     case .data(let data):
+                        self.logReceived("speech_binary", detail: "bytes=\(data.count)")
                         print("[RealtimeTranslation] speech binary received: bytes=\(data.count)")
                         self.callback?.onSpeech(data)
                         if self.autoPlayIncomingSpeech {
@@ -336,9 +373,11 @@ final class RealtimeTranslationManager: NSObject {
         print("[RealtimeTranslation] message received: \(text.prefix(500))")
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            logReceived("invalid_json", detail: "bytes=\(text.utf8.count)")
             return
         }
         let type = stringValue(json["type"])
+        logReceived(type, detail: "textChars=\(stringValue(json["text"]).count) audioBase64Chars=\(stringValue(json["audio"]).count)")
         switch type {
         case "connected":
             sendInit()
@@ -349,6 +388,7 @@ final class RealtimeTranslationManager: NSObject {
             // A repeated ready resumes the current recording; it must not mute its PCM.
             // A locally stopped turn stays closed even if a late ready arrives.
             inputState.serviceReady()
+            logFlow("service ready", gateDetail)
             callback?.onReady()
         case "task_started":
             callback?.onTaskStarted()
@@ -378,6 +418,7 @@ final class RealtimeTranslationManager: NSObject {
             markInputClosing(reason: "stopped")
         case "error", "service_disconnected":
             let message = stringValue(json["message"]).ifBlank(text)
+            logFlow("server error", "type=\(type) message=\(String(stringValue(json["message"]).prefix(300))) \(audioSummary)")
             // 「上一轮仍在处理」只是节流提示：暂停发包等下一个 ready，不要断开会话。
             if type == "error", Self.isTurnBusyMessage(message) {
                 inputState.beginBackendProcessing()
@@ -422,11 +463,13 @@ final class RealtimeTranslationManager: NSObject {
 
     private func markBackendTurnFinished(reason: String) {
         inputState.backendTurnFinished()
+        logFlow("turn finished", "reason=\(reason) \(gateDetail)")
         print("[RealtimeTranslation] backend turn finished reason=\(reason) canSend=\(canSendAudio())")
     }
 
     private func markInputClosing(reason: String) {
         inputState.stop(now: Date())
+        logFlow("input closing", "reason=\(reason) \(gateDetail)")
         print("[RealtimeTranslation] audio input closing reason=\(reason)")
     }
 
@@ -449,6 +492,7 @@ final class RealtimeTranslationManager: NSObject {
             try? await Task.sleep(nanoseconds: self?.turnBusyRecoveryNs ?? 2_500_000_000)
             guard let self, !Task.isCancelled, opened else { return }
             inputState.backendTurnFinished()
+            logFlow("busy recovery", gateDetail)
             print("[RealtimeTranslation] turn busy recovery: canSend=\(canSendAudio())")
         }
     }
@@ -467,12 +511,58 @@ final class RealtimeTranslationManager: NSObject {
 
     private func sendJSON(_ object: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: object),
-              let text = String(data: data, encoding: .utf8) else { return }
-        webSocketTask?.send(.string(text)) { error in
-            if let error {
-                print("[RealtimeTranslation] json send failed: \(error.localizedDescription)")
+              let text = String(data: data, encoding: .utf8), let task = webSocketTask else { return }
+        let type = stringValue(object["type"])
+        let attempt = connectionAttempt.current
+        logFlow("JSON queued", "type=\(type) source=\(currentSourceLanguage) target=\(currentTargetLanguage)")
+        task.send(.string(text)) { [weak self] error in
+            Task { @MainActor in
+                guard let self, self.connectionAttempt.isCurrent(attempt), self.webSocketTask === task else { return }
+                if let error {
+                    self.handleSocketFailure(error, task: task, operation: "JSON \(type) send")
+                } else {
+                    self.logFlow("JSON send completed", "type=\(type) \(type == "stop" ? self.audioSummary : "")")
+                }
             }
         }
+    }
+
+    private var gateDetail: String {
+        "opened=\(opened) ready=\(ready) recording=\(inputState.recording) canSend=\(canSendAudio())"
+    }
+
+    private var audioSummary: String {
+        "queuedChunks=\(pcmQueuedChunks) queuedBytes=\(pcmQueuedBytes) sentChunks=\(pcmSentChunks) sentBytes=\(pcmSentBytes) pendingBytes=\(pendingPCM.count) droppedBytes=\(pcmDroppedBytes) sendErrors=\(pcmSendErrors) events=\(receivedEvents)"
+    }
+
+    private func logFlow(_ title: String, _ detail: String = "") {
+        DebugLogStore.logTranslation(title, detail: "session=\(diagnosticID) attempt=\(connectionAttempt.current) \(detail)")
+    }
+
+    private func logReceived(_ type: String, detail: String) {
+        let count = (receivedEvents[type] ?? 0) + 1
+        receivedEvents[type] = count
+        // Keep exported logs bounded during long translations; never dump transcripts/audio.
+        if count == 1 || count.isMultiple(of: 50) || ["ready", "error", "service_disconnected", "stopped", "translation_completed"].contains(type) {
+            logFlow("WS received", "type=\(type) count=\(count) \(detail) \(gateDetail)")
+        }
+    }
+
+    private func handleSocketFailure(_ error: Error, task: URLSessionWebSocketTask, operation: String) {
+        // The receive and send callbacks can both report the same transport failure.
+        guard webSocketTask === task, receiveLoopRunning else { return }
+        logFlow("socket failed", "operation=\(operation) error=\(error.localizedDescription) closeCode=\(task.closeCode.rawValue) \(audioSummary)")
+        receiveLoopRunning = false
+        opened = false
+        ready = false
+        inputState.close()
+        pendingPCM.removeAll(keepingCapacity: true)
+        turnBusyRecoveryTask?.cancel()
+        turnBusyRecoveryTask = nil
+        stopPlayback()
+        task.cancel(with: .goingAway, reason: nil)
+        callback?.onError(error.localizedDescription)
+        callback?.onClosed()
     }
 
     // MARK: - PCM Playback

@@ -107,6 +107,15 @@ final class DebugLogStore: ObservableObject {
         }
     }
 
+    // MARK: - Translation
+
+    /// Translation WebSocket lifecycle and bounded counters, without audio or transcripts.
+    nonisolated static func logTranslation(_ title: String, detail: String = "") {
+        Task { @MainActor in
+            shared.append(channel: .http, direction: .event, title: "translation \(title)", detail: detail)
+        }
+    }
+
     // MARK: - BLE
 
     nonisolated static func logBLESent(_ data: Data) {

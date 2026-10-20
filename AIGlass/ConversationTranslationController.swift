@@ -49,6 +49,11 @@ final class ConversationTranslationController: ObservableObject {
     private var isActive = false
     private var permissionGeneration = 0
     private var loggedFirstGlassesPCM = false
+    private var glassesOpusFrames = 0
+    private var glassesDecodeErrors = 0
+    private var glassesDroppedFrames = 0
+    private var glassesAcceptedPCMBytes = 0
+    private var glassesPCMStatistics = TranslationPCMStatistics()
     private var glassesStopPending = false
     private var glassesStopTask: Task<Void, Never>?
     private var glassesDrainTask: Task<Void, Never>?
@@ -250,6 +255,11 @@ final class ConversationTranslationController: ObservableObject {
         glassesStopPending = false
         glassesOpusDecoder.reset()
         loggedFirstGlassesPCM = false
+        glassesOpusFrames = 0
+        glassesDecodeErrors = 0
+        glassesDroppedFrames = 0
+        glassesAcceptedPCMBytes = 0
+        glassesPCMStatistics = TranslationPCMStatistics()
         cancelProcessingStatusFallback()
         manager?.resetSpeechPlaybackForTurn()
         latestTranscript = ""
@@ -406,6 +416,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     private func stopAllRecording(resetSocket: Bool) {
+        if glassesState.hasSentCommand { logGlassesAudio("stop all") }
         cancelSocketReadyTimeout()
         glassesDrainTask?.cancel()
         glassesDrainTask = nil
@@ -449,6 +460,7 @@ final class ConversationTranslationController: ObservableObject {
                 return
             }
             print("[ConversationTranslation] translate status=\(status) phase=\(glassesState.phase)")
+            logGlassesAudio("status=\(status)")
             switch status {
             case 1:
                 _ = confirmGlassesStarted(reason: "device START", resetDecoder: true)
@@ -474,7 +486,7 @@ final class ConversationTranslationController: ObservableObject {
             guard !frames.isEmpty else { return }
             var pcm = Data()
             for frame in frames {
-                if let chunk = try? glassesOpusDecoder.decode(frame) { pcm.append(chunk) }
+                if let chunk = decodeGlassesOpus(frame) { pcm.append(chunk) }
             }
             guard !pcm.isEmpty else { return }
             if glassesState.isWaitingForDevice {
@@ -482,14 +494,14 @@ final class ConversationTranslationController: ObservableObject {
             }
             sendGlassesPCM(pcm)
         case "gen1trdat0":
-            guard isGlassesStreamingActive(), !packet.isEmpty else { return }
-            if glassesStopPending { scheduleGlassesDrainCheck() }
-            do {
-                let pcm = try glassesOpusDecoder.decode(packet)
-                if !pcm.isEmpty { sendGlassesPCM(pcm) }
-            } catch {
-                print("[ConversationTranslation] dropped invalid first-generation Opus frame: \(error.localizedDescription)")
+            guard !packet.isEmpty else { return }
+            guard isGlassesStreamingActive() else {
+                glassesDroppedFrames += 1
+                if glassesDroppedFrames == 1 { logGlassesAudio("DATA before input active") }
+                return
             }
+            if glassesStopPending { scheduleGlassesDrainCheck() }
+            if let pcm = decodeGlassesOpus(packet) { sendGlassesPCM(pcm) }
         default:
             break
         }
@@ -509,20 +521,53 @@ final class ConversationTranslationController: ObservableObject {
         glassesRecording = true
         if resetDecoder { glassesOpusDecoder.reset() }
         statusText = L10n.t("正在录音…", "Recording…")
+        logGlassesAudio("input confirmed reason=\(reason)")
         print("[ConversationTranslation] glasses input started reason=\(reason)")
         return true
     }
 
     private func sendGlassesPCM(_ pcm: Data) {
-        guard isGlassesStreamingActive(), manager?.canSendAudio() == true else { return }
+        guard isGlassesStreamingActive() else { return }
         let sent = manager?.sendPCM(pcm) ?? false
+        if sent {
+            glassesAcceptedPCMBytes += pcm.count
+        } else {
+            glassesDroppedFrames += 1
+            if glassesDroppedFrames == 1 { logGlassesAudio("PCM rejected by socket gate") }
+        }
         if sent, !loggedFirstGlassesPCM {
             loggedFirstGlassesPCM = true
+            logGlassesAudio("first PCM queued")
             print("[ConversationTranslation] first glasses PCM accepted bytes=\(pcm.count)")
         }
     }
 
+    private func decodeGlassesOpus(_ packet: Data) -> Data? {
+        glassesOpusFrames += 1
+        do {
+            let pcm = try glassesOpusDecoder.decode(packet)
+            guard !pcm.isEmpty else { throw AIVoiceM4aConverter.ConverterError.decodeFailed }
+            glassesPCMStatistics.append(pcm)
+            if glassesOpusFrames == 1 || glassesOpusFrames.isMultiple(of: 100) {
+                logGlassesAudio("Opus decoded opusBytes=\(packet.count)")
+            }
+            return pcm
+        } catch {
+            glassesDecodeErrors += 1
+            if glassesDecodeErrors == 1 || glassesDecodeErrors.isMultiple(of: 100) {
+                let detail = error as NSError
+                logGlassesAudio("Opus failed opusBytes=\(packet.count) domain=\(detail.domain) code=\(detail.code) error=\(error.localizedDescription)")
+            }
+            return nil
+        }
+    }
+
+    private func logGlassesAudio(_ reason: String) {
+        DebugLogStore.logBLEEvent("conversation audio", detail: "reason=\(reason) generation=\(ble?.deviceGeneration.rawValue ?? "unknown") phase=\(glassesState.phase) opusFrames=\(glassesOpusFrames) decodeErrors=\(glassesDecodeErrors) droppedFrames=\(glassesDroppedFrames) acceptedPCMBytes=\(glassesAcceptedPCMBytes) canSend=\(manager?.canSendAudio() ?? false) \(glassesPCMStatistics.detail)")
+    }
+
     private func failGlassesStart(reason: String) {
+        logGlassesAudio("failed: \(reason)")
         DebugLogStore.logBLEEvent("translation audio START failed", detail: "reason=\(reason) phase=\(glassesState.phase) generation=\(ble?.deviceGeneration.rawValue ?? "unknown")")
         print("[ConversationTranslation] glasses start failed reason=\(reason) phase=\(glassesState.phase)")
         // Match Android: only Gen1 sends a failure-stop. For Gen2, a missing
@@ -549,6 +594,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     private func finishGlassesStream(reason: String) {
+        logGlassesAudio("finished: \(reason)")
         glassesState.reset()
         ble?.resetTranslateRecordingState()
         glassesDrainTask?.cancel()
