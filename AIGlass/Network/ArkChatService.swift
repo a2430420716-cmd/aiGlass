@@ -185,8 +185,11 @@ enum ArkChatService {
         print("[voice_chat] \(raw)")
 
         let decoder = JSONDecoder()
-        if let response = try? decoder.decode(APIResponse<ImageChatResult>.self, from: data),
-           let result = response.result {
+        if let response = try? decoder.decode(APIResponse<ImageChatResult>.self, from: data) {
+            guard response.code == 0 else {
+                throw APIError.server(message: response.msg ?? L10n.t("语音识别失败，请重试", "Speech recognition failed. Try again."), code: response.code)
+            }
+            guard let result = response.result else { throw APIError.invalidResponse }
             return result
         }
         if let result = try? decoder.decode(ImageChatResult.self, from: data) {

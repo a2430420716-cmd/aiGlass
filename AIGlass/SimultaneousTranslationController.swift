@@ -63,6 +63,10 @@ final class SimultaneousTranslationController: ObservableObject {
     }
 
     func toggleGlassesSound() {
+        if !glassesSoundEnabled, translationManager?.prepareGlassesSpeechOutput() != true {
+            alertMessage = L10n.t("眼镜蓝牙音频未连接，请在系统蓝牙设置中连接眼镜音频后再开启播报", "Glasses Bluetooth audio is unavailable. Connect the glasses audio in Bluetooth settings before enabling playback.")
+            return
+        }
         glassesSoundEnabled.toggle()
         SimultaneousTranslationRecordStore.glassesSoundEnabled = glassesSoundEnabled
         translationManager?.setSpeechPlaybackEnabled(glassesSoundEnabled)
@@ -532,7 +536,13 @@ extension SimultaneousTranslationController: RealtimeTranslationManager.Callback
 
     func onSpeech(_ data: Data) {
         guard isActive, glassesSoundEnabled else { return }
-        _ = translationManager?.playSpeechOnGlasses(data)
+        guard translationManager?.playSpeechOnGlasses(data, requiresBluetoothOutput: true) == true else {
+            glassesSoundEnabled = false
+            SimultaneousTranslationRecordStore.glassesSoundEnabled = false
+            translationManager?.setSpeechPlaybackEnabled(false)
+            alertMessage = L10n.t("眼镜音频不可用，已关闭眼镜播报，请检查系统蓝牙音频连接", "Glasses audio is unavailable. Playback has been disabled. Check the Bluetooth audio connection.")
+            return
+        }
     }
 
     func onTranslationCompleted() {

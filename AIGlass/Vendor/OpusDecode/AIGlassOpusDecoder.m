@@ -39,8 +39,9 @@
     if (frame.length == 0) {
         return [NSData data];
     }
-    // 对齐 Android Concentus：20ms @ 16kHz = 320 samples。
-    int frameSamples = _sampleRate / 50;
+    // An Opus packet may contain up to 120 ms, including multiple frames.
+    // A 20 ms output capacity rejects valid longer packets (OPUS_BUFFER_TOO_SMALL).
+    int frameSamples = _sampleRate * 120 / 1000;
     if (frameSamples <= 0) {
         frameSamples = 320;
     }

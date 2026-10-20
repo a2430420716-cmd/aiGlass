@@ -3163,6 +3163,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             mediaActionAlertMessage = L10n.t("请先连接眼镜", "Connect glasses first")
             return false
         }
+        if deviceGeneration == .gen1G5K61, gen1VoiceCharacteristic?.isNotifying != true {
+            if let peripheral = connectedPeripheral, let voice = gen1VoiceCharacteristic {
+                peripheral.setNotifyValue(true, for: voice)
+            }
+            DebugLogStore.logBLEEvent("Gen1 translation START blocked", detail: "AE3D audio notifications are not ready; resubscription requested")
+            mediaActionAlertMessage = L10n.t("眼镜录音通道尚未就绪，请稍后重试", "Glasses audio channel is not ready. Try again shortly.")
+            return false
+        }
+        DebugLogStore.logBLEEvent("translation START requested", detail: "generation=\(deviceGeneration.rawValue) voiceNotifying=\(gen1VoiceCharacteristic?.isNotifying == true) status=\(deviceRuntimeStatus)")
         if deviceRuntimeStatus != .standby, deviceRuntimeStatus != .unknown {
             mediaActionAlertMessage = deviceRuntimeStatus.busyMessage
             return false
@@ -5111,9 +5120,22 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func handleGen1VoiceData(_ data: Data) {
-        for frame in gen1VoiceDecoder.append(data) {
-            if case .duplicateOrLate = gen1SequenceTracker.onFrame(frame) { continue }
-            routeGen1Voice(gen1TranslationRouter.onFrame(frame))
+        for event in gen1VoiceDecoder.appendEvents(data) {
+            switch event {
+            case .frame(let frame, _):
+                let sequence = gen1SequenceTracker.onFrame(frame)
+                if case .duplicateOrLate = sequence { continue }
+                if case .gap(let expected, let actual, let missing) = sequence {
+                    DebugLogStore.logBLEEvent("Gen1 audio sequence gap", detail: "expected=\(expected) actual=\(actual) missing=\(missing)")
+                }
+                if frame.type != .data {
+                    DebugLogStore.logBLEEvent("Gen1 audio stream boundary", detail: "type=\(frame.type) sequence=\(frame.sequence) flags=\(frame.flags) bytes=\(frame.payload.count)")
+                }
+                routeGen1Voice(gen1TranslationRouter.onFrame(frame))
+            case .dropped(let drop):
+                DebugLogStore.logBLEEvent("Gen1 audio frame rejected", detail: "\(drop)")
+            case .buffered: break
+            }
         }
     }
 

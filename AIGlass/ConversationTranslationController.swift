@@ -523,6 +523,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     private func failGlassesStart(reason: String) {
+        DebugLogStore.logBLEEvent("translation audio START failed", detail: "reason=\(reason) phase=\(glassesState.phase) generation=\(ble?.deviceGeneration.rawValue ?? "unknown")")
         print("[ConversationTranslation] glasses start failed reason=\(reason) phase=\(glassesState.phase)")
         // Match Android: only Gen1 sends a failure-stop. For Gen2, a missing
         // start ACK must not itself inject trslate000=0 after three seconds.

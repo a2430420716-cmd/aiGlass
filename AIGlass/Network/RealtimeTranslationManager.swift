@@ -172,10 +172,15 @@ final class RealtimeTranslationManager: NSObject {
     }
 
     @discardableResult
-    func playSpeechOnGlasses(_ data: Data) -> Bool {
+    func playSpeechOnGlasses(_ data: Data, requiresBluetoothOutput: Bool = false) -> Bool {
         guard !data.isEmpty else { return false }
-        playPCM(data, route: .glasses)
-        return true
+        return playPCM(data, route: .glasses, requiresBluetoothOutput: requiresBluetoothOutput)
+    }
+
+    /// A BLE connection alone does not establish the classic Bluetooth audio route.
+    func prepareGlassesSpeechOutput() -> Bool {
+        applyPlaybackRoute(.glasses)
+        return GlassesAudioRouteController.isOutputOnBluetooth
     }
 
     func replaySpeech(_ data: Data) {
@@ -472,19 +477,26 @@ final class RealtimeTranslationManager: NSObject {
 
     // MARK: - PCM Playback
 
-    private func playPCM(_ data: Data, route: PlaybackRoute) {
-        guard speechPlaybackEnabled, !data.isEmpty else { return }
+    @discardableResult
+    private func playPCM(_ data: Data, route: PlaybackRoute, requiresBluetoothOutput: Bool = false) -> Bool {
+        guard speechPlaybackEnabled, !data.isEmpty else { return false }
         ensurePlaybackEngine(route: route)
-        guard let playerNode, let playbackFormat else { return }
+        if requiresBluetoothOutput, !GlassesAudioRouteController.isOutputOnBluetooth {
+            stopPlayback()
+            print("[RealtimeTranslation] glasses playback blocked: output is not Bluetooth")
+            return false
+        }
+        guard let playerNode, let playbackFormat else { return false }
 
         guard let buffer = TranslationPCMPlayback.makeBuffer(from: data, format: playbackFormat) else {
             print("[RealtimeTranslation] invalid playback PCM bytes=\(data.count) format=\(playbackFormat)")
-            return
+            return false
         }
         if !playerNode.isPlaying {
             playerNode.play()
         }
         playerNode.scheduleBuffer(buffer, completionHandler: nil)
+        return true
     }
 
     private func ensurePlaybackEngine(route: PlaybackRoute) {

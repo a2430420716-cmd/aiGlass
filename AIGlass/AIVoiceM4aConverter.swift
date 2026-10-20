@@ -90,6 +90,19 @@ enum AIVoiceM4aConverter {
             }
         }
         print("[AIVoiceM4A] decoded ok=\(ok)/\(frames.count)")
+        var peak = 0
+        var energy = 0.0
+        pcm.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+            for index in 0..<(bytes.count / 2) {
+                let bits = UInt16(bytes[index * 2]) | (UInt16(bytes[index * 2 + 1]) << 8)
+                let sample = Int(Int16(bitPattern: bits))
+                peak = max(peak, abs(sample))
+                energy += Double(sample) * Double(sample)
+            }
+        }
+        let samples = pcm.count / 2
+        let rms = samples > 0 ? sqrt(energy / Double(samples)) : 0
+        DebugLogStore.logBLEEvent("AI voice decoded audio", detail: "frames=\(frames.count) decoded=\(ok) rejected=\(frames.count - ok) pcmBytes=\(pcm.count) durationMs=\(samples * 1000 / sampleRate) peak=\(peak) rms=\(rms) sampleRate=\(sampleRate) channels=\(channels)")
         guard ok > 0 else { throw ConverterError.decodeFailed }
         return pcm
     }
