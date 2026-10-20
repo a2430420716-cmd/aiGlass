@@ -2,6 +2,7 @@ import AuthenticationServices
 import SwiftUI
 
 struct LoginView: View {
+    var onSelectServer: (() -> Void)? = nil
     private enum LoginMode {
         case sms
         case password
@@ -47,14 +48,28 @@ struct LoginView: View {
     private var isEmailAccount: Bool { !isChinaIP }
 
     private var accountPlaceholder: String {
-        isChinaIP ? L10n.t("请输入手机号", "Enter phone number") : L10n.t("请输入邮箱", "Enter email")
+        if loginMode == .password {
+            return L10n.t("请输入账号/手机号/邮箱", "Enter username, phone number or email")
+        }
+        return isChinaIP ? L10n.t("请输入手机号", "Enter phone number") : L10n.t("请输入邮箱", "Enter email")
     }
 
     private var accountErrorText: String {
-        isChinaIP ? L10n.t("请输入正确的手机号", "Enter a valid phone number") : L10n.t("请输入正确的邮箱", "Enter a valid email")
+        if loginMode == .password {
+            return L10n.t("请输入有效账号，不能包含空格", "Enter a valid account without spaces")
+        }
+        return isChinaIP ? L10n.t("请输入正确的手机号", "Enter a valid phone number") : L10n.t("请输入正确的邮箱", "Enter a valid email")
     }
 
     private var isAccountValid: Bool {
+        if loginMode == .password {
+            let account = phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !account.isEmpty && !account.contains(where: { $0.isWhitespace })
+        }
+        return isContactAccountValid
+    }
+
+    private var isContactAccountValid: Bool {
         let account = phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines)
         if isChinaIP {
             return account.count == 11 && account.allSatisfy(\.isNumber)
@@ -140,6 +155,19 @@ struct LoginView: View {
             .padding(.horizontal, 24)
         }
         .navigationBarHidden(true)
+        .overlay(alignment: .topLeading) {
+            if let onSelectServer {
+                Button {
+                    dismissKeyboard()
+                    onSelectServer()
+                } label: {
+                    Label(L10n.t("选择服务器", "Select Server"), systemImage: "chevron.left")
+                        .font(.system(size: 14, weight: .medium))
+                        .padding(16)
+                }
+                .foregroundStyle(AppTheme.primaryText)
+            }
+        }
         .dismissKeyboardOnVerticalDrag(perform: dismissKeyboard)
         .alert(L10n.t("提示", "Notice"), isPresented: Binding(
             get: { alertMessage != nil },
@@ -200,9 +228,9 @@ struct LoginView: View {
                     .foregroundColor(placeholderColor)
             )
             // IP 检测异步切换手机号/邮箱时，重建底层 UITextField，避免沿用旧数字键盘。
-            .id(isChinaIP ? "phone-account-field" : "email-account-field")
-            .keyboardType(isChinaIP ? .numberPad : .emailAddress)
-            .textContentType(isChinaIP ? .telephoneNumber : .emailAddress)
+            .id(loginMode == .password ? "password-account-field" : (isChinaIP ? "phone-account-field" : "email-account-field"))
+            .keyboardType(loginMode == .password ? .asciiCapable : (isChinaIP ? .numberPad : .emailAddress))
+            .textContentType(loginMode == .password ? .username : (isChinaIP ? .telephoneNumber : .emailAddress))
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .font(AppTheme.notoSansSC(size: 16, weight: .regular))
@@ -213,6 +241,7 @@ struct LoginView: View {
             .background(AppTheme.cardBackground)
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .onChangeCompat(of: phoneNumber) { newValue in
+                guard loginMode == .sms else { return }
                 if isChinaIP {
                     let filtered = newValue.filter(\.isNumber)
                     if filtered.count > 11 {
@@ -569,8 +598,10 @@ struct LoginView: View {
                 : L10n.t("请输入邮箱", "Enter email")
             return
         }
-        guard isAccountValid else {
-            alertMessage = accountErrorText
+        guard isContactAccountValid else {
+            alertMessage = isChinaIP
+                ? L10n.t("请输入正确的手机号", "Enter a valid phone number")
+                : L10n.t("请输入正确的邮箱", "Enter a valid email")
             return
         }
         dismissKeyboard()

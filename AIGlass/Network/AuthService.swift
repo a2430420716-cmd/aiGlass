@@ -105,10 +105,8 @@ struct WeChatLoginResult: Decodable {
 enum AuthService {
     private static var appleLoginURL: URL { BackendRouting.apiURL.appendingPathComponent("login/login_by_apple") }
 
-    /// Dispatch before presenting login; account type follows the selected
-    /// backend, not a second IP lookup which could disagree with the pinned route.
+    /// Account type follows the explicitly selected backend; no IP lookup.
     static func fetchIsChinaIP() async throws -> Bool {
-        try await ServerDispatch.resolveBeforeLogin()
         return BackendRouting.isChina
     }
 

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct DataStorageSettingsView: View {
+    var onSelect: ((DataStorageRegion) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var selectedRegion = AppSettings.dataStorageRegion
 
@@ -14,7 +15,7 @@ struct DataStorageSettingsView: View {
                         .font(AppTheme.notoSansSC(size: 22, weight: .bold))
                         .foregroundStyle(AppTheme.primaryText)
 
-                    Text(L10n.t("为满足不同国家和地区法律法规要求，在您选择指定的地区后，您的个人数据将会完全存储在该地区。请注意，不同地区之间的数据完全独立。", "To comply with laws and regulations in different countries and regions, your personal data will be stored entirely in the region you select. Note that data in different regions is fully independent."))
+                    Text(L10n.t("选择中国大陆使用国内服务器，选择其他地区使用海外服务器。国内与海外服务器的账号和数据相互独立。", "Select Mainland China to use the China server. All other regions use the overseas server. Accounts and data are independent between these two servers."))
                         .font(AppTheme.notoSansSC(size: 13, weight: .regular))
                         .foregroundStyle(AppTheme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
@@ -25,6 +26,7 @@ struct DataStorageSettingsView: View {
                             Button {
                                 selectedRegion = region
                                 AppSettings.dataStorageRegion = region
+                                onSelect?(region)
                             } label: {
                                 SettingsSelectionRow(
                                     title: region.title,
@@ -48,13 +50,15 @@ struct DataStorageSettingsView: View {
 
     private var navigationBar: some View {
         HStack {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(AppTheme.primaryText)
-                    .frame(width: 44, height: 44, alignment: .leading)
+            if onSelect == nil {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(AppTheme.primaryText)
+                        .frame(width: 44, height: 44, alignment: .leading)
+                }
             }
 
             Spacer()
