@@ -1,7 +1,7 @@
 import Foundation
 
 /// Account tokens must stay on the origin which issued them. Only the dispatch
-/// request uses a fixed bootstrap origin; every business API uses the selection.
+/// request selects a bootstrap origin by system language; business APIs use the result.
 enum BackendRouting {
     nonisolated static let domesticOrigin = "https://glasses.kaimou.net"
     nonisolated static let overseasOrigin = "https://glasses-en.mocoviso.com"
@@ -65,12 +65,11 @@ enum ServerDispatch {
     }
 
     private static func fetch() async throws {
-        #if DEBUG
-        let origin = BackendRouting.domesticOrigin
-        #else
-        // Release archives (including App Store exports) bootstrap overseas.
-        let origin = BackendRouting.overseasOrigin
-        #endif
+        // Use the system language, independently of the app's manual language setting.
+        // Language selects only the dispatch endpoint; its IP result selects the server.
+        let origin = L10n.systemUsesEnglish
+            ? BackendRouting.overseasOrigin
+            : BackendRouting.domesticOrigin
         let url = URL(string: origin + "/api/dispatch/checkIp")!
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
