@@ -477,16 +477,9 @@ final class RealtimeTranslationManager: NSObject {
         ensurePlaybackEngine(route: route)
         guard let playerNode, let playbackFormat else { return }
 
-        let frameCount = data.count / 2
-        guard frameCount > 0,
-              let buffer = AVAudioPCMBuffer(pcmFormat: playbackFormat, frameCapacity: AVAudioFrameCount(frameCount)) else {
+        guard let buffer = TranslationPCMPlayback.makeBuffer(from: data, format: playbackFormat) else {
+            print("[RealtimeTranslation] invalid playback PCM bytes=\(data.count) format=\(playbackFormat)")
             return
-        }
-        buffer.frameLength = AVAudioFrameCount(frameCount)
-        data.withUnsafeBytes { raw in
-            guard let src = raw.bindMemory(to: Int16.self).baseAddress,
-                  let dst = buffer.int16ChannelData?[0] else { return }
-            dst.update(from: src, count: frameCount)
         }
         if !playerNode.isPlaying {
             playerNode.play()
@@ -499,12 +492,7 @@ final class RealtimeTranslationManager: NSObject {
         if audioEngine != nil, playerNode != nil { return }
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
-        guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: sampleRate,
-            channels: 1,
-            interleaved: true
-        ) else { return }
+        guard let format = TranslationPCMPlayback.makeFormat() else { return }
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: format)
         do {
