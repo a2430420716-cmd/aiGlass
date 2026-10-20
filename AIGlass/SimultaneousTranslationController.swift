@@ -22,6 +22,7 @@ final class SimultaneousTranslationController: ObservableObject {
     private var token: String = ""
     private var isActive = false
     private var permissionGeneration = 0
+    private var speechChunksReceived = 0
 
     private var socketReady = false
     private var waitingSocketReady = false
@@ -38,6 +39,8 @@ final class SimultaneousTranslationController: ObservableObject {
 
     func start(token: String?) {
         isActive = true
+        speechChunksReceived = 0
+        DebugLogStore.logTranslation("simultaneous playback preference", detail: "enabled=\(glassesSoundEnabled)")
         translationManager?.close()
         self.token = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let manager = RealtimeTranslationManager(callback: self)
@@ -68,6 +71,7 @@ final class SimultaneousTranslationController: ObservableObject {
             return
         }
         glassesSoundEnabled.toggle()
+        DebugLogStore.logTranslation("simultaneous sound toggled", detail: "enabled=\(glassesSoundEnabled)\n\(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
         SimultaneousTranslationRecordStore.glassesSoundEnabled = glassesSoundEnabled
         translationManager?.setSpeechPlaybackEnabled(glassesSoundEnabled)
         alertMessage = glassesSoundEnabled
@@ -205,12 +209,7 @@ final class SimultaneousTranslationController: ObservableObject {
         }
         do {
             translationManager?.setPhoneMicrophoneCaptureEnabled(true)
-            try GlassesAudioRouteController.activate(.playAndRecord)
-            let session = AVAudioSession.sharedInstance()
-            if let microphone = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-                try session.setPreferredInput(microphone)
-            }
-            try session.setPreferredSampleRate(targetSampleRate)
+            try GlassesAudioRouteController.activate(.phoneMicrophoneAndPlayback)
 
             let engine = AVAudioEngine()
             let input = engine.inputNode
@@ -535,6 +534,10 @@ extension SimultaneousTranslationController: RealtimeTranslationManager.Callback
     }
 
     func onSpeech(_ data: Data) {
+        speechChunksReceived += 1
+        if speechChunksReceived == 1 || speechChunksReceived.isMultiple(of: 50) {
+            DebugLogStore.logTranslation("simultaneous speech received", detail: "chunks=\(speechChunksReceived) bytes=\(data.count) active=\(isActive) playbackEnabled=\(glassesSoundEnabled)\n\(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
+        }
         guard isActive, glassesSoundEnabled else { return }
         guard translationManager?.playSpeechOnGlasses(data, requiresBluetoothOutput: true) == true else {
             glassesSoundEnabled = false

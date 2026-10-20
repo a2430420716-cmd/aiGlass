@@ -23,7 +23,7 @@ final class RealtimeTranslationManager: NSObject {
     private weak var callback: Callback?
     private var webSocketTask: URLSessionWebSocketTask?
     private var session: URLSession?
-    enum PlaybackRoute {
+    enum PlaybackRoute: Equatable {
         /// 系统默认路由（通常眼镜已连时走蓝牙）。
         case `default`
         /// 强制手机扬声器。
@@ -61,6 +61,9 @@ final class RealtimeTranslationManager: NSObject {
     private var audioEngine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
     private var playbackFormat: AVAudioFormat?
+    private var activePlaybackRoute: PlaybackRoute?
+    private var playbackUsesPhoneMicrophone = false
+    private var playbackChunks = 0
 
     private let sampleRate: Double = 16_000
     private let initDelayNs: UInt64 = 500_000_000
@@ -572,6 +575,7 @@ final class RealtimeTranslationManager: NSObject {
         guard speechPlaybackEnabled, !data.isEmpty else { return false }
         ensurePlaybackEngine(route: route)
         if requiresBluetoothOutput, !GlassesAudioRouteController.isOutputOnBluetooth {
+            logFlow("glasses playback blocked", GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)
             stopPlayback()
             print("[RealtimeTranslation] glasses playback blocked: output is not Bluetooth")
             return false
@@ -586,12 +590,22 @@ final class RealtimeTranslationManager: NSObject {
             playerNode.play()
         }
         playerNode.scheduleBuffer(buffer, completionHandler: nil)
+        playbackChunks += 1
+        if playbackChunks == 1 || playbackChunks.isMultiple(of: 50) {
+            logFlow("speech scheduled", "chunks=\(playbackChunks) bytes=\(data.count) route=\(route) engineRunning=\(audioEngine?.isRunning ?? false)\n\(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
+        }
         return true
     }
 
     private func ensurePlaybackEngine(route: PlaybackRoute) {
+        // Reapplying category/override/preferredInput on every TTS packet repeatedly
+        // switches A2DP/HFP/receiver and can interrupt the audio we just scheduled.
+        // Stopping the mic alone must not discard already scheduled translation audio.
+        if audioEngine?.isRunning == true, playerNode != nil,
+           activePlaybackRoute == route,
+           (!phoneMicrophoneCaptureEnabled || playbackUsesPhoneMicrophone) { return }
+        stopPlayback()
         applyPlaybackRoute(route)
-        if audioEngine != nil, playerNode != nil { return }
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
         guard let format = TranslationPCMPlayback.makeFormat() else { return }
@@ -602,7 +616,10 @@ final class RealtimeTranslationManager: NSObject {
             audioEngine = engine
             playerNode = player
             playbackFormat = format
+            activePlaybackRoute = route
+            playbackUsesPhoneMicrophone = phoneMicrophoneCaptureEnabled
         } catch {
+            logFlow("playback engine failed", error.localizedDescription)
             print("[RealtimeTranslation] playback engine failed: \(error.localizedDescription)")
         }
     }
@@ -620,17 +637,10 @@ final class RealtimeTranslationManager: NSObject {
                 )
                 try session.overrideOutputAudioPort(.speaker)
             case .glasses:
-                try GlassesAudioRouteController.activate(phoneMicrophoneCaptureEnabled ? .playAndRecord : .playback)
-                if phoneMicrophoneCaptureEnabled,
-                   let microphone = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-                    try session.setPreferredInput(microphone)
-                }
+                try GlassesAudioRouteController.activate(phoneMicrophoneCaptureEnabled ? .phoneMicrophoneAndPlayback : .playback)
             case .default:
                 if phoneMicrophoneCaptureEnabled {
-                    try GlassesAudioRouteController.activate(.playAndRecord)
-                    if let microphone = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-                        try session.setPreferredInput(microphone)
-                    }
+                    try GlassesAudioRouteController.activate(.phoneMicrophoneAndPlayback)
                 } else if GlassesAudioRouteController.glassesConnected {
                     try GlassesAudioRouteController.activate(.playback)
                 } else {
@@ -639,6 +649,7 @@ final class RealtimeTranslationManager: NSObject {
                 }
             }
         } catch {
+            logFlow("playback route failed", "route=\(route) error=\(error.localizedDescription)")
             print("[RealtimeTranslation] apply route \(route) failed: \(error.localizedDescription)")
         }
     }
@@ -652,6 +663,9 @@ final class RealtimeTranslationManager: NSObject {
         playerNode = nil
         audioEngine = nil
         playbackFormat = nil
+        activePlaybackRoute = nil
+        playbackUsesPhoneMicrophone = false
+        playbackChunks = 0
     }
 
     // MARK: - Helpers

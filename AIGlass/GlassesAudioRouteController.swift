@@ -9,6 +9,9 @@ enum GlassesAudioRouteController {
         case playback
         /// 边录边播（同声传译等：手机麦 + 眼镜扬声器）。
         case playAndRecord
+        /// Translation captures the phone mic and plays through Bluetooth media (A2DP).
+        /// Offering HFP as well lets iOS select the glasses call route instead.
+        case phoneMicrophoneAndPlayback
         /// 仅跟系统音量，不抢路由。
         case ambientVolume
     }
@@ -93,12 +96,28 @@ enum GlassesAudioRouteController {
                 )
             }
 
+        case .phoneMicrophoneAndPlayback:
+            try session.setCategory(
+                .playAndRecord,
+                mode: .default,
+                options: [.allowBluetoothA2DP, .mixWithOthers]
+            )
+            try session.overrideOutputAudioPort(.none)
+
         case .ambientVolume:
             try session.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
         }
 
         try session.setActive(true)
+        if case .phoneMicrophoneAndPlayback = intent,
+           let microphone = session.availableInputs?.first(where: { $0.portType == .builtInMic }),
+           session.preferredInput?.uid != microphone.uid {
+            try session.setPreferredInput(microphone)
+        }
         logCurrentRoute(reason: "activate(\(intent))")
+        if case .phoneMicrophoneAndPlayback = intent {
+            DebugLogStore.logTranslation("phone mic / media output prepared", detail: connectionDiagnosticSnapshot.detail)
+        }
     }
 
     /// 只为读系统音量：保持 session 活跃即可，绝不改 category。
