@@ -18,8 +18,7 @@ enum AppLanguageOption: String, CaseIterable, Identifiable {
     var aboutDisplayName: String {
         switch self {
         case .system:
-            let preferred = Locale.preferredLanguages.first ?? "zh-Hans"
-            if preferred.hasPrefix("en") {
+            if L10n.systemUsesEnglish {
                 return "English (US)"
             }
             return "简体中文"
@@ -66,7 +65,7 @@ enum AppSettings {
         get {
             guard let raw = UserDefaults.standard.string(forKey: languageKey),
                   let option = AppLanguageOption(rawValue: raw) else {
-                return .simplifiedChinese
+                return .system
             }
             return option
         }

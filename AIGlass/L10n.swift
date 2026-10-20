@@ -33,8 +33,7 @@ final class AppLanguageManager: ObservableObject {
         case .simplifiedChinese:
             return false
         case .system:
-            let preferred = Locale.preferredLanguages.first ?? "zh"
-            return preferred.hasPrefix("en")
+            return L10n.systemUsesEnglish
         }
     }
 
@@ -76,6 +75,11 @@ final class AppLanguageManager: ObservableObject {
 /// 刻意声明为 `nonisolated`：网络层、解码回调、后台 Task 里的用户可见提示同样需要翻译，
 /// 直接读 UserDefaults 而不依赖 `AppLanguageManager`（后者是 MainActor 隔离的）。
 enum L10n {
+    nonisolated static var systemUsesEnglish: Bool {
+        let preferred = Locale.preferredLanguages.first ?? "en"
+        return !preferred.lowercased().hasPrefix("zh")
+    }
+
     nonisolated static func t(_ zh: String, _ en: String) -> String {
         usesEnglish ? en : zh
     }
@@ -85,11 +89,11 @@ enum L10n {
         switch raw {
         case "englishUS":
             return true
-        case "system":
-            return (Locale.preferredLanguages.first ?? "zh").hasPrefix("en")
-        default:
-            // 未设置时与 AppSettings.language 默认值保持一致：简体中文。
+        case "simplifiedChinese":
             return false
+        default:
+            // Follow the system for unset, system, or unrecognized preferences.
+            return systemUsesEnglish
         }
     }
 }
