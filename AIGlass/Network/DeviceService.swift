@@ -14,6 +14,7 @@ struct DeviceModelItem: Decodable, Identifiable, Equatable {
     let modelName: String
     let eqName: String
     let prepare: String?
+    let enPrepare: String?
     let logo: String?
     let sort: Int?
     let isWatermark: Int?
@@ -22,6 +23,7 @@ struct DeviceModelItem: Decodable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id
         case prepare
+        case enPrepare = "en_prepare"
         case logo
         case sort
         case status
@@ -33,6 +35,13 @@ struct DeviceModelItem: Decodable, Identifiable, Equatable {
     /// 列表展示名
     var displayName: String {
         modelName
+    }
+
+    /// Missing English instructions use the page's localized fallback, never Chinese HTML.
+    var localizedPrepareHTML: String? {
+        let html = (L10n.usesEnglish ? enPrepare : prepare)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return html?.isEmpty == false ? html : nil
     }
 
     var glassDeviceModel: GlassDeviceModel {

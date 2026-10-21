@@ -113,6 +113,7 @@ final class MediaLibrary: ObservableObject {
             let tempURL = originalsURL.appendingPathComponent("tmp_\(id.uuidString)_\(fileName)")
             let stabilizedURL = originalsURL.appendingPathComponent("tmp_\(id.uuidString)_eis.mp4")
             try data.write(to: tempURL, options: .atomic)
+            await Self.logVideoDuration(url: tempURL, fileName: fileName, stage: "downloaded_original")
             defer {
                 try? fileManager.removeItem(at: tempURL)
                 try? fileManager.removeItem(at: stabilizedURL)
@@ -122,6 +123,9 @@ final class MediaLibrary: ObservableObject {
                 from: tempURL,
                 to: stabilizedURL
             )
+            if stabilized {
+                await Self.logVideoDuration(url: stabilizedURL, fileName: fileName, stage: "stabilized")
+            }
             do {
                 if stabilized {
                     // EIS 输出只有视频轨：从原文件补回音轨，再保持现有导入方向。
@@ -162,6 +166,7 @@ final class MediaLibrary: ObservableObject {
 
         var finalItem = item
         if isVideo {
+            await Self.logVideoDuration(url: originalURL, fileName: fileName, stage: "album_final")
             let duration = Self.videoDuration(url: originalURL)
             finalItem = StoredMediaItem(
                 id: id,
@@ -257,10 +262,15 @@ final class MediaLibrary: ObservableObject {
         }
 
         if isVideo {
+            await Self.logVideoDuration(url: source, fileName: fileName, stage: "gen1_downloaded_original")
             let processing = try await Gen1VideoImportPipeline.process(
                 source: source, stabilizedURL: stabilizedURL, output: temporary,
                 stabilize: { input, output in
-                    await PixSmartVideoEIS.stabilizeGen1Video(from: input, to: output)
+                    let success = await PixSmartVideoEIS.stabilizeGen1Video(from: input, to: output)
+                    if success {
+                        await Self.logVideoDuration(url: output, fileName: fileName, stage: "gen1_stabilized")
+                    }
+                    return success
                 },
                 rotateWithAudio: { video, audio, output in
                     try await Gen1MediaOrientation.rotateVideoClockwise90(from: video, audioFrom: audio, to: output)
@@ -270,6 +280,7 @@ final class MediaLibrary: ObservableObject {
                 }
             )
             DebugLogStore.logWiFi("一代：视频导入处理完成", detail: "file=\(fileName) stabilized=\(processing == .stabilized) rotation=clockwise90 originalPreserved=true")
+            await Self.logVideoDuration(url: temporary, fileName: fileName, stage: "gen1_album_final")
             item = StoredMediaItem(
                 id: receipt.id, fileName: displayName, isVideo: true,
                 createdAt: receipt.createdAt, isFavorite: previous?.isFavorite ?? false,
@@ -391,6 +402,15 @@ final class MediaLibrary: ObservableObject {
             let drawSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
             let origin = CGPoint(x: (side - drawSize.width) / 2, y: (side - drawSize.height) / 2)
             image.draw(in: CGRect(origin: origin, size: drawSize))
+        }
+    }
+
+    private static func logVideoDuration(url: URL, fileName: String, stage: String) async {
+        do {
+            let duration = try await AVURLAsset(url: url).load(.duration)
+            DebugLogStore.logWiFi("视频时长诊断", detail: "file=\(fileName) stage=\(stage) durationSeconds=\(duration.seconds)")
+        } catch {
+            DebugLogStore.logWiFi("视频时长读取失败", detail: "file=\(fileName) stage=\(stage) error=\(error.localizedDescription)")
         }
     }
 

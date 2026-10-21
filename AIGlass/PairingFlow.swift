@@ -158,7 +158,7 @@ final class PairingCoordinator: ObservableObject {
         selectedAPIModelName = model.modelName
         selectedEqName = model.eqName
         selectedGuideItems = guideItems
-        selectedPrepareHTML = model.prepare
+        selectedPrepareHTML = model.localizedPrepareHTML
         pairingModel = model.glassDeviceModel
         hasStartedBind = false
         isBindingDevice = false
@@ -173,7 +173,7 @@ final class PairingCoordinator: ObservableObject {
     func refreshSelectedDeviceModel(_ model: DeviceModelItem) {
         guard selectedAPIModelName == model.modelName else { return }
         selectedEqName = model.eqName
-        selectedPrepareHTML = model.prepare
+        selectedPrepareHTML = model.localizedPrepareHTML
         pairingModel = model.glassDeviceModel
     }
 

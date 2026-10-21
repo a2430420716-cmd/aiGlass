@@ -3318,8 +3318,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         // 对齐 Android：写命令成功后立即切成“结束录像”，后续回包可纠正真实状态。
         isVideoRecording = true
         isVideoStopping = false
-        homeVideoCapture.startSent(at: ProcessInfo.processInfo.systemUptime)
-        scheduleHomeVideoAutoStop(after: maxDurationSeconds)
+        homeVideoCapture.startSent(at: ProcessInfo.processInfo.systemUptime,
+                                   maximumDuration: TimeInterval(maxDurationSeconds))
+        scheduleHomeVideoAutoStop()
         mediaActionToastMessage = L10n.t("眼镜开始录像，请从相册中导入", "Recording started. Import it from Album.")
         logVideoCapture("start-sent", detail: "maxDuration=\(maxDurationSeconds)s minimumDuration=3s")
     }
@@ -3415,12 +3416,20 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if isTakingPhoto {
             logPhotoCapture("device-status", detail: "previous=\(previous.name) current=\(current.name)")
         }
+        let firstRecordingConfirmation = current == .videoRecording && !homeVideoCapture.hasConfirmedRecording
+        let startConfirmationDelay = homeVideoCapture.startedAt.map { ProcessInfo.processInfo.systemUptime - $0 }
         let videoFinished = homeVideoCapture.receive(
             current, at: ProcessInfo.processInfo.systemUptime, allowsCompletion: allowsVideoCompletion
         )
         isVideoRecording = current == .videoRecording
             || (current == .unknown && homeVideoCapture.startedAt != nil)
         isVideoStopping = homeVideoCapture.isStopPending
+        if firstRecordingConfirmation, homeVideoCapture.maximumDuration != nil {
+            // Device startup latency is not part of the selected recording length.
+            // Only the first confirmation moves the deadline; periodic reports do not.
+            scheduleHomeVideoAutoStop()
+            logVideoCapture("duration-anchored", detail: "startConfirmationDelay=\(startConfirmationDelay ?? 0)s maximumDuration=\(homeVideoCapture.maximumDuration ?? 0)s anchor=first_recording_status")
+        }
         if current == .videoRecording || previous == .videoRecording || videoFinished {
             logVideoCapture("device-status", detail: "previous=\(previous.name) current=\(current.name) completionAllowed=\(allowsVideoCompletion)")
         }
@@ -3623,12 +3632,17 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
     }
 
-    private func scheduleHomeVideoAutoStop(after seconds: Int) {
+    private func scheduleHomeVideoAutoStop() {
         cancelHomeVideoAutoStop()
-        let delay = max(HomeVideoCaptureState.minimumDuration, TimeInterval(seconds))
+        guard let delay = homeVideoCapture.autoStopDelayRemaining(at: ProcessInfo.processInfo.systemUptime) else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.isReady else { return }
             guard self.isVideoRecording || self.deviceRuntimeStatus == .videoRecording else { return }
+            guard let remaining = self.homeVideoCapture.autoStopDelayRemaining(at: ProcessInfo.processInfo.systemUptime) else { return }
+            if remaining > 0 {
+                self.scheduleHomeVideoAutoStop()
+                return
+            }
             print("\(self.logTag) video duration reached: auto stop after \(Int(delay))s")
             self.stopVideoRecordingFromHome()
         }
