@@ -8,12 +8,19 @@ struct ImageChatResult: Decodable {
     /// 用户语音 ASR 文本（若接口有返回）。
     let asr: String?
 
+    /// Both short and long replies carry a playable `speech` audio address.
+    var hasSpeech: Bool {
+        (speechType == 1 || speechType == 2)
+            && !(speech?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+
     enum CodingKeys: String, CodingKey {
         case commandType = "command_type"
         case speechType = "speech_type"
         case text
         case speech
         case asr
+        case inputText = "input_text"
         case asrText = "asr_text"
         case query
         case question
@@ -45,6 +52,7 @@ struct ImageChatResult: Decodable {
             .first { !$0.isEmpty }
 
         let asrCandidates = [
+            container.decodeFlexibleString(forKey: .inputText),
             container.decodeFlexibleString(forKey: .asr),
             container.decodeFlexibleString(forKey: .asrText),
             container.decodeFlexibleString(forKey: .query),
@@ -145,16 +153,20 @@ enum ArkChatService {
             fileData: jpeg,
             fileName: "vision.jpg",
             mimeType: "image/jpeg",
-            formFields: ["category": "2"],
-            authorization: token
+            authorization: token,
+            additionalHeaders: ["App-Language": AppRequestHeaders.acceptLanguageValue]
         )
 
         let raw = String(data: data, encoding: .utf8) ?? "<non-utf8 \(data.count) bytes>"
         print("[image_chat] \(raw)")
 
         let decoder = JSONDecoder()
-        if let response = try? decoder.decode(APIResponse<ImageChatResult>.self, from: data),
-           let result = response.result {
+        if let status = try? decoder.decode(APIStatus.self, from: data) {
+            guard status.code == 0 else {
+                throw APIError.server(message: status.msg ?? L10n.t("识别失败，请重试", "Recognition failed. Try again."), code: status.code)
+            }
+            let response = try decoder.decode(APIResponse<ImageChatResult>.self, from: data)
+            guard let result = response.result else { throw APIError.invalidResponse }
             return result
         }
 
@@ -179,16 +191,18 @@ enum ArkChatService {
             fileName: fileName,
             mimeType: "application/octet-stream",
             authorization: token,
+            additionalHeaders: ["App-Language": AppRequestHeaders.acceptLanguageValue],
             timeout: 120
         )
         let raw = String(data: data, encoding: .utf8) ?? "<non-utf8 \(data.count) bytes>"
         print("[voice_chat] \(raw)")
 
         let decoder = JSONDecoder()
-        if let response = try? decoder.decode(APIResponse<ImageChatResult>.self, from: data) {
-            guard response.code == 0 else {
-                throw APIError.server(message: response.msg ?? L10n.t("语音识别失败，请重试", "Speech recognition failed. Try again."), code: response.code)
+        if let status = try? decoder.decode(APIStatus.self, from: data) {
+            guard status.code == 0 else {
+                throw APIError.server(message: status.msg ?? L10n.t("语音识别失败，请重试", "Speech recognition failed. Try again."), code: status.code)
             }
+            let response = try decoder.decode(APIResponse<ImageChatResult>.self, from: data)
             guard let result = response.result else { throw APIError.invalidResponse }
             return result
         }

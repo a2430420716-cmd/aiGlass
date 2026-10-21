@@ -408,6 +408,7 @@ enum APIClient {
         formFields: [String: String] = [:],
         queryItems: [URLQueryItem] = [],
         authorization: String? = nil,
+        additionalHeaders: [String: String] = [:],
         timeout: TimeInterval = 60
     ) async throws -> Data {
         let trimmedPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
@@ -449,6 +450,9 @@ enum APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         AppRequestHeaders.apply(to: &request)
+        for (name, value) in additionalHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         request.setValue(
             "multipart/form-data; boundary=\(boundary)",
             forHTTPHeaderField: "Content-Type"

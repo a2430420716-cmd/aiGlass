@@ -419,8 +419,7 @@ final class AIVoiceChatManager: ObservableObject {
 
                 let answer = result.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 let asr = result.asr?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let hasSpeech = result.speechType == 1
-                    && !(result.speech?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                let hasSpeech = result.hasSpeech
 
                 if !asr.isEmpty {
                     print("[AIVoice] ASR text received but hidden to match Android chat UI: \(asr)")
@@ -519,7 +518,7 @@ final class AIVoiceChatManager: ObservableObject {
     /// 对齐 Android `playSpeech`：只播放 TTS，不向聊天列表添加语音消息。
     @discardableResult
     private func playSpeech(_ result: ImageChatResult, completion: (() -> Void)? = nil) -> Bool {
-        guard result.speechType == 1,
+        guard result.hasSpeech,
               let raw = result.speech?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else { return false }
 
