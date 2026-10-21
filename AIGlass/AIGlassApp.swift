@@ -10,8 +10,8 @@ import SwiftUI
 import UIKit
 
 private enum AppDebugFeatures {
-    /// 开发测试期间显示 D 浮窗，便于导出连接和蓝牙日志。
-    static let showsFloatingLogPanel = true
+    /// Hide internal log controls in the production app.
+    static let showsFloatingLogPanel = false
 }
 
 private enum StartupRemoteCrashCheck {
