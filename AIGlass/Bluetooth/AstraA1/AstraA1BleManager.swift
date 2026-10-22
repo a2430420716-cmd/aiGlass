@@ -56,6 +56,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @Published private(set) var deviceStorage: String?
     @Published private(set) var deviceVersion2800: String?
     @Published private(set) var deviceVersion6350: String?
+    private(set) var gen2OtaVersionReports: [String: Gen2OtaVersionReport] = [:]
+    private var gen2OtaVersionReportSequence = 0
     @Published private(set) var isQueryingAboutDeviceInfo = false
     @Published private(set) var isQueryingDeviceVersionsAndStorage = false
     @Published private(set) var deviceVersionQueryFailed = false
@@ -233,6 +235,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// OTA 升级进度等待（otaprogres 达到 100% 后完成）。
     private var otaUpgradeContinuation: CheckedContinuation<Void, Error>?
     private var otaUpgradeProgressHandler: ((Int) -> Void)?
+    private var otaUpgradeTimeoutTask: Task<Void, Never>?
+    private var otaUpgradeWaitID: UUID?
+    private var otaProgressDeadline: Gen2OtaProgressDeadline?
     /// 蓝牙 OTA 前置 DLL 查询/安装等待。
     private var algorithmInfoContinuation: CheckedContinuation<[AstraA1BleProtocol.DeviceAlgorithmInfo], Error>?
     private var dllUpdateContinuation: CheckedContinuation<AstraA1BleProtocol.DLLUpdateResult, Error>?
@@ -292,6 +297,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 对齐 Android DeviceUpgradeStateManager：整个 OTA（含 DLL 前置）期间禁止例行 BLE 查询插入升级命令流。
     private(set) var isFirmwareUpgradeFlowBusy = false
     private var gen2OtaRecovery = Gen2OtaRecoveryState()
+    private var gen2OtaLastProgressAt: TimeInterval?
 
     private var isSerialGetDevInfoInProgress: Bool {
         isQueryingAboutDeviceInfo
@@ -381,6 +387,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var boundReconnectScanTargetID: UUID?
     private var boundReconnectScanTimeoutWorkItem: DispatchWorkItem?
     private var boundBLEReconnectPolicy = BoundBLEReconnectPolicy()
+    private var homeSelectionTargetID: UUID?
+    private var homeSelectionRetryPolicies: [UUID: BoundBLEReconnectPolicy] = [:]
     private var boundBLEAttemptFailureCounted = false
     private var boundBLEStopWaitingForRelease = false
     /// 已挂起常驻 connect 的外设；避免监控轮询反复重复 connect 刷屏。
@@ -2894,6 +2902,14 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     ) async throws {
         guard ensureDeviceAvailable(for: "waitForOtaUpgradeCompletion") else { throw ImportBLEError.notReady }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            guard otaUpgradeContinuation == nil else {
+                continuation.resume(throwing: ImportBLEError.failed(L10n.t("已有升级正在等待结果", "An update is already awaiting its result")))
+                return
+            }
+            let waitID = UUID()
+            otaUpgradeWaitID = waitID
+            otaProgressDeadline = Gen2OtaProgressDeadline(now: ProcessInfo.processInfo.systemUptime)
+            wifiLog("升级：开始等待设备进度", detail: "target=\(connectedPeripheral?.identifier.uuidString ?? "nil") wait=\(waitID) inactivityTimeout=\(timeout)s maximum=900s")
             otaUpgradeContinuation = continuation
             otaUpgradeProgressHandler = onProgress
             do {
@@ -2901,14 +2917,28 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             } catch {
                 otaUpgradeContinuation = nil
                 otaUpgradeProgressHandler = nil
+                otaUpgradeWaitID = nil
+                otaProgressDeadline = nil
                 continuation.resume(throwing: error)
                 return
             }
-            scheduleImportTimeout(seconds: timeout) { [weak self] in
-                guard let self, let cont = self.otaUpgradeContinuation else { return }
-                self.otaUpgradeContinuation = nil
-                self.otaUpgradeProgressHandler = nil
-                cont.resume(throwing: ImportBLEError.timeout)
+            otaUpgradeTimeoutTask?.cancel()
+            otaUpgradeTimeoutTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+                    guard let self, self.otaUpgradeWaitID == waitID,
+                          let deadline = self.otaProgressDeadline else { return }
+                    let now = ProcessInfo.processInfo.systemUptime
+                    guard deadline.hasExpired(now: now, inactivity: timeout) else { continue }
+                    guard let cont = self.otaUpgradeContinuation else { return }
+                    self.otaUpgradeContinuation = nil
+                    self.otaUpgradeProgressHandler = nil
+                    self.otaUpgradeWaitID = nil
+                    self.otaProgressDeadline = nil
+                    self.wifiLog("升级：进度等待超时", detail: "wait=\(waitID) elapsed=\(now - deadline.startedAt)s idle=\(now - deadline.lastProgressAt)s; verify version before declaring failure")
+                    cont.resume(throwing: ImportBLEError.timeout)
+                    return
+                }
             }
         }
     }
@@ -2917,13 +2947,20 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         // Progress is evidence of device-side flashing even if the initiating command
         // or its reply was missed. Do not cancel such a session during later cleanup.
         if deviceGeneration == .gen2, let id = connectedPeripheral?.identifier {
-            gen2OtaRecovery.markUpgradeSubmitted(to: id)
+            gen2OtaRecovery.receiveProgress(from: id, percent: percent)
+            gen2OtaLastProgressAt = ProcessInfo.processInfo.systemUptime
         }
+        otaProgressDeadline?.receivedProgress(now: ProcessInfo.processInfo.systemUptime)
+        wifiLog("升级：设备进度", detail: "target=\(connectedPeripheral?.identifier.uuidString ?? "nil") progress=\(percent) waiter=\(otaUpgradeWaitID?.uuidString ?? "nil")", direction: .received)
         print("\(logTag) OTA progress=\(percent)% waiter=\(otaUpgradeContinuation != nil)")
         otaUpgradeProgressHandler?(percent)
         guard percent >= 100, let cont = otaUpgradeContinuation else { return }
         otaUpgradeContinuation = nil
         otaUpgradeProgressHandler = nil
+        otaUpgradeTimeoutTask?.cancel()
+        otaUpgradeTimeoutTask = nil
+        otaUpgradeWaitID = nil
+        otaProgressDeadline = nil
         cont.resume()
     }
 
@@ -3704,6 +3741,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         deviceVersionQueryGate.cancelPendingQuery()
         if deviceGeneration == .gen2, let id = connectedPeripheral?.identifier {
             gen2OtaRecovery.begin(targetID: id)
+            gen2OtaLastProgressAt = nil
         } else {
             gen2OtaRecovery.finish()
         }
@@ -3745,6 +3783,48 @@ final class AstraA1BleManager: NSObject, ObservableObject {
               deviceGeneration == .gen2, connectedPeripheral?.identifier == targetID else { return false }
         let sent = sendCommand(AstraA1BleProtocol.buildOtaCancelCommand())
         wifiLog("退出本次 OTA 准备", detail: "peripheral=\(targetID) command=otacancel0 queued=\(sent); queued does not confirm device exit", direction: .sent)
+        return sent
+    }
+
+    func hasSubmittedGen2Ota(for targetID: UUID) -> Bool {
+        gen2OtaRecovery.targetID == targetID && gen2OtaRecovery.upgradeSubmitted
+    }
+
+    func hasCompletedGen2Ota(for targetID: UUID) -> Bool {
+        gen2OtaRecovery.targetID == targetID && gen2OtaRecovery.upgradeCompleted
+    }
+
+    func hasGen2OtaProgress(for targetID: UUID, since time: TimeInterval) -> Bool {
+        gen2OtaRecovery.targetID == targetID && (gen2OtaLastProgressAt ?? -Double.infinity) >= time
+    }
+
+    @discardableResult
+    func confirmGen2OtaFailure(for targetID: UUID) -> Bool {
+        isFirmwareUpgradeFlowBusy && gen2OtaRecovery.confirmFailure(for: targetID)
+    }
+
+    func canCancelFailedGen2Ota(for targetID: UUID) -> Bool {
+        isFirmwareUpgradeFlowBusy && gen2OtaRecovery.canCancelFailedAttempt(for: targetID)
+    }
+
+    @discardableResult
+    func cancelFailedGen2Ota(for targetID: UUID) -> Bool {
+        guard canCancelFailedGen2Ota(for: targetID), isReady,
+              savedPeripheralID() == targetID, connectedPeripheral?.identifier == targetID,
+              deviceGeneration == .gen2 else { return false }
+        let sent = sendCommand(AstraA1BleProtocol.buildOtaCancelCommand())
+        wifiLog("升级：失败后退出 OTA", detail: "target=\(targetID) command=otacancel0 queued=\(sent); wait for fresh device status", direction: .sent)
+        return sent
+    }
+
+    /// Dedicated query bypasses routine-refresh suppression during this OTA flow.
+    @discardableResult
+    func queryGen2OtaVersion(for targetID: UUID, firmware: Bool) -> Bool {
+        guard isFirmwareUpgradeFlowBusy, gen2OtaRecovery.targetID == targetID,
+              isReady, savedPeripheralID() == targetID,
+              connectedPeripheral?.identifier == targetID, deviceGeneration == .gen2 else { return false }
+        let sent = sendCommand(AstraA1BleProtocol.buildGetDevInfoCommand(type: firmware ? .version6350 : .version2800))
+        wifiLog("升级：查询本次升级版本", detail: "target=\(targetID) key=\(firmware ? "ver63" : "ver28") queued=\(sent)", direction: .sent)
         return sent
     }
 
@@ -4172,6 +4252,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 开始扫描；发现设备后列入弹窗，由用户手动选择再连接。
     func startPairing(preferredDeviceName: String? = nil) {
+        homeSelectionTargetID = nil
         gen1OTAVerificationPeripheralID = nil
         // 解绑后的 didConnect/didDisconnect 可能延迟抵达。新配对必须先清掉旧链路目标，
         // 否则旧 ready 回调会结束新 session，首次点击便会永久停在“正在配对”。
@@ -4398,6 +4479,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 取消扫描/连接（用户点取消）。
     func cancelPairing() {
+        homeSelectionTargetID = nil
         gen1OTAVerificationPeripheralID = nil
         pendingStart = false
         cancelManualReconnectScanTimeout()
@@ -4432,6 +4514,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 退出登录时断开 BLE，并清除已保存的设备标识。
     func disconnectAndClearSession() {
+        homeSelectionRetryPolicies.removeAll()
         gen2OtaRecovery.finish()
         // A suspended vendor OTA must not restore an explicitly removed binding.
         gen1OTAPeripheralID = nil
@@ -4459,6 +4542,45 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         resetHomeMediaCaptureState()
         reconnectPeripheral = nil
         print("\(logTag) disconnectAndClearSession")
+    }
+
+    /// Selecting a bound card changes the exact target, never the account bindings.
+    /// Repeated view refreshes keep the current target's three-attempt budget.
+    @discardableResult
+    func selectBoundHomeDevice(peripheralID: UUID, reason: String) -> Bool {
+        if savedPeripheralID() == peripheralID {
+            homeSelectionTargetID = peripheralID
+            ensureConnected(reason: reason)
+            if !isReady, !isConnectionInProgress {
+                _ = reconnectSavedPeripheralWithoutSystemConnection(source: reason)
+            }
+            return true
+        }
+        guard !isFirmwareUpgradeFlowBusy, gen1OTAPeripheralID == nil,
+              !isAIVisionTransferBusy, !isVideoRecording, !isVideoStopping,
+              !isTakingPhoto, !isAIRecording,
+              deviceRuntimeStatus == .standby || deviceRuntimeStatus == .unknown else { return false }
+        if let oldID = savedPeripheralID() {
+            guard !gen1HotspotCleanup.isPending(oldID) else { return false }
+            homeSelectionRetryPolicies[oldID] = boundBLEReconnectPolicy
+        }
+        let retryPolicies = homeSelectionRetryPolicies
+        disconnectAndClearSession()
+        homeSelectionRetryPolicies = retryPolicies
+        homeSelectionTargetID = peripheralID
+        savePeripheralID(peripheralID)
+        pendingBoundSerialNumbers = [peripheralID.uuidString]
+        boundBLEReconnectPolicy = homeSelectionRetryPolicies[peripheralID] ?? BoundBLEReconnectPolicy()
+        userInitiatedDisconnect = false
+        autoReconnectEnabled = true
+        standingConnectAllowed = true
+        reconnectPeripheral = centralManager.retrievePeripherals(withIdentifiers: [peripheralID]).first
+        connectLog("home card connection target selected", detail: "reason=\(reason) id=\(peripheralID.uuidString) failedAttempts=\(boundBLEReconnectPolicy.failedAttempts)")
+        ensureConnected(reason: reason)
+        if !isReady, !isConnectionInProgress {
+            _ = reconnectSavedPeripheralWithoutSystemConnection(source: reason)
+        }
+        return true
     }
 
     /// 配对弹窗扫描阶段：后台连接探测协议服务（尚未由用户点「配对」）。
@@ -7043,6 +7165,14 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func applyGetDevInfoResult(_ result: (key: String, value: String, rawValue: Data)) {
+        if deviceGeneration == .gen2, ["ver28", "ver63"].contains(result.key),
+           let targetID = connectedPeripheral?.identifier {
+            gen2OtaVersionReportSequence += 1
+            gen2OtaVersionReports[result.key] = Gen2OtaVersionReport(targetID: targetID, version: result.value, sequence: gen2OtaVersionReportSequence)
+            if isFirmwareUpgradeFlowBusy {
+                wifiLog("升级：收到设备版本", detail: "target=\(targetID) key=\(result.key) value=\(result.value) sequence=\(gen2OtaVersionReportSequence)", direction: .received)
+            }
+        }
         defer {
             // A delayed, complete response may still recover a previously failed query.
             if cachedValue(for: .version2800) != nil, cachedValue(for: .version6350) != nil {
@@ -7586,6 +7716,10 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
             guard central === centralManager else { return }
+            if let target = homeSelectionTargetID, target != peripheral.identifier {
+                central.cancelPeripheralConnection(peripheral)
+                return
+            }
             if isManualHardReconnectOldContext(central: central, peripheral: peripheral) {
                 connectLog(
                     "old central didConnect while releasing; cancel again",
@@ -7675,6 +7809,7 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
     ) {
         Task { @MainActor in
             guard central === centralManager else { return }
+            if let target = homeSelectionTargetID, target != peripheral.identifier { return }
             if savedPeripheralID() == peripheral.identifier, peripheral.state == .disconnected {
                 boundBLEStopWaitingForRelease = false
             }
@@ -7762,6 +7897,7 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
         let callbackError = error as NSError?
         Task { @MainActor in
             guard central === centralManager else { return }
+            if let target = homeSelectionTargetID, target != peripheral.identifier { return }
             if savedPeripheralID() == peripheral.identifier, peripheral.state == .disconnected {
                 boundBLEStopWaitingForRelease = false
             }

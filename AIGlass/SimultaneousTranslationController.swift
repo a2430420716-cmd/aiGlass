@@ -521,6 +521,21 @@ extension SimultaneousTranslationController: RealtimeTranslationManager.Callback
 
     func onTaskStarted() {}
 
+    func onGlassesPlaybackStateChanged(_ state: RealtimeTranslationManager.GlassesPlaybackState) {
+        guard isActive, glassesSoundEnabled else { return }
+        switch state {
+        case .waiting:
+            socketStatus = L10n.t("正在等待眼镜音频连接…", "Waiting for glasses audio…")
+        case .playing:
+            socketStatus = isRecording ? L10n.t("正在录音翻译…", "Recording & translating…") : L10n.t("正在播放译文语音…", "Playing translation audio…")
+        case .unavailable:
+            glassesSoundEnabled = false
+            SimultaneousTranslationRecordStore.glassesSoundEnabled = false
+            translationManager?.setSpeechPlaybackEnabled(false)
+            alertMessage = L10n.t("眼镜音频不可用，已关闭眼镜播报，请检查系统蓝牙音频连接", "Glasses audio is unavailable. Playback has been disabled. Check the Bluetooth audio connection.")
+        }
+    }
+
     func onTranscript(_ text: String) {
         appendSourceText(text)
     }

@@ -1,18 +1,19 @@
 import AVFoundation
 import Foundation
 
-/// The service sends signed 16-bit little-endian mono PCM at 16 kHz.
+/// The service returns signed 16-bit little-endian mono PCM at 24 kHz.
+/// Microphone input remains 16 kHz; these are separate service formats.
 /// AVAudioPlayerNode connects to the mixer with noninterleaved Float32 PCM.
 enum TranslationPCMPlayback {
     static func makeFormat() -> AVAudioFormat? {
-        AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)
+        AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1)
     }
 
     static func makeBuffer(from data: Data, format: AVAudioFormat) -> AVAudioPCMBuffer? {
         guard !data.isEmpty, data.count.isMultiple(of: 2),
               data.count / 2 <= Int(UInt32.max),
               format.commonFormat == .pcmFormatFloat32, !format.isInterleaved,
-              format.channelCount == 1, format.sampleRate == 16_000 else { return nil }
+              format.channelCount == 1, format.sampleRate == 24_000 else { return nil }
         let frames = AVAudioFrameCount(data.count / 2)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames),
               let output = buffer.floatChannelData?[0] else { return nil }

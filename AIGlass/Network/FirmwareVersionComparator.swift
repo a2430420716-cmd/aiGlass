@@ -1,6 +1,29 @@
 import Foundation
 
 enum FirmwareVersionComparator {
+    /// OTA verification accepts equivalent numeric versions, without accepting a
+    /// different build suffix as the same firmware.
+    static func versionsMatch(_ actual: String, target: String) -> Bool {
+        func normalized(_ value: String) -> String {
+            let value = value.trimmingCharacters(in: .whitespacesAndNewlines.union(.controlCharacters)).lowercased()
+            return value.hasPrefix("v") ? String(value.dropFirst()) : value
+        }
+        let actual = normalized(actual)
+        let target = normalized(target)
+        guard !actual.isEmpty, !target.isEmpty else { return false }
+        if actual == target { return true }
+        // V02.01.01.08-beta1 and 2.1.1.8-beta1 denote the same build.
+        func parts(_ value: String) -> ([Int], String)? {
+            let end = value.firstIndex(where: { !"0123456789.".contains($0) }) ?? value.endIndex
+            let components = value[..<end].split(separator: ".", omittingEmptySubsequences: false)
+            let numbers = components.compactMap { Int($0) }
+            guard (2...4).contains(components.count), numbers.count == components.count else { return nil }
+            return (numbers, String(value[end...]))
+        }
+        guard let (left, leftBuild) = parts(actual), let (right, rightBuild) = parts(target) else { return false }
+        return compare(left, right) == 0 && leftBuild == rightBuild
+    }
+
     /// 服务端版本是否高于设备/App 当前版本（App 更新提示用）。
     static func isServerVersionNewer(_ server: String, than device: String) -> Bool {
         guard let serverParts = parseNumericVersion(server),

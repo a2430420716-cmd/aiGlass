@@ -151,6 +151,76 @@ enum Gen2OtaRecoveryStateTests {
                   "A ready replacement peripheral must never receive the old OTA's commands")
         }
 
+        // Missing the final progress notification must not turn a real update
+        // into a failure or authorize cancellation of an ongoing write.
+        check(Gen2OtaResultDecision.evaluate(targetVersion: "1.2.3", freshVersion: "v1.2.3",
+                                            freshIdle: false, receivedCompletion: false) == .completed,
+              "A fresh target version proves success even when progress 100 was lost")
+        check(Gen2OtaResultDecision.evaluate(targetVersion: "1.2.3", freshVersion: "1.2.2",
+                                            freshIdle: false, receivedCompletion: false) == .unconfirmed,
+              "Reading the old version while the device is busy cannot prove failure")
+        check(Gen2OtaResultDecision.evaluate(targetVersion: "1.2.3", previousVersion: "1.2.2", freshVersion: "1.2.2",
+                                            freshIdle: true, receivedCompletion: false) == .failed,
+              "After the recovery window, a fresh old version plus fresh idle proves failure")
+        for version: String? in [nil, "", "   ", "N/A", "unknown", "--", "error"] {
+            check(Gen2OtaResultDecision.evaluate(targetVersion: "1.2.3", freshVersion: version,
+                                                freshIdle: true, receivedCompletion: false) == .unconfirmed,
+                  "Missing, cached-only or invalid version evidence must never authorize cancellation")
+        }
+        check(Gen2OtaResultDecision.evaluate(targetVersion: "1.2.3", freshVersion: "1.2.2",
+                                            freshIdle: true, receivedCompletion: true) == .completed,
+              "Late progress 100 wins over an earlier mismatched version")
+        check(FirmwareVersionComparator.versionsMatch("V1.2.3.0\n", target: "1.2.3"),
+              "Equivalent numeric formatting does not create a false failed upgrade")
+        check(FirmwareVersionComparator.versionsMatch("V02.01.01.08-beta1", target: "2.1.1.8-beta1"),
+              "Device beta versions with leading zeroes compare correctly")
+        check(Gen2OtaResultDecision.evaluate(targetVersion: "1.2.3", previousVersion: "1.2.1", freshVersion: "1.2.2",
+                                            freshIdle: true, receivedCompletion: false) == .unconfirmed,
+              "A changed version with an unexpected build is not treated as failed flashing")
+        check(Gen2OtaResultDecision.evaluate(targetVersion: "1.2.3", freshVersion: "1.2.2",
+                                            freshIdle: true, receivedCompletion: false) == .unconfirmed,
+              "Missing the pre-upgrade version cannot prove that the old version remains installed")
+        check(!FirmwareVersionComparator.versionsMatch("1.2.3-build1", target: "1.2.3-build2"),
+              "Different build identifiers remain distinct")
+        check(!FirmwareVersionComparator.versionsMatch("1.2.3.4.5", target: "1.2.3.4.6"),
+              "Version comparison cannot silently discard extra segments")
+
+        var deadline = Gen2OtaProgressDeadline(now: 100)
+        check(!deadline.hasExpired(now: 279, inactivity: 180), "No premature inactivity timeout")
+        deadline.receivedProgress(now: 270)
+        check(!deadline.hasExpired(now: 300, inactivity: 180),
+              "An upgrade still making progress is not failed at the original 180 second deadline")
+        check(deadline.hasExpired(now: 450, inactivity: 180), "Stalled progress obeys its own inactivity deadline")
+        deadline.receivedProgress(now: 999)
+        check(deadline.hasExpired(now: 1000, inactivity: 180), "A stream of progress cannot extend the hard upper bound")
+
+        state.begin(targetID: target)
+        check(!state.confirmFailure(for: target), "No accepted preparation or submission means no cleanup ownership")
+        check(state.markUpgradeSubmitted(to: target), "The current attempt submitted the upgrade")
+        check(!state.canCancelFailedAttempt(for: target), "Submission plus local timeout alone cannot cancel flashing")
+        check(!state.confirmFailure(for: other), "Another device's failure cannot authorize cancellation")
+        check(state.confirmFailure(for: target), "Reconciled failure authorizes cleanup of the owned upgrade")
+        check(state.canCancelFailedAttempt(for: target) && !state.canCancelFailedAttempt(for: other),
+              "Failure cleanup is scoped to the original target")
+        state.receiveProgress(from: target, percent: 90)
+        check(!state.canCancelFailedAttempt(for: target), "Resumed progress revokes earlier failure cleanup authorization")
+        check(state.confirmFailure(for: target), "Only newly confirmed failure can authorize cleanup again")
+        state.markUpgradeCompleted(from: other)
+        check(state.canCancelFailedAttempt(for: target), "Another device's completion cannot change this attempt")
+        state.markUpgradeCompleted(from: target)
+        check(!state.canCancelFailedAttempt(for: target) && !state.confirmFailure(for: target),
+              "A late success irrevocably revokes pending failure cleanup")
+        state.begin(targetID: other)
+        check(!state.failureConfirmed && !state.upgradeCompleted && !state.canCancelFailedAttempt(for: other),
+              "A retry cannot inherit failure or completion evidence")
+        check(state.acceptPreparation(from: other) && state.markAlgorithmInstallSubmitted(to: other),
+              "The new attempt owns algorithm installation")
+        check(state.confirmFailure(for: other) && state.canCancelFailedAttempt(for: other),
+              "A terminal algorithm flow failure has its own explicit cancellation path")
+        state.finish()
+        check(!state.confirmFailure(for: other) && !state.canCancelFailedAttempt(for: other),
+              "No failure cleanup can outlive its attempt")
+
         print("Gen2 OTA recovery state: \(assertions) assertions passed")
     }
 }

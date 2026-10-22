@@ -141,9 +141,38 @@ enum DeviceDisplayNameStore {
 struct HomeView: View {
     @Binding var showsTabBar: Bool
 
-    @State private var selectedDeviceIndex = 0
+    private var selectedDeviceIndex: Int {
+        get {
+            let cards = homeDeviceCards
+            if let key = authSession.selectedHomeDeviceKey,
+               let index = cards.firstIndex(where: {
+                   ($0.serialNumber ?? $0.id).caseInsensitiveCompare(key) == .orderedSame
+               }) {
+                return index
+            }
+            if let saved = ble.savedPeripheralUUIDString,
+               let index = cards.firstIndex(where: { $0.serialNumber?.caseInsensitiveCompare(saved) == .orderedSame }) {
+                return index
+            }
+            return cards.firstIndex(where: {
+                !$0.isFindDevice && ble.isReady && ble.matchesCurrentDevice(serialNumber: $0.serialNumber, hardwareSN: $0.hardwareSN)
+            }) ?? 0
+        }
+        nonmutating set {
+            let cards = homeDeviceCards
+            guard cards.indices.contains(newValue) else { return }
+            let card = cards[newValue]
+            if !card.isFindDevice, card.serialNumber?.caseInsensitiveCompare(ble.savedPeripheralUUIDString ?? "") != .orderedSame,
+               isHomeDeviceSwitchBusy {
+                mediaActionAlertMessage = L10n.t("眼镜正在执行任务，请结束后再切换设备", "The glasses are busy. Finish the current task before switching devices.")
+                return
+            }
+            authSession.selectedHomeDeviceKey = card.serialNumber ?? card.id
+        }
+    }
     @ObservedObject private var systemVolume = SystemVolumeController.shared
     @State private var showSoundEffectSheet = false
+    @State private var homeIsVisible = false
     @State private var tabBarSuppressionCount = 0
     @State private var mediaActionAlertMessage: String?
     @State private var mediaActionToastMessage: String?
@@ -383,15 +412,24 @@ struct HomeView: View {
             if !active { tabRouter.endImmersiveCover() }
         }
         .onAppear {
+            homeIsVisible = true
             systemVolume.refresh()
             systemVolume.beginPollingWhileVisible()
             Task { await reloadHomeDeviceState() }
         }
         .onDisappear {
+            homeIsVisible = false
             systemVolume.endPollingWhileVisible()
         }
         .onViewWillAppear {
             systemVolume.refresh()
+        }
+        .task(id: homeConnectionTarget) {
+            // Do not connect to every card passed during a swipe.
+            guard homeConnectionTarget != nil else { return }
+            do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
+            guard !Task.isCancelled else { return }
+            connectSelectedHomeDevice(reason: "home-card-selection")
         }
         .onChangeCompat(of: scenePhase) { phase in
             if phase == .active {
@@ -400,16 +438,10 @@ struct HomeView: View {
                 refreshBatteryFromBLEIfNeeded()
             }
         }
-        .onChangeCompat(of: homeDeviceCards.count) { count in
-            if selectedDeviceIndex >= count {
-                selectedDeviceIndex = max(count - 1, 0)
-            }
-        }
         .onChangeCompat(of: authSession.userInfo?.device.count ?? 0) { count in
             // 用户信息异步返回后，再尝试连接并读电量
             if count > 0 {
-                adoptBoundPeripheralsIfNeeded()
-                pairingCoordinator.astraA1BleManager.ensureConnected(reason: "userInfoLoaded")
+                connectSelectedHomeDevice(reason: "userInfoLoaded")
             }
         }
     }
@@ -421,7 +453,7 @@ struct HomeView: View {
                 DeviceCarouselSection(
                     ble: pairingCoordinator.astraA1BleManager,
                     cards: homeDeviceCards,
-                    selectedDeviceIndex: $selectedDeviceIndex,
+                    selectedDeviceIndex: Binding(get: { selectedDeviceIndex }, set: { selectedDeviceIndex = $0 }),
                     showsTabBar: $showsTabBar,
                     reconnectingDeviceID: $reconnectingDeviceID,
                     reconnectFailure: $reconnectFailure,
@@ -615,16 +647,33 @@ struct HomeView: View {
     private func refreshBatteryFromBLEIfNeeded() {
         let hasBoundDevices = !(authSession.userInfo?.device.isEmpty ?? true)
         guard hasBoundDevices else { return }
-        adoptBoundPeripheralsIfNeeded()
-        // 已连接则刷新电量；未连接则挂起系统自动连接，等系统连上后自动读电量。
-        pairingCoordinator.astraA1BleManager.ensureConnected(reason: "homeAppear")
+        connectSelectedHomeDevice(reason: "homeAppear")
     }
 
-    /// 重装 / 换账号后本地无外设记录时，用账号绑定的 serial_number（iOS 即外设 UUID）认领系统已连接的眼镜。
-    private func adoptBoundPeripheralsIfNeeded() {
-        let serials = (authSession.userInfo?.device ?? []).map(\.serialNumber)
-        guard !serials.isEmpty else { return }
-        pairingCoordinator.astraA1BleManager.adoptBoundPeripheralIDs(serials)
+    private var isHomeDeviceSwitchBusy: Bool {
+        importManager.isImporting || recordingImportManager.isImporting
+            || ble.isFirmwareUpgradeFlowBusy || ble.isAIVisionTransferBusy
+            || ble.isVideoRecording || ble.isVideoStopping || ble.isTakingPhoto || ble.isAIRecording
+    }
+
+    private var homeConnectionTarget: String? {
+        guard homeIsVisible else { return nil }
+        let cards = homeDeviceCards
+        guard cards.indices.contains(selectedDeviceIndex), !cards[selectedDeviceIndex].isFindDevice else { return nil }
+        return cards[selectedDeviceIndex].serialNumber
+    }
+
+    private func connectSelectedHomeDevice(reason: String) {
+        guard let serial = homeConnectionTarget,
+              let id = UUID(uuidString: serial.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        let isCurrent = ble.savedPeripheralUUIDString?.caseInsensitiveCompare(id.uuidString) == .orderedSame
+        if (!isCurrent && isHomeDeviceSwitchBusy)
+            || !ble.selectBoundHomeDevice(peripheralID: id, reason: reason) {
+            if let current = ble.savedPeripheralUUIDString {
+                authSession.selectedHomeDeviceKey = current
+            }
+            mediaActionAlertMessage = L10n.t("眼镜正在执行任务，请结束后再切换设备", "The glasses are busy. Finish the current task before switching devices.")
+        }
     }
 
     /// 仅「系统已连接 + 自动软恢复耗尽」的卡片可点；其它未连接卡片不发起 GATT。
@@ -1063,39 +1112,59 @@ private struct DeviceCarouselSection: View {
     }
 
     private var carousel: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                ForEach(Array(devices.enumerated()), id: \.element.id) { index, device in
-                    DeviceCardView(
-                        device: device,
-                        showsTabBar: $showsTabBar,
-                        isConnecting: isConnecting(device),
-                        reconnectPhase: reconnectPhase(for: device),
-                        onFindDeviceTap: onFindDeviceTap,
-                        onOpenSettings: { onOpenSettings(device) },
-                        onEditName: { onEditName(device) },
-                        onReconnectTap: { onReconnectDevice(device) }
-                    )
-                    .frame(
-                        width: HomeLayout.deviceCardWidth,
-                        height: HomeLayout.deviceCardHeight
-                    )
-                    .id(index)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(Array(devices.enumerated()), id: \.element.id) { index, device in
+                        DeviceCardView(
+                            device: device,
+                            showsTabBar: $showsTabBar,
+                            isConnecting: isConnecting(device),
+                            reconnectPhase: reconnectPhase(for: device),
+                            onFindDeviceTap: onFindDeviceTap,
+                            onOpenSettings: { onOpenSettings(device) },
+                            onEditName: { onEditName(device) },
+                            onReconnectTap: { onReconnectDevice(device) }
+                        )
+                        .frame(
+                            width: HomeLayout.deviceCardWidth,
+                            height: HomeLayout.deviceCardHeight
+                        )
+                        .id(index)
+                    }
                 }
+                .compatibleScrollTargetLayout()
+                .padding(.horizontal, HomeLayout.horizontalMargin)
             }
-            .compatibleScrollTargetLayout()
-            .padding(.horizontal, HomeLayout.horizontalMargin)
+            .compatibleScrollTargetBehaviorViewAligned()
+            .simultaneousGesture(DragGesture().onEnded { value in
+                if #available(iOS 17.0, *) { return }
+                guard !devices.isEmpty else { return }
+                // iOS 15/16 lack scrollPosition; settle on the selected card explicitly.
+                let stride = HomeLayout.deviceCardWidth + 12
+                let offset = Int((-value.predictedEndTranslation.width / stride).rounded())
+                selectedDeviceIndex = min(max(selectedDeviceIndex + offset, 0), devices.count - 1)
+                proxy.scrollTo(selectedDeviceIndex, anchor: .center)
+            })
+            .compatibleScrollPosition(id: Binding(
+                get: { selectedDeviceIndex },
+                set: { newValue in
+                    if let newValue {
+                        selectedDeviceIndex = newValue
+                    }
+                }
+            ))
+            .frame(height: HomeLayout.deviceCardHeight)
+            .onAppear {
+                proxy.scrollTo(selectedDeviceIndex, anchor: .center)
+            }
+            .onChangeCompat(of: selectedDeviceIndex) { index in
+                proxy.scrollTo(index, anchor: .center)
+            }
+            .onChangeCompat(of: cards.map(\.id)) { _ in
+                proxy.scrollTo(selectedDeviceIndex, anchor: .center)
+            }
         }
-        .compatibleScrollTargetBehaviorViewAligned()
-        .compatibleScrollPosition(id: Binding(
-            get: { selectedDeviceIndex },
-            set: { newValue in
-                if let newValue {
-                    selectedDeviceIndex = newValue
-                }
-            }
-        ))
-        .frame(height: HomeLayout.deviceCardHeight)
     }
 
     private var pageIndicator: some View {

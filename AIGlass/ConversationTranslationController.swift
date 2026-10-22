@@ -239,10 +239,11 @@ final class ConversationTranslationController: ObservableObject {
         let played: Bool
         if message.side == .glasses {
             played = manager?.replaySpeechOnPhone(data) ?? false
+            statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
         } else {
             played = manager?.replaySpeechOnGlasses(data) ?? false
         }
-        statusText = played ? L10n.t("正在播放译文语音…", "Playing translation audio…") : L10n.t("眼镜音频不可用", "Glasses audio unavailable")
+        if !played { statusText = L10n.t("眼镜音频不可用", "Glasses audio unavailable") }
     }
 
     // MARK: - Turn lifecycle
@@ -982,14 +983,28 @@ extension ConversationTranslationController: RealtimeTranslationManager.Callback
             manager?.playSpeechOnPhone(data)
             statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
         } else if side == .phone {
-            let routed = manager?.playSpeechOnGlasses(data) ?? false
-            statusText = routed ? L10n.t("正在播放译文语音…", "Playing translation audio…") : L10n.t("眼镜音频不可用", "Glasses audio unavailable")
+            if manager?.playSpeechOnGlasses(data) != true {
+                statusText = L10n.t("眼镜音频不可用", "Glasses audio unavailable")
+            }
         }
         upsertMessage(sourceText: nil, translatedText: nil, speech: data, hasSpeech: true)
     }
 
     func onRecoverableError(_ message: String) {
         statusText = message.isEmpty ? L10n.t("正在处理上一句翻译…", "Processing previous translation…") : message
+    }
+
+    func onGlassesPlaybackStateChanged(_ state: RealtimeTranslationManager.GlassesPlaybackState) {
+        guard isActive else { return }
+        switch state {
+        case .waiting:
+            statusText = L10n.t("正在等待眼镜音频连接…", "Waiting for glasses audio…")
+        case .playing:
+            statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
+        case .unavailable:
+            statusText = L10n.t("眼镜音频不可用", "Glasses audio unavailable")
+            alertMessage = L10n.t("无法通过眼镜播放译文，请连接系统蓝牙音频，并在音频输出中选择眼镜后重试", "Translation audio could not play through the glasses. Connect Bluetooth audio, select the glasses as the audio output, and try again.")
+        }
     }
 
     func onError(_ message: String) {

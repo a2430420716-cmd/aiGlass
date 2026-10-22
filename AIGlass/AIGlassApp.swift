@@ -10,8 +10,8 @@ import SwiftUI
 import UIKit
 
 private enum AppDebugFeatures {
-    /// Hide internal log controls in the production app.
-    static let showsFloatingLogPanel = false
+    /// Enable internal log controls for this test package.
+    static let showsFloatingLogPanel = true
 }
 
 private enum StartupRemoteCrashCheck {

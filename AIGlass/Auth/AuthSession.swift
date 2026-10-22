@@ -8,6 +8,8 @@ final class AuthSession: ObservableObject {
     @Published private(set) var phoneNumber: String?
     @Published private(set) var token: String?
     @Published private(set) var userInfo: UserInfo?
+    /// Session-owned selection survives HomeView recreation and server list reordering.
+    @Published var selectedHomeDeviceKey: String?
     @Published private(set) var isLoadingUserInfo = false
     @Published private(set) var userInfoError: String?
     @Published private(set) var avatarCacheToken = ""
@@ -65,6 +67,7 @@ final class AuthSession: ObservableObject {
         self.token = result?.resolvedToken
         self.isLoggedIn = true
         self.userInfo = nil
+        self.selectedHomeDeviceKey = nil
         self.userInfoError = nil
         self.localAvatarImage = nil
         self.avatarCacheToken = ""
@@ -98,6 +101,7 @@ final class AuthSession: ObservableObject {
         self.token = token
         self.isLoggedIn = true
         self.userInfo = nil
+        self.selectedHomeDeviceKey = nil
         self.userInfoError = nil
         self.localAvatarImage = nil
         self.avatarCacheToken = ""
@@ -221,6 +225,8 @@ final class AuthSession: ObservableObject {
         try await DeviceService.bindDevice(request, token: token)
         print("[Auth] bind device success sn=\(request.sn) name=\(request.deviceName)")
         await refreshUserInfo()
+        guard self.token == token, isLoggedIn else { return }
+        selectedHomeDeviceKey = request.serialNumber
     }
 
     /// 服务端「该设备已绑定用户」类错误。
@@ -328,6 +334,7 @@ final class AuthSession: ObservableObject {
         invalidateInFlightUserInfoRefresh(reason: "logout")
         userInfoError = nil
         userInfo = nil
+        selectedHomeDeviceKey = nil
         phoneNumber = nil
         token = nil
         isLoggedIn = false

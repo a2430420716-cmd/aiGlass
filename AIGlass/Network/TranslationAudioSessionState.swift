@@ -54,9 +54,31 @@ struct TranslationAudioInputState {
     private(set) var recording = false
     private var backendProcessing = false
     private var lastStopAt: Date = .distantPast
+    private var playbackBuffers = 0
+    private var playbackGuardUntil: Date = .distantPast
 
-    func canSendAudio(opened: Bool, ready: Bool) -> Bool {
-        opened && ready && recording && !backendProcessing
+    func canSendAudio(opened: Bool, ready: Bool, now: Date = Date()) -> Bool {
+        opened && ready && recording && !backendProcessing &&
+            playbackBuffers == 0 && now >= playbackGuardUntil
+    }
+
+    var diagnosticDetail: String {
+        "backendBusy=\(backendProcessing) playbackBuffers=\(playbackBuffers) playbackGuardMs=\(Int(max(0, playbackGuardUntil.timeIntervalSinceNow) * 1_000))"
+    }
+
+    mutating func playbackScheduled() {
+        playbackBuffers += 1
+    }
+
+    mutating func playbackCompleted(now: Date) {
+        guard playbackBuffers > 0 else { return }
+        playbackBuffers -= 1
+        if playbackBuffers == 0 { playbackGuardUntil = now.addingTimeInterval(0.5) }
+    }
+
+    mutating func playbackCancelled(now: Date) {
+        if playbackBuffers > 0 { playbackGuardUntil = now.addingTimeInterval(0.5) }
+        playbackBuffers = 0
     }
 
     mutating func start(opened: Bool, ready: Bool, now: Date) -> Bool {
@@ -89,6 +111,90 @@ struct TranslationAudioInputState {
     mutating func close() {
         self = Self()
     }
+}
+
+/// One transport send at a time keeps stop after its PCM and bounds unsent audio.
+/// Timestamps use system uptime, so wall-clock changes cannot mask a stalled send.
+struct TranslationSocketSendQueue {
+    enum Kind { case pcm, json(String) }
+    struct Packet {
+        let id: UInt64
+        let kind: Kind
+        let data: Data
+        let queuedAt: TimeInterval
+    }
+
+    private(set) var packets: [Packet] = []
+    private(set) var byteCount = 0
+    private var nextID: UInt64 = 0
+    private var sending = false
+    static let maxPCMBytes = 160_000 // Five seconds of 16 kHz PCM16 mono.
+    static let sendTimeout: TimeInterval = 15
+
+    @discardableResult
+    mutating func append(_ data: Data, kind: Kind, now: TimeInterval) -> Bool {
+        guard packets.count < 128 else { return false }
+        if case .pcm = kind {
+            guard data.count <= Self.maxPCMBytes, byteCount <= Self.maxPCMBytes - data.count else { return false }
+        }
+        nextID &+= 1
+        packets.append(Packet(id: nextID, kind: kind, data: data, queuedAt: now))
+        byteCount += data.count
+        return true
+    }
+
+    mutating func takeNext() -> Packet? {
+        guard !sending, let packet = packets.first else { return nil }
+        sending = true
+        return packet
+    }
+
+    @discardableResult
+    mutating func complete(_ id: UInt64) -> Bool {
+        guard sending, packets.first?.id == id else { return false }
+        byteCount -= packets.removeFirst().data.count
+        sending = false
+        return true
+    }
+
+    func oldestAge(now: TimeInterval) -> TimeInterval {
+        packets.first.map { max(0, now - $0.queuedAt) } ?? 0
+    }
+
+    mutating func reset() {
+        packets.removeAll()
+        byteCount = 0
+        sending = false
+    }
+}
+
+/// A missing classic Bluetooth route must not silently play translation on phone.
+struct TranslationGlassesPlaybackQueue {
+    private(set) var chunks: [Data] = []
+    private(set) var byteCount = 0
+    private var waitingSince: TimeInterval?
+    static let timeout: TimeInterval = 10
+
+    mutating func append(_ data: Data, now: TimeInterval) -> Bool {
+        guard chunks.count < 24, data.count <= 2_000_000,
+              byteCount <= 2_000_000 - data.count else { return false }
+        if waitingSince == nil { waitingSince = now }
+        chunks.append(data)
+        byteCount += data.count
+        return true
+    }
+
+    mutating func removeFirst() {
+        guard !chunks.isEmpty else { return }
+        byteCount -= chunks.removeFirst().count
+        if chunks.isEmpty { waitingSince = nil }
+    }
+
+    func timedOut(now: TimeInterval) -> Bool {
+        waitingSince.map { now - $0 >= Self.timeout } ?? false
+    }
+
+    mutating func reset() { self = Self() }
 }
 
 /// Prevents duplicate ready events, stale ACKs and timeout tasks from opening a mic twice.
