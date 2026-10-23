@@ -290,8 +290,10 @@ final class MediaLibrary: ObservableObject {
         } else {
             let data = try Data(contentsOf: source, options: .mappedIfSafe)
             let rotated = try Gen1MediaOrientation.rotatePhotoClockwise90(data, fileName: fileName)
-            try rotated.write(to: temporary, options: .atomic)
-            try Self.generatePhotoThumbnail(from: rotated, to: temporaryThumbnail)
+            let photo = PhotoWatermarkApplier.applyIfNeeded(rotated, capturedAt: receipt.createdAt)
+            try photo.write(to: temporary, options: .atomic)
+            try Self.generatePhotoThumbnail(from: photo, to: temporaryThumbnail)
+            DebugLogStore.logWiFi("Gen1 photo processed", detail: "rotation=clockwise90 watermarkEnabled=\(AppSettings.imageWatermarkEnabled) style=\(AppSettings.imageWatermarkStyle) originalPreserved=true")
         }
         guard Self.hasNonemptyFile(temporary), Self.hasNonemptyFile(temporaryThumbnail) else {
             throw MediaOrientationFixer.Error.encodeFailed

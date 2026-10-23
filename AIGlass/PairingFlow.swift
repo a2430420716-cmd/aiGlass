@@ -489,7 +489,7 @@ final class PairingCoordinator: ObservableObject {
         guard force || targetConnected else {
             throw APIError.server(message: L10n.t("请先连接需要解绑的眼镜", "Connect the glasses you want to unpair first"), code: -1)
         }
-        let requiresReset = targetConnected && astraA1BleManager.deviceGeneration == .gen2
+        let requiresReset = targetConnected
         if targetConnected {
             guard astraA1BleManager.deviceGeneration != .unknown else {
                 throw APIError.server(message: L10n.t("正在识别设备，请稍后重试解绑", "Identifying the glasses. Try unpairing again shortly"), code: -1)
@@ -497,7 +497,7 @@ final class PairingCoordinator: ObservableObject {
             if requiresReset {
                 isWaitingForUnpairFactoryReset = true
                 defer { isWaitingForUnpairFactoryReset = false }
-                try await astraA1BleManager.resetGen2BeforeUnpair()
+                try await astraA1BleManager.resetDeviceBeforeUnpair()
             }
         }
         try Task.checkCancellation()

@@ -4659,20 +4659,26 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     /// Device success acknowledgement is required before removing the server binding.
-    func resetGen2BeforeUnpair() async throws {
+    func resetDeviceBeforeUnpair() async throws {
         try Task.checkCancellation()
         guard unpairFactoryResetConfirmation == nil,
-              deviceGeneration == .gen2, isDeviceAvailable,
+              deviceGeneration != .unknown, isDeviceAvailable,
               !isFirmwareUpgradeFlowBusy,
               let targetID = connectedPeripheral?.identifier else {
             throw ImportBLEError.failed(L10n.t("请连接当前眼镜后重试解绑", "Connect these glasses before unpairing"))
         }
-        guard factoryResetDevice() else { throw ImportBLEError.sendFailed }
+        // Register the exact target before writing. Unpairing sends once and waits
+        // for terminal success; a progress response must not trigger another reset.
+        gen1FactoryResetGeneration += 1
+        factoryResetResult = nil
         unpairFactoryResetConfirmation = FactoryResetConfirmation(
             targetID: targetID, deadline: ProcessInfo.processInfo.systemUptime + 30
         )
         defer { unpairFactoryResetConfirmation = nil }
-        connectLog("unbind: waiting for factory reset acknowledgement", detail: "target=\(targetID.uuidString) timeout=30s")
+        guard sendCommand(AstraA1BleProtocol.buildFactoryResetCommand()) else {
+            throw ImportBLEError.sendFailed
+        }
+        connectLog("unbind: waiting for factory reset acknowledgement", detail: "target=\(targetID.uuidString) generation=\(deviceGeneration.rawValue) timeout=30s")
         while let confirmation = unpairFactoryResetConfirmation {
             try Task.checkCancellation()
             switch confirmation.outcome(now: ProcessInfo.processInfo.systemUptime) {
@@ -5145,7 +5151,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 } else if frame.command == Gen1Commands.takePhoto {
                     resetHomeMediaCaptureState()
                 }
-                if frame.command == Gen1Commands.factoryReset { factoryResetResult = 0 }
+                if frame.command == Gen1Commands.factoryReset {
+                    gen1FactoryResetGeneration += 1
+                    emitGen1Canonical("testresult", Data([0x13, 0]))
+                }
                 continue
             }
             switch frame.command {
@@ -5185,8 +5194,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             case Gen1Commands.startVideo: emitGen1Canonical("actionrsp0", Data([2, 0, 2]))
             case Gen1Commands.stopVideo: emitGen1Canonical("actionrsp0", Data([3, 0, 0]))
             case Gen1Commands.factoryReset:
+                guard let state = payload.first else {
+                    connectLog("Gen1 factory reset response ignored", detail: "reason=invalid_payload bytes=\(payload.count)")
+                    continue
+                }
                 gen1FactoryResetGeneration += 1
-                if let state = payload.first { emitGen1Canonical("testresult", Data([0x13, state])) }
+                emitGen1Canonical("testresult", Data([0x13, state]))
             case Gen1Commands.eqSet, Gen1Commands.eqQuery:
                 if let mode = payload.last, mode <= 2 { emitGen1Canonical("eqmodersp0", Data([0, mode])) }
             case Gen1Commands.wearingSet, Gen1Commands.wearingQuery:

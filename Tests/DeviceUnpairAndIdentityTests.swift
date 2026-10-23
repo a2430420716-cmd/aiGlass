@@ -41,6 +41,20 @@ enum DeviceUnpairAndIdentityTests {
         check(DeviceIdentityPresentation.hardwareSN(candidates: [target.uuidString, " G5T712604R00269 "], bluetoothID: target.uuidString) == "G5T712604R00269", "Invalid live identity falls back to genuine cached hardware SN")
         check(DeviceIdentityPresentation.hardwareSN(candidates: ["cc-27-15-44-62-eb"], bluetoothID: nil) == nil, "Hyphenated MAC is not hardware SN")
         check(DeviceIdentityPresentation.hardwareSN(candidates: ["same-id", "real-sn"], bluetoothID: "SAME-ID") == "real-sn", "The binding identifier is rejected case-insensitively")
+
+        let bound = ["glasses-A", "glasses-B"]
+        check(HomeDeviceSelection.keyOnReturn(selected: "glasses-A", connected: "glasses-B", bound: bound) == "glasses-B",
+              "Returning home selects connected B instead of stale disconnected A")
+        check(HomeDeviceSelection.keyOnReturn(selected: "glasses-B", connected: nil, bound: bound) == "glasses-B",
+              "Without a live connection, preserve the user's selected reconnection target")
+        check(HomeDeviceSelection.keyOnReturn(selected: nil, connected: "GLASSES-b", bound: Array(bound.reversed())) == "glasses-B",
+              "A recreated home and reordered server list retain the live device case-insensitively")
+        check(HomeDeviceSelection.keyOnReturn(selected: "glasses-A", connected: "unbound", bound: bound) == "glasses-A",
+              "An unbound peripheral cannot select a home card")
+        check(HomeDeviceSelection.keyOnReturn(selected: "removed", connected: nil, bound: bound) == "glasses-A",
+              "Removing a selected device falls back to a remaining binding")
+        check(HomeDeviceSelection.keyOnReturn(selected: "glasses-A", connected: "glasses-A", bound: []) == nil,
+              "Empty bindings cannot preserve an old account's device selection")
         print("Device reset/identity: \(assertions) assertions passed")
     }
 }

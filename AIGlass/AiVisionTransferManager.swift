@@ -210,11 +210,20 @@ final class AiVisionTransferManager: ObservableObject {
             }
             isSessionActive = false
             resetReceiveState()
-            // Android stores the Gen1 camera JPEG as-is; Gen2 rotation does not apply.
-            lastImageJPEG = jpeg
+            // Gen1 uses the same clockwise correction as its album import path.
+            // Normalize once here, so chat preview and recognition upload agree.
+            let correctedJPEG: Data
+            do {
+                correctedJPEG = try Gen1MediaOrientation.rotatePhotoClockwise90(jpeg, fileName: "vision.jpg")
+                DebugLogStore.logBLEEvent("Gen1 vision image corrected", detail: "rotation=clockwise90 inputBytes=\(jpeg.count) outputBytes=\(correctedJPEG.count)")
+            } catch {
+                fail(L10n.t("识图照片处理失败，请重试", "Unable to process the recognition photo. Try again."))
+                return
+            }
+            lastImageJPEG = correctedJPEG
             phase = .completed
             ble?.setAIVisionTransferBusy(false)
-            onImageReceived?(jpeg)
+            onImageReceived?(correctedJPEG)
         case .error(let reason):
             print("\(logTag) first-generation image failed: \(reason)")
             fail(L10n.t("图片数据校验失败，请重试", "Image data validation failed. Try again."))

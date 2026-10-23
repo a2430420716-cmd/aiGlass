@@ -51,6 +51,7 @@ final class AIVoiceChatManager: ObservableObject {
     private var voiceChatCaptureEnabled = true
     private var gen1StopPending = false
     private var gen1StopTask: Task<Void, Never>?
+    private var playbackAudioActivation: UInt64?
 
     private init() {}
 
@@ -105,6 +106,7 @@ final class AIVoiceChatManager: ObservableObject {
             recording = true
             phase = .waiting
             frames.removeAll(keepingCapacity: true)
+            prepareConversationAudio()
         }
         return sent
     }
@@ -140,6 +142,7 @@ final class AIVoiceChatManager: ObservableObject {
             recording = true
             phase = .waiting
             frames.removeAll(keepingCapacity: true)
+            prepareConversationAudio()
         } else {
             phase = .failed(ble.mediaActionAlertMessage ?? L10n.t("无法开启语音提问", "Unable to start voice ask"))
         }
@@ -189,35 +192,41 @@ final class AIVoiceChatManager: ObservableObject {
             stopBubblePlayback()
             return
         }
-        stopBubblePlayback()
+        stopBubblePlayback(releaseAudio: false)
         stopSpeech()
         let url = URL(fileURLWithPath: filePath)
         guard FileManager.default.fileExists(atPath: filePath) else {
             print("[AIVoice] missing audio file \(filePath)")
+            releasePlaybackAudioIfIdle(reason: "voice bubble file missing")
             return
         }
         do {
-            try GlassesAudioRouteController.activate(.playback)
+            try activatePlaybackAudio()
             let player = try AVAudioPlayer(contentsOf: url)
             player.delegate = BubblePlaybackDelegate.shared
-            BubblePlaybackDelegate.shared.onFinish = { [weak self] in
+            BubblePlaybackDelegate.shared.onFinish = { [weak self, weak player] in
                 Task { @MainActor in
-                    self?.playingVoiceMessageID = nil
-                    self?.bubblePlayer = nil
+                    guard let self, let player, self.bubblePlayer === player,
+                          self.playingVoiceMessageID == messageID else { return }
+                    self.playingVoiceMessageID = nil
+                    self.bubblePlayer = nil
+                    self.releasePlaybackAudioIfIdle(reason: "voice bubble finished")
                 }
             }
             bubblePlayer = player
             playingVoiceMessageID = messageID
-            player.play()
+            if !player.play() { stopBubblePlayback() }
         } catch {
             print("[AIVoice] bubble play failed: \(error.localizedDescription)")
             playingVoiceMessageID = nil
+            releasePlaybackAudioIfIdle(reason: "voice bubble failed")
         }
     }
 
     func toggleAIResponsePlayback(messageID: UUID, source: AIChatItem.AIVoiceSource) {
         if playingAIVoiceMessageID == messageID {
             stopSpeech()
+            releasePlaybackAudioIfIdle(reason: "AI replay stopped")
             return
         }
         _ = playAIResponse(messageID: messageID, source: source)
@@ -323,6 +332,7 @@ final class AIVoiceChatManager: ObservableObject {
             if state != .speaking {
                 state = .idle
                 phase = .idle
+                releasePlaybackAudioIfIdle(reason: "device session ended")
             }
         case 0, 2:
             resetSession(stopSpeechPlayback: true)
@@ -336,6 +346,8 @@ final class AIVoiceChatManager: ObservableObject {
         recording = true
         phase = .listening
         frames.removeAll(keepingCapacity: true)
+        prepareConversationAudio()
+        logAudioLifecycle(reason: "AI listening started")
     }
 
     private func appendVoiceFrames(_ newFrames: [Data]) {
@@ -343,6 +355,7 @@ final class AIVoiceChatManager: ObservableObject {
         if !sessionActive {
             sessionActive = true
             isEnabled = true
+            prepareConversationAudio()
         }
         if state == .speaking || state == .thinking {
             generation += 1
@@ -453,6 +466,7 @@ final class AIVoiceChatManager: ObservableObject {
 
     private func completeTurn(_ token: Int) {
         guard isCurrent(token) else { return }
+        logAudioLifecycle(reason: "AI turn completed")
         generation += 1
         if ble?.deviceGeneration == .gen1G5K61 {
             // First-generation firmware requires a new user/hardware trigger per turn.
@@ -465,6 +479,7 @@ final class AIVoiceChatManager: ObservableObject {
             phase = .idle
             isEnabled = false
             isManualSession = false
+            releasePlaybackAudioIfIdle(reason: "AI conversation completed")
             return
         }
 
@@ -485,6 +500,7 @@ final class AIVoiceChatManager: ObservableObject {
     }
 
     private func resetSession(stopSpeechPlayback: Bool) {
+        logAudioLifecycle(reason: "AI session resetting")
         gen1StopTask?.cancel()
         gen1StopTask = nil
         gen1StopPending = false
@@ -499,6 +515,7 @@ final class AIVoiceChatManager: ObservableObject {
         if stopSpeechPlayback {
             stopSpeech()
         }
+        releasePlaybackAudioIfIdle(reason: "AI session reset")
     }
 
     private func saveVoiceFile(_ data: Data) throws -> URL {
@@ -566,10 +583,10 @@ final class AIVoiceChatManager: ObservableObject {
         source: AIChatItem.AIVoiceSource,
         completion: (() -> Void)? = nil
     ) -> Bool {
-        stopBubblePlayback()
+        stopBubblePlayback(releaseAudio: false)
         stopSpeech()
         do {
-            try GlassesAudioRouteController.activate(.playback)
+            try activatePlaybackAudio(interruptOtherAudio: true)
             playingAIVoiceMessageID = messageID
             speechCompletion = completion
 
@@ -578,6 +595,7 @@ final class AIVoiceChatManager: ObservableObject {
                 guard let url = URL(string: value) else {
                     playingAIVoiceMessageID = nil
                     speechCompletion = nil
+                    releasePlaybackAudioIfIdle(reason: "invalid AI audio URL")
                     return false
                 }
                 let item = AVPlayerItem(url: url)
@@ -619,12 +637,14 @@ final class AIVoiceChatManager: ObservableObject {
                 localPlayer = player
                 guard player.play() else {
                     stopSpeech()
+                    releasePlaybackAudioIfIdle(reason: "AI audio did not start")
                     return false
                 }
             }
             return true
         } catch {
             stopSpeech()
+            releasePlaybackAudioIfIdle(reason: "AI audio failed")
             print("[AIVoice] AI bubble playback failed: \(error.localizedDescription)")
             return false
         }
@@ -634,7 +654,10 @@ final class AIVoiceChatManager: ObservableObject {
         let completion = speechCompletion
         speechCompletion = nil
         clearSpeechPlayers()
-        guard let completion else { return }
+        guard let completion else {
+            releasePlaybackAudioIfIdle(reason: "AI speech finished")
+            return
+        }
         drainBluetoothAudio(completion: completion)
     }
 
@@ -684,6 +707,7 @@ final class AIVoiceChatManager: ObservableObject {
         drainPlayer?.stop()
         drainPlayer = nil
         completion?()
+        releasePlaybackAudioIfIdle(reason: "Bluetooth audio drain completed")
     }
 
     private static let bluetoothDrainSilenceWAV: Data = {
@@ -740,10 +764,38 @@ final class AIVoiceChatManager: ObservableObject {
         playingAIVoiceMessageID = nil
     }
 
-    private func stopBubblePlayback() {
+    private func stopBubblePlayback(releaseAudio: Bool = true) {
         bubblePlayer?.stop()
         bubblePlayer = nil
         playingVoiceMessageID = nil
+        if releaseAudio { releasePlaybackAudioIfIdle(reason: "voice bubble stopped") }
+    }
+
+    private func prepareConversationAudio() {
+        do {
+            try activatePlaybackAudio(interruptOtherAudio: true)
+        } catch {
+            DebugLogStore.logConnect("AI audio activation failed", detail: error.localizedDescription)
+        }
+    }
+
+    private func activatePlaybackAudio(interruptOtherAudio: Bool = false) throws {
+        try GlassesAudioRouteController.activate(interruptOtherAudio ? .aiVoicePlayback : .playback)
+        playbackAudioActivation = GlassesAudioRouteController.activationGeneration
+        logAudioLifecycle(reason: "AI playback activated")
+    }
+
+    private func releasePlaybackAudioIfIdle(reason: String) {
+        guard !sessionActive, !recording,
+              remotePlayer == nil, localPlayer == nil, drainPlayer == nil, bubblePlayer == nil,
+              let activation = playbackAudioActivation else { return }
+        playbackAudioActivation = nil
+        GlassesAudioRouteController.deactivateIfCurrent(activation: activation, reason: reason)
+    }
+
+    private func logAudioLifecycle(reason: String) {
+        let audio = AVAudioSession.sharedInstance()
+        DebugLogStore.logConnect(reason, detail: "generation=\(ble?.deviceGeneration.rawValue ?? "unknown") sessionActive=\(sessionActive) recording=\(recording) state=\(state) otherAudioPlaying=\(audio.isOtherAudioPlaying) secondaryAudioSilenced=\(audio.secondaryAudioShouldBeSilencedHint) category=\(audio.category.rawValue) outputs=\(audio.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ","))")
     }
 }
 

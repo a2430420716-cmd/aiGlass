@@ -22,9 +22,12 @@ enum PhotoWatermarkApplier {
         guard AppSettings.imageWatermarkEnabled else { return imageData }
         guard let style = Style(rawValue: AppSettings.imageWatermarkStyle) else { return imageData }
         do {
-            return try apply(imageData, style: style, capturedAt: capturedAt)
+            let stamped = try apply(imageData, style: style, capturedAt: capturedAt)
+            DebugLogStore.logWiFi("photo watermark applied", detail: "style=\(style.rawValue) inputBytes=\(imageData.count) outputBytes=\(stamped.count)")
+            return stamped
         } catch {
             print("[Watermark] apply failed style=\(style.rawValue): \(error.localizedDescription)")
+            DebugLogStore.logWiFi("photo watermark failed", detail: "style=\(style.rawValue) error=\(error.localizedDescription) fallback=original")
             return imageData
         }
     }

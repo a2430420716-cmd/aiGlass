@@ -51,6 +51,7 @@ jobs:
           "$RUNNER_TEMP/translation-audio-tests"
           bash Tests/run-translation-pcm-playback-tests.sh
           bash Tests/run-home-video-capture-tests.sh
+          bash Tests/run-device-unpair-identity-tests.sh
           bash Tests/run-gen1-firmware-tests.sh
       - name: 签名、归档、导出 IPA
         env:

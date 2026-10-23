@@ -412,6 +412,7 @@ struct HomeView: View {
             if !active { tabRouter.endImmersiveCover() }
         }
         .onAppear {
+            synchronizeConnectedHomeCard(reason: "home-appear")
             homeIsVisible = true
             systemVolume.refresh()
             systemVolume.beginPollingWhileVisible()
@@ -422,7 +423,13 @@ struct HomeView: View {
             systemVolume.endPollingWhileVisible()
         }
         .onViewWillAppear {
+            synchronizeConnectedHomeCard(reason: "home-will-appear")
             systemVolume.refresh()
+        }
+        .onChangeCompat(of: ble.isReady) { ready in
+            if ready, homeIsVisible {
+                synchronizeConnectedHomeCard(reason: "ble-ready")
+            }
         }
         .task(id: homeConnectionTarget) {
             // Do not connect to every card passed during a swipe.
@@ -441,6 +448,7 @@ struct HomeView: View {
         .onChangeCompat(of: authSession.userInfo?.device.count ?? 0) { count in
             // 用户信息异步返回后，再尝试连接并读电量
             if count > 0 {
+                if homeIsVisible { synchronizeConnectedHomeCard(reason: "bound-devices-loaded") }
                 connectSelectedHomeDevice(reason: "userInfoLoaded")
             }
         }
@@ -640,8 +648,28 @@ struct HomeView: View {
     }
 
     private func reloadHomeDeviceState() async {
+        synchronizeConnectedHomeCard(reason: "home-refresh")
+        let selection = authSession.selectedHomeDeviceKey
         await authSession.refreshUserInfo()
+        // A swipe during the HTTP request must keep its newly selected target.
+        guard homeIsVisible, authSession.selectedHomeDeviceKey == selection else { return }
+        synchronizeConnectedHomeCard(reason: "home-refresh-completed")
         refreshBatteryFromBLEIfNeeded()
+    }
+
+    private func synchronizeConnectedHomeCard(reason: String) {
+        let cards = homeDeviceCards.filter { !$0.isFindDevice }
+        let connected = ble.isReady ? cards.first(where: {
+            ble.matchesCurrentDevice(serialNumber: $0.serialNumber, hardwareSN: $0.hardwareSN)
+        }) : nil
+        let key = HomeDeviceSelection.keyOnReturn(
+            selected: authSession.selectedHomeDeviceKey ?? ble.savedPeripheralUUIDString,
+            connected: connected.map { $0.serialNumber ?? $0.id },
+            bound: cards.map { $0.serialNumber ?? $0.id }
+        )
+        guard key != authSession.selectedHomeDeviceKey else { return }
+        DebugLogStore.logConnect("home card synchronized", detail: "reason=\(reason) previous=\(authSession.selectedHomeDeviceKey ?? "nil") selected=\(key ?? "nil") connected=\(connected?.serialNumber ?? "nil")")
+        authSession.selectedHomeDeviceKey = key
     }
 
     private func refreshBatteryFromBLEIfNeeded() {

@@ -7,6 +7,8 @@ enum GlassesAudioRouteController {
     enum Intent {
         /// 纯播放（AI 语音、录音回放、引导音乐等）。
         case playback
+        /// AI voice temporarily interrupts music, then yields with a resume hint.
+        case aiVoicePlayback
         /// 边录边播（同声传译等：手机麦 + 眼镜扬声器）。
         case playAndRecord
         /// Translation captures the phone mic and plays through Bluetooth media (A2DP).
@@ -20,6 +22,8 @@ enum GlassesAudioRouteController {
     private static var routeObserver: NSObjectProtocol?
     private static var didInstallObserver = false
     private static var reconnectTask: Task<Void, Never>?
+    private(set) static var activationGeneration: UInt64 = 0
+    private static var wantsActiveRoute = false
 
     static func setGlassesConnected(_ connected: Bool) {
         installRouteObserverIfNeeded()
@@ -36,12 +40,15 @@ enum GlassesAudioRouteController {
         }
 
         // BLE ready 后经典蓝牙 A2DP 常晚几秒才起来，多轮刷新路由。
+        let initialRouteActivation = activationGeneration
         reconnectTask = Task { @MainActor in
+            var routeActivation = initialRouteActivation
             for delayNs in [0, 500_000_000, 1_500_000_000, 3_000_000_000, 6_000_000_000, 8_500_000_000] as [UInt64] {
                 if delayNs > 0 {
                     try? await Task.sleep(nanoseconds: delayNs)
                 }
-                guard !Task.isCancelled, glassesConnected else { return }
+                guard !Task.isCancelled, glassesConnected,
+                      routeActivation == activationGeneration else { return }
                 // 采集中把 category 掀成 playback 会掐断录音，留给录音方自己处理路由。
                 let category = AVAudioSession.sharedInstance().category
                 if category == .playAndRecord || category == .record {
@@ -55,6 +62,7 @@ enum GlassesAudioRouteController {
                 }
                 do {
                     try activate(.playback)
+                    routeActivation = activationGeneration
                 } catch {
                     print("[GlassesAudio] apply on connect failed: \(error.localizedDescription)")
                 }
@@ -73,6 +81,10 @@ enum GlassesAudioRouteController {
         let session = AVAudioSession.sharedInstance()
 
         switch intent {
+        case .aiVoicePlayback:
+            try session.setCategory(.playback, mode: .default, options: [])
+            try? session.overrideOutputAudioPort(.none)
+
         case .playback:
             // mixWithOthers：切回首页刷新路由时不打断系统/第三方正在播的音乐。
             try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
@@ -109,6 +121,8 @@ enum GlassesAudioRouteController {
         }
 
         try session.setActive(true)
+        activationGeneration &+= 1
+        wantsActiveRoute = true
         if case .phoneMicrophoneAndPlayback = intent,
            let microphone = session.availableInputs?.first(where: { $0.portType == .builtInMic }),
            session.preferredInput?.uid != microphone.uid {
@@ -117,6 +131,26 @@ enum GlassesAudioRouteController {
         logCurrentRoute(reason: "activate(\(intent))")
         if case .phoneMicrophoneAndPlayback = intent {
             DebugLogStore.logTranslation("phone mic / media output prepared", detail: connectionDiagnosticSnapshot.detail)
+        }
+    }
+
+    /// Only the most recent owner may release the shared audio session. Never
+    /// deactivate a translation microphone or another player that took over.
+    static func deactivateIfCurrent(activation: UInt64, reason: String) {
+        let session = AVAudioSession.sharedInstance()
+        guard activation == activationGeneration, session.category == .playback else {
+            DebugLogStore.logConnect("AI audio release skipped", detail: "reason=\(reason) ownerChanged=true")
+            return
+        }
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        wantsActiveRoute = false
+        do {
+            try session.setActive(false, options: [.notifyOthersOnDeactivation])
+            activationGeneration &+= 1
+            DebugLogStore.logConnect("AI audio released", detail: "reason=\(reason) notifyOthersOnDeactivation=true otherAudioPlaying=\(AVAudioSession.sharedInstance().isOtherAudioPlaying)")
+        } catch {
+            DebugLogStore.logConnect("AI audio release failed", detail: "reason=\(reason) error=\(error.localizedDescription)")
         }
     }
 
@@ -202,7 +236,7 @@ enum GlassesAudioRouteController {
         logCurrentRoute(reason: "routeChange(\(String(describing: reason)))")
 
         // 眼镜仍连着、但输出被切回内置扬声器时，尝试清掉外放强制。
-        guard glassesConnected else { return }
+        guard glassesConnected, wantsActiveRoute else { return }
         let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
         let onBuiltInSpeaker = outputs.contains { $0.portType == .builtInSpeaker }
         let onBluetooth = isOutputOnBluetooth
