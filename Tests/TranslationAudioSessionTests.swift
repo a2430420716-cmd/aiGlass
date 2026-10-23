@@ -123,6 +123,51 @@ struct TranslationAudioSessionTests {
         check(!recovery.allowRestart(now: 7), "Persistent capture failure cannot restart indefinitely")
         check(recovery.allowRestart(now: 31), "Healthy later capture has a fresh recovery budget")
 
+        // Reproduce glasses recording while TTS keeps arriving: retaining TTS must
+        // never schedule playback or close the existing PCM input gate.
+        var deferredSpeech = TranslationDeferredSpeechQueue()
+        let firstSpeech = Data([1, 0, 2, 0])
+        let secondSpeech = Data([3, 0])
+        check(deferredSpeech.receive(firstSpeech) == .discarded, "No speech playback before an active glasses turn")
+        deferredSpeech.begin()
+        check(deferredSpeech.receive(firstSpeech) == .deferred, "Hold speech until local recording ends")
+        gate.close()
+        check(gate.start(opened: true, ready: true, now: now), "Glasses PCM starts before TTS")
+        for _ in 0..<252 {
+            check(deferredSpeech.receive(secondSpeech) == .deferred, "Repeated TTS stays queued while glasses capture continues")
+            check(gate.canSendAudio(opened: true, ready: true, now: now), "Incoming TTS must not cut glasses PCM")
+        }
+        check(!gate.hasScheduledPlayback, "No phone output or echo tail is created during glasses recording")
+        check(deferredSpeech.byteCount == firstSpeech.count + 252 * secondSpeech.count, "Retain all deferred PCM bytes")
+        // A server VAD turn completing does not release speech while the device
+        // still sends audio; this also covers Gen1 waiting for END/tail draining.
+        gate.backendTurnFinished()
+        check(deferredSpeech.receive(secondSpeech) == .deferred, "Server final does not release speech before local stop")
+        gate.stop(now: now.addingTimeInterval(1))
+        let releasedSpeech = deferredSpeech.release()
+        check(releasedSpeech.first == firstSpeech && releasedSpeech.dropFirst().allSatisfy { $0 == secondSpeech },
+              "Release every speech chunk in its original order")
+        check(releasedSpeech.count == 254 && deferredSpeech.byteCount == 0, "Stop releases queued audio exactly once")
+        check(deferredSpeech.release().isEmpty, "Duplicate device END cannot replay old speech")
+        check(!gate.canSendAudio(opened: true, ready: true, now: now.addingTimeInterval(2)), "Speech release never reopens a stopped microphone")
+        check(deferredSpeech.receive(firstSpeech) == .playNow, "Final TTS arriving after local stop plays immediately")
+        deferredSpeech.begin()
+        check(deferredSpeech.receive(secondSpeech) == .deferred, "Next turn starts holding again")
+        deferredSpeech.cancel()
+        check(deferredSpeech.release().isEmpty && deferredSpeech.receive(firstSpeech) == .discarded,
+              "Exit, failure or switch-to-phone discards queued and late speech")
+        deferredSpeech.begin()
+        check(deferredSpeech.receive(Data([1])) == .discarded, "Odd PCM16 must not enter playback")
+        check(deferredSpeech.receive(Data()) == .discarded, "Empty speech is ignored")
+        let audioLimit = Data(repeating: 0, count: TranslationDeferredSpeechQueue.maxBytes)
+        check(deferredSpeech.receive(audioLimit) == .deferred, "Deferred speech has a bounded memory budget")
+        check(deferredSpeech.receive(secondSpeech) == .overflow && deferredSpeech.overflowed, "Overflow is explicit and affects speech playback only")
+        check(deferredSpeech.byteCount == audioLimit.count, "Overflow cannot grow the queue")
+        check(deferredSpeech.release() == [audioLimit], "Keep a contiguous prefix when automatic playback reaches its limit")
+        check(deferredSpeech.receive(firstSpeech) == .overflow, "Late speech cannot introduce playback gaps after overflow")
+        deferredSpeech.begin()
+        check(!deferredSpeech.overflowed && deferredSpeech.receive(firstSpeech) == .deferred, "New turn clears overflow and old audio")
+
         var sends = TranslationSocketSendQueue()
         check(sends.append(Data([1, 2]), kind: .pcm, now: 1), "Queue PCM")
         check(sends.append(Data("stop".utf8), kind: .json("stop"), now: 2), "Stop follows accepted PCM")

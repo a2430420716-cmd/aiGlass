@@ -40,6 +40,58 @@ struct TranslationCaptureRecoveryState {
     }
 }
 
+/// Glasses capture must not be muted by phone TTS. Retain speech until local
+/// recording (including Gen1 tail draining) ends; text can still update live.
+struct TranslationDeferredSpeechQueue {
+    enum Disposition: Equatable { case deferred, playNow, discarded, overflow }
+    private enum Phase: Equatable { case holding, released, cancelled }
+    private var phase: Phase = .cancelled
+    private(set) var chunks: [Data] = []
+    private(set) var byteCount = 0
+    private(set) var overflowed = false
+    static let maxBytes = 16_000_000
+    static let maxChunks = 4_096
+
+    mutating func begin() {
+        cancel()
+        phase = .holding
+    }
+
+    mutating func receive(_ data: Data) -> Disposition {
+        guard !data.isEmpty, data.count.isMultiple(of: 2) else { return .discarded }
+        switch phase {
+        case .cancelled: return .discarded
+        case .released: return overflowed ? .overflow : .playNow
+        case .holding:
+            // Once full, keep a contiguous prefix; never play gaps or affect PCM upload.
+            guard !overflowed, chunks.count < Self.maxChunks,
+                  data.count <= Self.maxBytes, byteCount <= Self.maxBytes - data.count else {
+                overflowed = true
+                return .overflow
+            }
+            chunks.append(data)
+            byteCount += data.count
+            return .deferred
+        }
+    }
+
+    mutating func release() -> [Data] {
+        guard phase == .holding else { return [] }
+        phase = .released
+        let result = chunks
+        chunks.removeAll()
+        byteCount = 0
+        return result
+    }
+
+    mutating func cancel() {
+        phase = .cancelled
+        chunks.removeAll()
+        byteCount = 0
+        overflowed = false
+    }
+}
+
 /// Invalidates asynchronous URL lookups and socket callbacks when a session closes.
 struct TranslationConnectionAttempt {
     private(set) var current: UInt64 = 0

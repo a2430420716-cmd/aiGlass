@@ -53,6 +53,7 @@ final class ConversationTranslationController: ObservableObject {
     private var glassesDroppedFrames = 0
     private var glassesAcceptedPCMBytes = 0
     private var glassesPCMStatistics = TranslationPCMStatistics()
+    private var deferredGlassesSpeech = TranslationDeferredSpeechQueue()
     private var glassesStopPending = false
     private var glassesStopTask: Task<Void, Never>?
     private var glassesDrainTask: Task<Void, Never>?
@@ -134,6 +135,7 @@ final class ConversationTranslationController: ObservableObject {
         guard isActive, !glassesStopPending else { return }
         // 连接中再点一次：取消开麦。
         if glassesConnecting, !glassesRecording {
+            deferredGlassesSpeech.cancel()
             glassesConnecting = false
             cancelSocketReadyTimeout()
             cancelGlassesStartTimeout()
@@ -173,6 +175,7 @@ final class ConversationTranslationController: ObservableObject {
             manager?.finish()
             glassesRecording = false
             enterProcessingStatus(reason: "glasses manual stop")
+            releaseGlassesSpeech(reason: "Gen2 manual stop")
             return
         }
         if phoneActive {
@@ -206,6 +209,7 @@ final class ConversationTranslationController: ObservableObject {
             return
         }
         if glassesActive {
+            deferredGlassesSpeech.cancel()
             if glassesState.hasSentCommand { _ = ble?.stopTranslateRecording() }
             glassesState.reset()
             glassesStopTask?.cancel()
@@ -234,6 +238,10 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     func replay(_ message: ConversationTranslationMessage) {
+        guard !glassesActive, !phoneActive else {
+            alertMessage = L10n.t("请先停止录音再播放译文", "Stop recording before playing translation audio.")
+            return
+        }
         guard let data = message.speechData, !data.isEmpty else { return }
         let played: Bool
         if message.side == .glasses {
@@ -248,6 +256,8 @@ final class ConversationTranslationController: ObservableObject {
     // MARK: - Turn lifecycle
 
     private func beginTranslationTurn() {
+        deferredGlassesSpeech.cancel()
+        if activeSide == .glasses { deferredGlassesSpeech.begin() }
         glassesStopTask?.cancel()
         glassesStopTask = nil
         glassesDrainTask?.cancel()
@@ -373,6 +383,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     private func stopAllRecording(resetSocket: Bool) {
+        deferredGlassesSpeech.cancel()
         if glassesState.hasSentCommand { logGlassesAudio("stop all") }
         cancelSocketReadyTimeout()
         glassesDrainTask?.cancel()
@@ -524,6 +535,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     private func failGlassesStart(reason: String) {
+        deferredGlassesSpeech.cancel()
         logGlassesAudio("failed: \(reason)")
         DebugLogStore.logBLEEvent("translation audio START failed", detail: "reason=\(reason) phase=\(glassesState.phase) generation=\(ble?.deviceGeneration.rawValue ?? "unknown")")
         print("[ConversationTranslation] glasses start failed reason=\(reason) phase=\(glassesState.phase)")
@@ -551,6 +563,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     private func finishGlassesStream(reason: String) {
+        let recorded = glassesRecording
         logGlassesAudio("finished: \(reason)")
         glassesState.reset()
         ble?.resetTranslateRecordingState()
@@ -566,6 +579,28 @@ final class ConversationTranslationController: ObservableObject {
         manager?.markLocalRecordingStopped(reason: "conversation \(reason)")
         manager?.finish()
         enterProcessingStatus(reason: reason)
+        if recorded, isActive {
+            releaseGlassesSpeech(reason: reason)
+        } else {
+            deferredGlassesSpeech.cancel()
+        }
+    }
+
+    private func releaseGlassesSpeech(reason: String) {
+        // Never create a playback buffer (and its echo gate) while mic PCM is live.
+        guard isActive, !glassesActive, !phoneActive else { return }
+        let overflowed = deferredGlassesSpeech.overflowed
+        let chunks = deferredGlassesSpeech.release()
+        let bytes = chunks.reduce(0) { $0 + $1.count }
+        DebugLogStore.logTranslation("glasses speech released", detail: "reason=\(reason) chunks=\(chunks.count) bytes=\(bytes) overflowed=\(overflowed) opusFrames=\(glassesOpusFrames) droppedBatches=\(glassesDroppedFrames) acceptedPCMBytes=\(glassesAcceptedPCMBytes)")
+        if overflowed {
+            // The full speech remains available on the message's replay button.
+            alertMessage = L10n.t("译文语音较长，自动播报仅包含前一部分；录音上传不受影响，可点击消息播放完整译文", "Translation audio is long. Automatic playback contains the first part; recording upload is unaffected. Tap the message to replay the full translation.")
+        }
+        guard !chunks.isEmpty else { return }
+        cancelProcessingStatusFallback()
+        for data in chunks { manager?.playSpeechOnPhone(data) }
+        statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
     }
 
     private func scheduleGlassesDrainCheck() {
@@ -933,11 +968,26 @@ extension ConversationTranslationController: RealtimeTranslationManager.Callback
     }
 
     func onSpeech(_ data: Data) {
+        guard isActive, lastBackendErrorMessage.isEmpty else { return }
         cancelProcessingStatusFallback()
         let side = activeSide ?? currentTurnSide
         if side == .glasses {
-            manager?.playSpeechOnPhone(data)
-            statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
+            let wasOverflowed = deferredGlassesSpeech.overflowed
+            switch deferredGlassesSpeech.receive(data) {
+            case .deferred:
+                if deferredGlassesSpeech.chunks.count == 1 || deferredGlassesSpeech.chunks.count.isMultiple(of: 50) {
+                    DebugLogStore.logTranslation("glasses speech deferred", detail: "chunks=\(deferredGlassesSpeech.chunks.count) bytes=\(deferredGlassesSpeech.byteCount) recording=\(glassesRecording) draining=\(glassesStopPending) canSend=\(manager?.canSendAudio() ?? false)")
+                }
+                statusText = L10n.t("正在录音，译文将在停止后播报", "Recording. Translation audio will play after you stop.")
+            case .playNow:
+                manager?.playSpeechOnPhone(data)
+                statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
+            case .overflow:
+                if !wasOverflowed {
+                    DebugLogStore.logTranslation("glasses deferred speech limit", detail: "bytes=\(deferredGlassesSpeech.byteCount) pcmUploadContinues=true")
+                }
+            case .discarded: return
+            }
         } else if side == .phone {
             if manager?.playSpeechOnGlasses(data) != true {
                 statusText = L10n.t("眼镜音频不可用", "Glasses audio unavailable")
