@@ -4,6 +4,7 @@ import Foundation
 @main
 struct TranslationPCMPlaybackTests {
     static func main() throws {
+        TranslationMicrophoneTests.run()
         let format = TranslationPCMPlayback.makeFormat()!
         precondition(format.commonFormat == .pcmFormatFloat32 && !format.isInterleaved)
         precondition(format.sampleRate == 24_000 && format.channelCount == 1)

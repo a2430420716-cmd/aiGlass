@@ -42,8 +42,7 @@ final class ConversationTranslationController: ObservableObject {
     private weak var ble: AstraA1BleManager?
     private var manager: RealtimeTranslationManager?
     private var token = ""
-    private var audioEngine: AVAudioEngine?
-    private var converter: AVAudioConverter?
+    private let microphoneCapture = TranslationMicrophoneCapture()
     private let glassesOpusDecoder = AIVoiceM4aConverter.StreamingOpusDecoder()
     private var glassesState = TranslationGlassesRecordingState()
     private var isActive = false
@@ -334,62 +333,24 @@ final class ConversationTranslationController: ObservableObject {
         schedulePhoneAutoStop()
         do {
             manager?.setPhoneMicrophoneCaptureEnabled(true)
-            try GlassesAudioRouteController.activate(.playAndRecord)
-            let session = AVAudioSession.sharedInstance()
-            if let microphone = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-                try session.setPreferredInput(microphone)
-            }
-            try session.setPreferredSampleRate(16_000)
-            let engine = AVAudioEngine()
-            let input = engine.inputNode
-            let inputFormat = input.outputFormat(forBus: 0)
-            guard let targetFormat = AVAudioFormat(
-                commonFormat: .pcmFormatInt16,
-                sampleRate: 16_000,
-                channels: 1,
-                interleaved: true
-            ) else {
-                throw NSError(domain: "ConversationTranslation", code: 1)
-            }
-            converter = AVAudioConverter(from: inputFormat, to: targetFormat)
-            audioEngine = engine
-            input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-                self?.consumePhoneBuffer(buffer, targetFormat: targetFormat)
-            }
-            try engine.start()
+            let recordingManager = manager
+            try microphoneCapture.start(label: "conversation phone", receive: { [weak self] pcm in
+                guard let self, self.isActive, self.phoneRecording,
+                      self.manager === recordingManager else { return false }
+                return recordingManager?.sendPCM(pcm) ?? false
+            }, failure: { [weak self] error in
+                guard let self, self.isActive, self.phoneRecording,
+                      self.manager === recordingManager else { return }
+                self.stopPhoneRecording()
+                self.alertMessage = error.localizedDescription
+                self.statusText = error.localizedDescription
+            })
         } catch {
             phoneRecording = false
             stopPhoneAudio()
             manager?.markLocalRecordingStopped(reason: "phone audio start failed")
             alertMessage = error.localizedDescription
             statusText = error.localizedDescription
-        }
-    }
-
-    private func consumePhoneBuffer(_ buffer: AVAudioPCMBuffer, targetFormat: AVAudioFormat) {
-        guard phoneRecording, let converter, manager?.canSendAudio() == true else { return }
-        let capacity = AVAudioFrameCount(
-            Double(buffer.frameLength) * targetFormat.sampleRate / max(buffer.format.sampleRate, 1)
-        ) + 32
-        guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
-        var error: NSError?
-        var supplied = false
-        converter.convert(to: converted, error: &error) { _, status in
-            if supplied {
-                status.pointee = .noDataNow
-                return nil
-            }
-            supplied = true
-            status.pointee = .haveData
-            return buffer
-        }
-        guard error == nil, converted.frameLength > 0, let samples = converted.int16ChannelData?[0] else { return }
-        let pcm = Data(bytes: samples, count: Int(converted.frameLength) * MemoryLayout<Int16>.size)
-        let recordingManager = manager
-        Task { @MainActor [weak self] in
-            guard let self, self.isActive, self.phoneRecording,
-                  self.manager === recordingManager, recordingManager?.canSendAudio() == true else { return }
-            _ = recordingManager?.sendPCM(pcm)
         }
     }
 
@@ -408,12 +369,7 @@ final class ConversationTranslationController: ObservableObject {
 
     private func stopPhoneAudio() {
         manager?.setPhoneMicrophoneCaptureEnabled(false)
-        if let engine = audioEngine {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-        }
-        audioEngine = nil
-        converter = nil
+        microphoneCapture.stop()
     }
 
     private func stopAllRecording(resetSocket: Bool) {

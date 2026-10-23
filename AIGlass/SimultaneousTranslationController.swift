@@ -17,8 +17,7 @@ final class SimultaneousTranslationController: ObservableObject {
     @Published var confirmExitWhileRecording = false
 
     private var translationManager: RealtimeTranslationManager?
-    private var audioEngine: AVAudioEngine?
-    private var converter: AVAudioConverter?
+    private let microphoneCapture = TranslationMicrophoneCapture()
     private var token: String = ""
     private var isActive = false
     private var permissionGeneration = 0
@@ -35,7 +34,6 @@ final class SimultaneousTranslationController: ObservableObject {
     private var targetSegments: [String] = []
 
     private let maxRecordDuration: TimeInterval = 3 * 60
-    private let targetSampleRate: Double = 16_000
 
     func start(token: String?) {
         isActive = true
@@ -209,30 +207,18 @@ final class SimultaneousTranslationController: ObservableObject {
         }
         do {
             translationManager?.setPhoneMicrophoneCaptureEnabled(true)
-            try GlassesAudioRouteController.activate(.phoneMicrophoneAndPlayback)
-
-            let engine = AVAudioEngine()
-            let input = engine.inputNode
-            let inputFormat = input.outputFormat(forBus: 0)
-            guard let targetFormat = AVAudioFormat(
-                commonFormat: .pcmFormatInt16,
-                sampleRate: targetSampleRate,
-                channels: 1,
-                interleaved: true
-            ) else {
-                throw NSError(domain: "SimultaneousTranslation", code: 1,
-                              userInfo: [NSLocalizedDescriptionKey: L10n.t("音频格式初始化失败", "Failed to initialize audio format")])
-            }
-
-            let converter = AVAudioConverter(from: inputFormat, to: targetFormat)
-            self.converter = converter
-            self.audioEngine = engine
-
-            let bufferSize: AVAudioFrameCount = 1024
-            input.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { [weak self] buffer, _ in
-                self?.handleCapturedBuffer(buffer, targetFormat: targetFormat)
-            }
-            try engine.start()
+            let recordingManager = translationManager
+            try microphoneCapture.start(label: "simultaneous", receive: { [weak self] pcm in
+                guard let self, self.isActive, self.isRecording,
+                      self.translationManager === recordingManager else { return false }
+                return recordingManager?.sendPCM(pcm) ?? false
+            }, failure: { [weak self] error in
+                guard let self, self.isActive, self.isRecording,
+                      self.translationManager === recordingManager else { return }
+                self.stopRealtimeTranslation()
+                self.alertMessage = error.localizedDescription
+                self.socketStatus = error.localizedDescription
+            })
             socketStatus = L10n.t("正在录音翻译…", "Recording & translating…")
             scheduleAutoStop()
             print("[SimultaneousTranslation] audio record started")
@@ -245,40 +231,6 @@ final class SimultaneousTranslationController: ObservableObject {
             isRecording = false
             pendingStartRecord = false
             waitingSocketReady = false
-        }
-    }
-
-    private func handleCapturedBuffer(_ buffer: AVAudioPCMBuffer, targetFormat: AVAudioFormat) {
-        guard isRecording, let converter else { return }
-        let ratio = targetFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
-        guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
-
-        var error: NSError?
-        var supplied = false
-        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-            guard !supplied else {
-                outStatus.pointee = .noDataNow
-                return nil
-            }
-            supplied = true
-            outStatus.pointee = .haveData
-            return buffer
-        }
-        converter.convert(to: converted, error: &error, withInputFrom: inputBlock)
-        if let error {
-            print("[SimultaneousTranslation] convert failed: \(error.localizedDescription)")
-            return
-        }
-        guard converted.frameLength > 0,
-              let channels = converted.int16ChannelData else { return }
-        let byteCount = Int(converted.frameLength) * MemoryLayout<Int16>.size
-        let data = Data(bytes: channels[0], count: byteCount)
-        let recordingManager = translationManager
-        Task { @MainActor [weak self] in
-            guard let self, self.isActive, self.isRecording,
-                  self.translationManager === recordingManager else { return }
-            _ = recordingManager?.sendPCM(data)
         }
     }
 
@@ -295,12 +247,7 @@ final class SimultaneousTranslationController: ObservableObject {
 
     private func stopAudioEngine() {
         translationManager?.setPhoneMicrophoneCaptureEnabled(false)
-        if let engine = audioEngine {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-        }
-        audioEngine = nil
-        converter = nil
+        microphoneCapture.stop()
     }
 
     private func scheduleAutoStop() {
@@ -509,11 +456,11 @@ extension SimultaneousTranslationController: RealtimeTranslationManager.Callback
         socketReady = true
         // 录音中再次 ready 表示上一轮处理完毕，别把提示退回「点击开始录音」。
         socketStatus = isRecording ? L10n.t("正在录音翻译…", "Recording & translating…") : L10n.t("翻译服务已就绪，点击下方按钮开始录音", "Ready — tap below to start recording")
-        if waitingSocketReady, isRecording, audioEngine == nil {
+        if waitingSocketReady, isRecording, !microphoneCapture.isCapturing {
             waitingSocketReady = false
             pendingStartRecord = false
             beginAudioRecord()
-        } else if pendingStartRecord, isRecording, audioEngine == nil {
+        } else if pendingStartRecord, isRecording, !microphoneCapture.isCapturing {
             pendingStartRecord = false
             beginAudioRecord()
         }

@@ -71,6 +71,7 @@ final class RealtimeTranslationManager: NSObject {
     private var playbackUsesPhoneMicrophone = false
     private var playbackChunks = 0
     private var playbackGeneration: UInt64 = 0
+    private var playbackMonitorTask: Task<Void, Never>?
     private var waitingGlassesAudio = TranslationGlassesPlaybackQueue()
     private var glassesRouteRetryTask: Task<Void, Never>?
     enum GlassesPlaybackState { case waiting, playing, unavailable }
@@ -119,7 +120,11 @@ final class RealtimeTranslationManager: NSObject {
     }
 
     func canSendAudio() -> Bool {
-        inputState.canSendAudio(opened: opened, ready: ready)
+        // If Bluetooth disappears mid-buffer, prevent its remaining speech from
+        // being picked up by the phone mic after iOS falls back to the speaker.
+        if phoneMicrophoneCaptureEnabled, inputState.hasScheduledPlayback,
+           !GlassesAudioRouteController.isOutputOnBluetooth { return false }
+        return inputState.canSendAudio(opened: opened, ready: ready)
     }
 
     @discardableResult
@@ -411,7 +416,9 @@ final class RealtimeTranslationManager: NSObject {
             // Remote VAD can resume an existing local recording, never start a mic.
             markBackendTurnFinished(reason: "speech_started")
         case "speech_stopped":
-            markBackendTurnBusy(reason: "speech_stopped")
+            // VAD ending a sentence is not a server rejection. Keep uploading the
+            // next sentence; only an explicit busy notice should apply backoff.
+            logFlow("speech boundary", "continueInput=true \(gateDetail)")
         case "transcript", "source_text":
             let value = Self.normalizeSocketText(stringValue(json["text"]))
             if !value.isEmpty { callback?.onTranscript(value) }
@@ -494,6 +501,7 @@ final class RealtimeTranslationManager: NSObject {
     private func markBackendTurnBusy(reason: String) {
         guard inputState.recording, opened, ready else { return }
         inputState.beginBackendProcessing()
+        pcmDroppedBytes += pendingPCM.count
         pendingPCM.removeAll(keepingCapacity: true)
         logFlow("turn busy", "reason=\(reason) holdMs=700 \(gateDetail)")
         scheduleTurnBusyRecovery()
@@ -750,21 +758,49 @@ final class RealtimeTranslationManager: NSObject {
             print("[RealtimeTranslation] invalid playback PCM bytes=\(data.count) format=\(playbackFormat)")
             return false
         }
-        inputState.playbackScheduled()
-        pendingPCM.removeAll(keepingCapacity: true)
+        let suppressesInput = TranslationAudioInputState.shouldSuppressPlayback(
+            phoneMicrophone: phoneMicrophoneCaptureEnabled,
+            bluetoothOutput: GlassesAudioRouteController.isOutputOnBluetooth
+        )
+        let playbackID = inputState.playbackScheduled(
+            duration: Double(buffer.frameLength) / playbackFormat.sampleRate,
+            suppressesInput: suppressesInput, now: Date()
+        )
+        if suppressesInput {
+            pcmDroppedBytes += pendingPCM.count
+            pendingPCM.removeAll(keepingCapacity: true)
+        }
+        startPlaybackMonitor()
         let generation = playbackGeneration
         playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.playbackGeneration == generation else { return }
-                self.inputState.playbackCompleted(now: Date())
+                self.inputState.playbackCompleted(playbackID, now: Date())
             }
         }
         if !playerNode.isPlaying { playerNode.play() }
         playbackChunks += 1
         if playbackChunks == 1 || playbackChunks.isMultiple(of: 50) {
-            logFlow("speech scheduled", "chunks=\(playbackChunks) bytes=\(data.count) route=\(route) engineRunning=\(audioEngine?.isRunning ?? false)\n\(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
+            logFlow("speech scheduled", "chunks=\(playbackChunks) bytes=\(data.count) route=\(route) suppressesInput=\(suppressesInput) engineRunning=\(audioEngine?.isRunning ?? false)\n\(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
         }
         return true
+    }
+
+    private func startPlaybackMonitor() {
+        guard playbackMonitorTask == nil else { return }
+        playbackMonitorTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard !Task.isCancelled, let self else { return }
+                // Lost dataPlayedBack callbacks must not mute the rest of a session.
+                // Stop the old output before releasing its echo gate.
+                if self.inputState.hasExpiredPlayback(now: Date()) {
+                    self.logFlow("playback completion timeout", self.gateDetail)
+                    self.stopPlayback(clearWaitingAudio: false)
+                    return
+                }
+            }
+        }
     }
 
     private func ensurePlaybackEngine(route: PlaybackRoute) {
@@ -831,6 +867,8 @@ final class RealtimeTranslationManager: NSObject {
             glassesRouteRetryTask = nil
             waitingGlassesAudio.reset()
         }
+        playbackMonitorTask?.cancel()
+        playbackMonitorTask = nil
         playbackGeneration &+= 1
         inputState.playbackCancelled(now: Date())
         playerNode?.stop()

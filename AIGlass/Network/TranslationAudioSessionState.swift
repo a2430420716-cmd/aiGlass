@@ -1,7 +1,7 @@
 import Foundation
 
 /// Inspect PCM16 little-endian without retaining microphone audio in diagnostics.
-struct TranslationPCMStatistics {
+nonisolated struct TranslationPCMStatistics {
     private(set) var bytes = 0
     private(set) var samples = 0
     private(set) var peak = 0
@@ -25,6 +25,18 @@ struct TranslationPCMStatistics {
 
     var detail: String {
         "pcmBytes=\(bytes) durationMs=\(durationMs) peak=\(peak) rms=\(String(format: "%.1f", rms)) sampleRate=16000 channels=1"
+    }
+}
+
+/// Prevents a permanently unavailable microphone from causing a restart loop.
+struct TranslationCaptureRecoveryState {
+    private var restarts: [TimeInterval] = []
+
+    mutating func allowRestart(now: TimeInterval) -> Bool {
+        restarts.removeAll { now - $0 >= 30 }
+        guard restarts.count < 3 else { return false }
+        restarts.append(now)
+        return true
     }
 }
 
@@ -54,31 +66,59 @@ struct TranslationAudioInputState {
     private(set) var recording = false
     private var backendProcessing = false
     private var lastStopAt: Date = .distantPast
-    private var playbackBuffers = 0
+    private struct Playback {
+        let suppressesInput: Bool
+        let deadline: Date
+    }
+    private var playbackBuffers: [UInt64: Playback] = [:]
+    private var nextPlaybackID: UInt64 = 0
+    private var scheduledPlaybackEnd: Date = .distantPast
+    private var playbackSuppressesInput: Bool { playbackBuffers.values.contains { $0.suppressesInput } }
     private var playbackGuardUntil: Date = .distantPast
+
+    var hasScheduledPlayback: Bool { !playbackBuffers.isEmpty }
 
     func canSendAudio(opened: Bool, ready: Bool, now: Date = Date()) -> Bool {
         opened && ready && recording && !backendProcessing &&
-            playbackBuffers == 0 && now >= playbackGuardUntil
+            !playbackSuppressesInput && now >= playbackGuardUntil
     }
 
     var diagnosticDetail: String {
-        "backendBusy=\(backendProcessing) playbackBuffers=\(playbackBuffers) playbackGuardMs=\(Int(max(0, playbackGuardUntil.timeIntervalSinceNow) * 1_000))"
+        "backendBusy=\(backendProcessing) playbackBuffers=\(playbackBuffers.count) playbackSuppressesInput=\(playbackSuppressesInput) playbackGuardMs=\(Int(max(0, playbackGuardUntil.timeIntervalSinceNow) * 1_000))"
     }
 
-    mutating func playbackScheduled() {
-        playbackBuffers += 1
+    static func shouldSuppressPlayback(phoneMicrophone: Bool, bluetoothOutput: Bool) -> Bool {
+        // Phone mic and glasses media output use separate devices. Speaker output
+        // can feed its translated speech back into the microphone and stays gated.
+        !(phoneMicrophone && bluetoothOutput)
     }
 
-    mutating func playbackCompleted(now: Date) {
-        guard playbackBuffers > 0 else { return }
-        playbackBuffers -= 1
-        if playbackBuffers == 0 { playbackGuardUntil = now.addingTimeInterval(0.5) }
+    @discardableResult
+    mutating func playbackScheduled(duration: TimeInterval, suppressesInput: Bool = true,
+                                   now: Date) -> UInt64 {
+        nextPlaybackID &+= 1
+        scheduledPlaybackEnd = max(now, scheduledPlaybackEnd).addingTimeInterval(max(0, duration))
+        playbackBuffers[nextPlaybackID] = Playback(suppressesInput: suppressesInput,
+                                                   deadline: scheduledPlaybackEnd.addingTimeInterval(3))
+        return nextPlaybackID
+    }
+
+    func hasExpiredPlayback(now: Date) -> Bool {
+        playbackBuffers.values.contains { now >= $0.deadline }
+    }
+
+    mutating func playbackCompleted(_ id: UInt64, now: Date) {
+        guard let finished = playbackBuffers.removeValue(forKey: id) else { return }
+        if finished.suppressesInput && !playbackSuppressesInput {
+            playbackGuardUntil = now.addingTimeInterval(0.5)
+        }
+        if playbackBuffers.isEmpty { scheduledPlaybackEnd = .distantPast }
     }
 
     mutating func playbackCancelled(now: Date) {
-        if playbackBuffers > 0 { playbackGuardUntil = now.addingTimeInterval(0.5) }
-        playbackBuffers = 0
+        if playbackSuppressesInput { playbackGuardUntil = now.addingTimeInterval(0.5) }
+        playbackBuffers.removeAll()
+        scheduledPlaybackEnd = .distantPast
     }
 
     mutating func start(opened: Bool, ready: Bool, now: Date) -> Bool {
@@ -109,7 +149,9 @@ struct TranslationAudioInputState {
     }
 
     mutating func close() {
+        let nextID = nextPlaybackID
         self = Self()
+        nextPlaybackID = nextID
     }
 }
 
