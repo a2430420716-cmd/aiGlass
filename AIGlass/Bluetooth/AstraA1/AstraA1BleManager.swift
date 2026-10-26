@@ -3087,7 +3087,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         return sent
     }
 
-    /// 设置设备音效；UI 状态以 eqmodersp0 回包为准。
+    /// 设置设备音效；发送成功立即更新 UI，eqmodersp0 回包再校正设备实际值。
     @discardableResult
     func setSoundEffectMode(_ mode: UInt8) -> Bool {
         guard ensureDeviceAvailable(for: "setSoundEffectMode") else {
@@ -3097,7 +3097,14 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         let safeMode = min(mode, 2)
         let sent = sendCommand(AstraA1BleProtocol.buildSetEQModeCommand(mode: safeMode))
         print("\(logTag) seteqmode0 mode=\(safeMode) sent=\(sent)")
-        if !sent {
+        if sent {
+            // Some firmware versions do not immediately emit eqmodersp0 after
+            // seteqmode0. Update published state on successful BLE submission so
+            // the home card reflects the user's selection immediately; a later
+            // device response remains authoritative and can correct it.
+            soundEffectMode = safeMode
+            persistSoundEffectMode(safeMode)
+        } else {
             mediaActionAlertMessage = L10n.t("音效模式设置失败", "Failed to set sound mode")
         }
         return sent
@@ -3253,13 +3260,16 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func applySoundEffectResponse(status: UInt8, mode: UInt8) {
         soundEffectMode = mode
-        if let key = soundEffectStorageKey {
-            UserDefaults.standard.set(Int(mode), forKey: key)
-        }
+        persistSoundEffectMode(mode)
         print("\(logTag) eqmodersp0 status=\(status) mode=\(mode)")
         if status != 0 {
             mediaActionAlertMessage = L10n.t("音效模式设置失败", "Failed to set sound mode")
         }
+    }
+
+    private func persistSoundEffectMode(_ mode: UInt8) {
+        guard let key = soundEffectStorageKey else { return }
+        UserDefaults.standard.set(Int(min(mode, 2)), forKey: key)
     }
 
     /// 发送拍照指令；业务是否接受以 actionrsp0 为准。
