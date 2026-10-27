@@ -109,7 +109,10 @@ enum UserService {
     static func fetchUserInfo(token: String) async throws -> UserInfo {
         let data = try await APIClient.postRaw(
             path: "user/userinfo",
-            body: ["client_info": ClientInfo.current],
+            body: [
+                "client_info": ClientInfo.current,
+                "type": 2 // 应用类型：1 = Android，2 = iOS。
+            ],
             authorization: token
         )
         if let raw = String(data: data, encoding: .utf8) {

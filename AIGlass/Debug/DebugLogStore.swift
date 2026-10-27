@@ -116,6 +116,14 @@ final class DebugLogStore: ObservableObject {
         }
     }
 
+    /// 系统分享诊断沿用 HTTP 导出频道，覆盖全部目标应用及系统操作。
+    nonisolated static func logShare(_ title: String, detail: String = "") {
+        let capturedAt = Date()
+        Task { @MainActor in
+            shared.append(channel: .http, direction: .event, title: "分享：\(title)", detail: detail, date: capturedAt)
+        }
+    }
+
     // MARK: - BLE
 
     nonisolated static func logBLESent(_ data: Data) {

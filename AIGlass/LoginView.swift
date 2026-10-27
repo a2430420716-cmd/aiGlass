@@ -485,35 +485,32 @@ struct LoginView: View {
         .disabled(!isFormReady)
     }
 
-    @ViewBuilder
     private var thirdPartySection: some View {
-        // 对齐 Android：中国展示微信，海外展示平台原生第三方登录。
-        if accountModeResolved {
-            VStack(spacing: 20) {
-                Text(L10n.t("使用第三方账号登录", "Sign in with"))
-                    .font(AppTheme.notoSansSC(size: 13, weight: .regular))
-                    .foregroundStyle(AppTheme.secondaryText)
+        // 第三方登录入口跟随 App 语言，与服务器及账号输入类型无关。
+        VStack(spacing: 20) {
+            Text(L10n.t("使用第三方账号登录", "Sign in with"))
+                .font(AppTheme.notoSansSC(size: 13, weight: .regular))
+                .foregroundStyle(AppTheme.secondaryText)
 
-                if isChinaIP {
-                    Button {
-                        wechatLogin()
-                    } label: {
-                        ZStack {
-                            Image("android_wechat")
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 48, height: 48)
-                                .opacity(isWeChatLoggingIn ? 0.3 : 1)
+            if L10n.usesEnglish {
+                appleLoginButton
+            } else {
+                Button {
+                    wechatLogin()
+                } label: {
+                    ZStack {
+                        Image("android_wechat")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 48, height: 48)
+                            .opacity(isWeChatLoggingIn ? 0.3 : 1)
 
-                            if isWeChatLoggingIn {
-                                ProgressView()
-                            }
+                        if isWeChatLoggingIn {
+                            ProgressView()
                         }
                     }
-                    .disabled(isWeChatLoggingIn)
-                } else {
-                    appleLoginButton
                 }
+                .disabled(isWeChatLoggingIn)
             }
         }
     }
@@ -526,6 +523,7 @@ struct LoginView: View {
             handleAppleAuthorization(result)
         }
         .signInWithAppleButtonStyle(.black)
+        .environment(\.locale, Locale(identifier: L10n.usesEnglish ? "en" : "zh-Hans"))
         .frame(width: 220, height: 44)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .disabled(isAppleLoggingIn)
@@ -837,7 +835,7 @@ struct LoginView: View {
                nsError.code == ASAuthorizationError.canceled.rawValue {
                 return
             }
-            alertMessage = error.localizedDescription
+            alertMessage = L10n.t("Apple 授权失败，请重试", "Apple authorization failed. Try again.")
         }
     }
 
@@ -852,7 +850,15 @@ struct LoginView: View {
             } catch {
                 await MainActor.run {
                     isAppleLoggingIn = false
-                    alertMessage = error.localizedDescription
+                    if let apiError = error as? APIError, case .network = apiError {
+                        alertMessage = apiError.localizedDescription
+                    } else {
+                        // 原始服务端错误保留在 HTTP 日志，界面不直接显示后台语言或内部异常。
+                        alertMessage = L10n.t(
+                            "Apple 登录失败，请稍后重试",
+                            "Apple sign-in failed. Try again later."
+                        )
+                    }
                 }
             }
         }

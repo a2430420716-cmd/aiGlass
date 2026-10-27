@@ -206,7 +206,13 @@ private final class PassthroughWindow: UIWindow {
     }
 
     func presentShareSheet(items: [Any]) {
+        let diagnostics = SystemShareDiagnostics(items: items, source: "debugLogExport")
         let activity = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        activity.completionWithItemsHandler = { activityType, completed, returnedItems, error in
+            Task { @MainActor in
+                diagnostics.recordCompletion(activityType: activityType, completed: completed, returnedItems: returnedItems, error: error)
+            }
+        }
         if let popover = activity.popoverPresentationController {
             popover.sourceView = self
             popover.sourceRect = CGRect(
@@ -224,11 +230,17 @@ private final class PassthroughWindow: UIWindow {
             return
         }
 
-        guard let root = rootViewController else { return }
+        guard let root = rootViewController else {
+            diagnostics.recordDismissal()
+            return
+        }
         let previousInteraction = root.view.isUserInteractionEnabled
         root.view.isUserInteractionEnabled = true
-        activity.completionWithItemsHandler = { _, _, _, _ in
-            root.view.isUserInteractionEnabled = previousInteraction
+        activity.completionWithItemsHandler = { activityType, completed, returnedItems, error in
+            Task { @MainActor in
+                diagnostics.recordCompletion(activityType: activityType, completed: completed, returnedItems: returnedItems, error: error)
+                root.view.isUserInteractionEnabled = previousInteraction
+            }
         }
         root.present(activity, animated: true)
     }

@@ -91,7 +91,14 @@ struct UserInfo: Decodable {
         nickname = try container.decode(String.self, forKey: .nickname)
         headimg = try container.decodeIfPresent(String.self, forKey: .headimg) ?? ""
         openid = try container.decodeIfPresent(String.self, forKey: .openid) ?? ""
-        appInfo = try container.decodeIfPresent(AppVersionInfo.self, forKey: .appInfo)
+        let versionInfo = try container.decodeIfPresent(AppVersionInfo.self, forKey: .appInfo)
+        if let appType = versionInfo?.type, appType != 2 {
+            // 忽略其他平台的更新信息，不影响用户资料和已绑定设备。
+            appInfo = nil
+            print("[userinfo] ignore non-iOS app_info type=\(appType)")
+        } else {
+            appInfo = versionInfo
+        }
         device = Self.decodeDeviceList(from: container)
 
         let firmwareEntries = try container.decodeIfPresent([DeviceOTAEntry].self, forKey: .arrFirmware) ?? []
@@ -209,11 +216,27 @@ struct AppVersionInfo: Decodable {
     let version: String
     let downloadURL: String
     let content: String
+    /// 兼容旧接口未返回类型，以及服务端返回数字字符串或空字符串。
+    let type: Int?
 
     enum CodingKeys: String, CodingKey {
         case version
         case content
+        case type
         case downloadURL = "download_url"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(String.self, forKey: .version)
+        downloadURL = try container.decode(String.self, forKey: .downloadURL)
+        content = try container.decode(String.self, forKey: .content)
+        if let number = try? container.decode(Int.self, forKey: .type) {
+            type = number
+        } else {
+            let text = try? container.decode(String.self, forKey: .type)
+            type = text.flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        }
     }
 }
 

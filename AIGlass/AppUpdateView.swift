@@ -134,7 +134,7 @@ struct AppUpdateView: View {
 
     private var updateButton: some View {
         Button {
-            AppBundleInfo.openAppStore()
+            AppBundleInfo.openAppStore(preferredURL: appInfo?.downloadURL)
         } label: {
             Text(L10n.t("立即更新", "Update Now"))
                 .font(AppTheme.notoSansSC(size: 16, weight: .medium))

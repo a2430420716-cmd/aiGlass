@@ -36,7 +36,16 @@ enum AppBundleInfo {
         return URL(string: "https://apps.apple.com/search?term=MOCO%20AI%20Glasses")
     }
 
-    static func openAppStore() {
+    static func openAppStore(preferredURL: String? = nil) {
+        // 接口下载地址仅接受 Apple 商店 HTTPS 链接，iOS 不直接下载安装包。
+        if let rawURL = preferredURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let url = URL(string: rawURL),
+           url.scheme?.lowercased() == "https",
+           let host = url.host?.lowercased(),
+           host == "apps.apple.com" || host == "itunes.apple.com" {
+            UIApplication.shared.open(url)
+            return
+        }
         guard let url = appStoreURL else { return }
         UIApplication.shared.open(url)
     }
