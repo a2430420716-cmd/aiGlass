@@ -541,7 +541,6 @@ struct AlbumView: View {
                 .foregroundStyle(AppTheme.primaryText)
             }
             .buttonStyle(.plain)
-            .disabled(selectedItemIDs.isEmpty)
         }
         .padding(.horizontal, 40)
         .padding(.top, 12)
@@ -773,6 +772,10 @@ struct AlbumView: View {
     }
 
     private func shareSelectedItems() {
+        guard !selectedItemIDs.isEmpty else {
+            importNoticeMessage = L10n.t("至少选择一项", "Select at least one item")
+            return
+        }
         let urls = mediaLibrary.items
             .filter { selectedItemIDs.contains($0.id) }
             .map { mediaLibrary.originalURL(for: $0) }

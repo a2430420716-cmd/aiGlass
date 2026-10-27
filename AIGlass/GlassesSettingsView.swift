@@ -110,6 +110,26 @@ struct GlassesSettingsView: View {
             || ble.deviceCapabilities[keyPath: capability]
     }
 
+    /// Use the connected target's protocol first, then its bound model while offline.
+    private var isGen1SettingsDevice: Bool {
+        let ble = pairingCoordinator.astraA1BleManager
+        if isGlassesConnected, ble.deviceGeneration != .unknown {
+            return ble.deviceGeneration == .gen1G5K61
+        }
+        let modelName = device?.modelName ?? boundDevice?.modelName ?? ""
+        return GlassDeviceModel(modelName: modelName) == .luminaL1
+    }
+
+    private var hidesIndicatorBrightness: Bool {
+        if isGen1SettingsDevice { return true }
+        let ble = pairingCoordinator.astraA1BleManager
+        if isGlassesConnected, ble.deviceGeneration != .unknown {
+            return ble.deviceGeneration == .gen2
+        }
+        let modelName = device?.modelName ?? boundDevice?.modelName ?? ""
+        return GlassDeviceModel(modelName: modelName) == .astraA1
+    }
+
     private var supportedRecordDurations: [Int] {
         pairingCoordinator.astraA1BleManager.deviceCapabilities.recordDurationSeconds.filter { $0 != 600 }
     }
@@ -433,8 +453,12 @@ struct GlassesSettingsView: View {
             SettingsSectionHeader(title: L10n.t("通用", "General"))
 
             SettingsCard {
-                SettingsNavigationRow(title: L10n.t("指示灯亮度", "Indicator Brightness"), value: L10n.t("中", "Medium"))
-                SettingsDivider()
+                if !hidesIndicatorBrightness {
+                    SettingsNavigationRow(title: L10n.t("指示灯亮度", "Indicator Brightness"), value: L10n.t("中", "Medium"))
+                    if showsCapability(\.wearingDetection) {
+                        SettingsDivider()
+                    }
+                }
                 if showsCapability(\.wearingDetection) {
                     SettingsToggleRow(
                         title: L10n.t("摘下休眠", "Sleep When Removed"),
@@ -936,11 +960,13 @@ struct GlassesSettingsView: View {
                 } label: {
                     SettingsNavigationLinkLabel(title: L10n.t("关于设备", "About Device"))
                 }
-                SettingsDivider()
-                SettingsNavigationRow(
-                    title: L10n.t("恢复出厂设置", "Factory Reset"),
-                    action: { prepareFactoryReset() }
-                )
+                if !isGen1SettingsDevice {
+                    SettingsDivider()
+                    SettingsNavigationRow(
+                        title: L10n.t("恢复出厂设置", "Factory Reset"),
+                        action: { prepareFactoryReset() }
+                    )
+                }
             }
         }
     }

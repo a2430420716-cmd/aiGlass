@@ -5117,6 +5117,20 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 DebugLogStore.logBLEEvent("Gen1 firmware control frame", detail: "command=\(String(format: "0x%02X", frame.command)) sender=\(frame.sender) receiver=\(frame.receiver) payloadBytes=\(frame.payload.count) routingAccepted=\(frame.sender == 3 && frame.receiver == 2); payload=<redacted>", capturedAt: capturedAt)
             }
             let guideRelated = frame.command == Gen1Commands.tutorial || Gen1GuideStepState.MediaAction(command: frame.command) != nil
+            if gen1GuideEventSessionID != nil, !guideRelated {
+                // Step 9 can produce wake/status events instead of a tutorial ACK.
+                // Preserve every validated command number, including empty frames,
+                // without exposing audio, identity or Wi-Fi credential payloads.
+                let canLogPayload = frame.payload.isEmpty || (
+                    [Gen1Commands.voiceWakeup, Gen1Commands.aiVoiceStatus,
+                     Gen1Commands.deviceStatusQuery, Gen1Commands.deviceStatusChanged].contains(frame.command)
+                    && frame.payload.count <= 2
+                )
+                let raw = canLogPayload
+                    ? frame.raw.map { String(format: "%02X", $0) }.joined(separator: " ")
+                    : "<payload-redacted>"
+                DebugLogStore.logBLEEvent("Gen1 guide other control frame received", detail: "session=\(gen1GuideEventSessionID!.uuidString) target=\(connectedPeripheral?.identifier.uuidString ?? "nil") command=\(String(format: "0x%02X", frame.command)) sender=\(frame.sender) receiver=\(frame.receiver) payloadBytes=\(frame.payload.count) waitingStep=\(gen1GuideStep) routingAccepted=\(frame.sender == 3 && frame.receiver == 2) busy=\(frame.isBusy) aiHandlerPresent=\(aiVoiceNotifyHandler != nil); not_tutorial_completion\n\(raw)", capturedAt: capturedAt)
+            }
             if guideRelated {
                 let raw = frame.raw.prefix(96).map { String(format: "%02X", $0) }.joined(separator: " ")
                 DebugLogStore.logBLEEvent("Gen1 guide control frame received", detail: "session=\(gen1GuideEventSessionID?.uuidString ?? "nil") target=\(connectedPeripheral?.identifier.uuidString ?? "nil") command=\(String(format: "0x%02X", frame.command)) sender=\(frame.sender) receiver=\(frame.receiver) payloadBytes=\(frame.payload.count) waitingStep=\(gen1GuideStep) guideHandler=\(gen1GuideEventHandler != nil) mediaHandler=\(gen1GuideMediaHandler != nil) rawTruncated=\(frame.raw.count > 96)\n\(raw)", capturedAt: capturedAt)
