@@ -39,26 +39,48 @@ jobs:
           xcodebuild -version
           sudo gem install cocoapods -v 1.17.0 --no-document
           pod install --deployment
-      - name: 验证重连限制、一代热点收尾和 TCP 传输
+      - name: 验证蓝牙连接与升级恢复
+        timeout-minutes: 5
         run: |
           bash Tests/run-gatt-recovery-tests.sh
           bash Tests/run-gen2-ota-recovery-tests.sh
+      - name: 验证一代热点收尾和导入
+        timeout-minutes: 5
+        run: |
           bash Tests/run-gen1-hotspot-cleanup-tests.sh
           bash Tests/run-gen1-ap-import-tests.sh
+      - name: 验证一代协议与存储容量
+        timeout-minutes: 5
+        run: |
           xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-protocol-cache" AIGlass/Bluetooth/Gen1/Gen1Protocol.swift Tests/Gen1ProtocolTests.swift -o "$RUNNER_TEMP/gen1-protocol-tests"
           "$RUNNER_TEMP/gen1-protocol-tests"
           xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-runtime-cache" AIGlass/Bluetooth/Gen1/Gen1Protocol.swift AIGlass/Bluetooth/AstraA1/AstraA1BleProtocol.swift Tests/Gen1RuntimeStatusTests.swift -o "$RUNNER_TEMP/gen1-runtime-tests"
           "$RUNNER_TEMP/gen1-runtime-tests"
+      - name: 验证一代蓝牙升级恢复记录
+        timeout-minutes: 5
+        run: |
           xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-recovery-cache" AIGlass/Gen1BluetoothOtaRecoveryStore.swift Tests/Gen1BluetoothOtaRecoveryTests.swift -o "$RUNNER_TEMP/gen1-recovery-tests"
           "$RUNNER_TEMP/gen1-recovery-tests"
+      - name: 验证水印与 TCP 传输
+        timeout-minutes: 5
+        run: |
           bash Tests/run-photo-capture-watermark-tests.sh
           bash Tests/run-gen1-media-tcp-tests.sh
           bash Tests/run-wifi-diagnostics-tests.sh
+      - name: 验证翻译录音与播放
+        timeout-minutes: 5
+        run: |
           xcrun swiftc -module-cache-path "$RUNNER_TEMP/translation-audio-cache" AIGlass/Network/TranslationAudioSessionState.swift Tests/TranslationAudioSessionTests.swift -o "$RUNNER_TEMP/translation-audio-tests"
           "$RUNNER_TEMP/translation-audio-tests"
           bash Tests/run-translation-pcm-playback-tests.sh
+      - name: 验证录像与解绑
+        timeout-minutes: 5
+        run: |
           bash Tests/run-home-video-capture-tests.sh
           bash Tests/run-device-unpair-identity-tests.sh
+      - name: 验证固件升级与电量限制
+        timeout-minutes: 5
+        run: |
           bash Tests/run-gen1-firmware-tests.sh
       - name: 签名、归档、导出 IPA
         env:
