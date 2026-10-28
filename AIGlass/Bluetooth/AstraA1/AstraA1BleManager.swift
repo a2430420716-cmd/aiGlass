@@ -3280,7 +3280,19 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             mediaActionAlertMessage = lowBatteryMediaMessage
             return false
         }
-        return sendCommand(AstraA1BleProtocol.buildTakePhotoCommand())
+        let sent = sendCommand(AstraA1BleProtocol.buildTakePhotoCommand())
+        if sent, deviceGeneration == .gen1G5K61,
+           let id = homePhotoAttemptID, isTakingPhoto,
+           let target = deviceBluetoothIdentifier.flatMap(UUID.init(uuidString:)),
+           let account = gen1ImportAccount(for: target) {
+            let configuration = PhotoWatermarkConfiguration(enabled: AppSettings.imageWatermarkEnabled,
+                style: AppSettings.imageWatermarkStyle, capturedAt: Date())
+            let saved = PhotoCaptureWatermarkStore.shared.begin(id: id, account: account,
+                device: target.uuidString, baselineNames: gen1MediaListAccumulator.names,
+                baselineCount: pendingImportFileCount, configuration: configuration)
+            logPhotoCapture("watermark-snapshot", detail: "saved=\(saved) enabled=\(configuration.enabled) style=\(configuration.style) cachedFileCount=\(gen1MediaListAccumulator.names.count)")
+        }
+        return sent
     }
 
     /// 开始录像；业务是否接受以 actionrsp0 为准。
@@ -3496,6 +3508,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func finishPhotoCaptureSuccess(evidence: String) {
         guard isTakingPhoto else { return }
+        if let id = homePhotoAttemptID { PhotoCaptureWatermarkStore.shared.confirm(id: id) }
         logPhotoCapture("completed", detail: "confirmed=true evidence=\(evidence)")
         cancelMediaCompletionFallback()
         isTakingPhoto = false
@@ -3546,6 +3559,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
         switch response.action {
         case .takePhoto:
+            if response.result != .accepted, let id = homePhotoAttemptID {
+                PhotoCaptureWatermarkStore.shared.cancel(id: id)
+            }
             switch response.result {
             case .accepted:
                 print("\(logTag) takephoto ACCEPTED status=\(response.currentStatus.name)")
@@ -5249,10 +5265,16 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             case Gen1Commands.aiImage:
                 aiVisionNotifyHandler?("gen1image0", payload)
             case Gen1Commands.aiVoiceStatus:
+                if payload.first == 1, payload.count == 1 || payload[1] <= 1 {
+                    gen1TranslationRouter.onAIWakeup()
+                }
                 aiVoiceNotifyHandler?("gen1voiceStatus", payload)
             case Gen1Commands.voiceWakeup:
                 // Firmware reports utterance boundaries here when transport=BLE.
-                if payload.count >= 2, payload[1] == 1 { aiVoiceNotifyHandler?("gen1voiceStatus", payload) }
+                if payload.count >= 2, payload[1] == 1 {
+                    if payload.first == 1 { gen1TranslationRouter.onAIWakeup() }
+                    aiVoiceNotifyHandler?("gen1voiceStatus", payload)
+                }
             case Gen1Commands.translateRecord:
                 if let status = payload.first { routeGen1Voice(gen1TranslationRouter.onAck(status)) }
             case Gen1Commands.aiRecord:

@@ -632,7 +632,9 @@ final class MediaImportManager: ObservableObject {
         defer {
             DebugLogStore.logWiFi("一代：已下载原件处理退出", detail: "file=\(entry.fileName) completed=\(processingCompleted) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - processingStarted) appState=\(UIApplication.shared.applicationState.rawValue) glassesLANIPv4=\(DeviceWifiManager.gen1HasClientIPv4) taskCancelled=\(Task.isCancelled)")
         }
-        let item = try await library.importGen1Original(fileURL: inbox.fileURL(for: entry), fileName: entry.fileName)
+        let watermark = PhotoCaptureWatermarkStore.shared.configuration(fileName: entry.fileName,
+            account: entry.accountID, device: entry.targetID.uuidString)
+        let item = try await library.importGen1Original(fileURL: inbox.fileURL(for: entry), fileName: entry.fileName, watermark: watermark)
         try validateOwnership()
         if autoSave {
             do {
@@ -942,6 +944,9 @@ final class MediaImportManager: ObservableObject {
             try checkTarget()
             state = .fetchingList
             listedNames = try await withPathRecovery(transport) { try await $0.fileList() }
+            let watermarkBinding = PhotoCaptureWatermarkStore.shared.bind(fileNames: listedNames,
+                account: identity.accountID, device: targetID.uuidString)
+            diagnostics.log("一代：关联拍照水印设置", detail: watermarkBinding)
             remainingFileCount = listedNames.count
             diagnostics.log("一代：TCP 文件列表已获取", detail: "endpoint=\(endpoint) count=\(listedNames.count); BLE_ready_not_required_during_transfer")
             for (index, name) in listedNames.enumerated() {

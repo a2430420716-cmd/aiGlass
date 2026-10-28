@@ -45,6 +45,9 @@ jobs:
           bash Tests/run-gen2-ota-recovery-tests.sh
           bash Tests/run-gen1-hotspot-cleanup-tests.sh
           bash Tests/run-gen1-ap-import-tests.sh
+          xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-protocol-cache" AIGlass/Bluetooth/Gen1/Gen1Protocol.swift Tests/Gen1ProtocolTests.swift -o "$RUNNER_TEMP/gen1-protocol-tests"
+          "$RUNNER_TEMP/gen1-protocol-tests"
+          bash Tests/run-photo-capture-watermark-tests.sh
           bash Tests/run-gen1-media-tcp-tests.sh
           bash Tests/run-wifi-diagnostics-tests.sh
           xcrun swiftc -module-cache-path "$RUNNER_TEMP/translation-audio-cache" AIGlass/Network/TranslationAudioSessionState.swift Tests/TranslationAudioSessionTests.swift -o "$RUNNER_TEMP/translation-audio-tests"
@@ -62,7 +65,7 @@ jobs:
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
-          name: AIGlass-1.1.6-165-${{ inputs.export_method }}
+          name: AIGlass-1.1.6-166-${{ inputs.export_method }}
           path: build/ipa/*.ipa
           if-no-files-found: error
           retention-days: 7

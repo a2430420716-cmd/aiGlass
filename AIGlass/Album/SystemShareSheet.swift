@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Network
 
 struct SharePayload: Identifiable {
     let id = UUID()
@@ -64,6 +65,9 @@ final class SystemShareDiagnostics {
     private let source: String
     private let startedAt = ProcessInfo.processInfo.systemUptime
     private var callbackReceived = false
+    private let pathMonitor = NWPathMonitor()
+    private var defaultPath = "notObserved"
+    private var monitoringStopped = false
 
     init(items: [Any], source: String) {
         self.source = source
@@ -77,7 +81,18 @@ final class SystemShareDiagnostics {
                 + " exists=\(FileManager.default.fileExists(atPath: url.path)) readableInApp=\(FileManager.default.isReadableFile(atPath: url.path)) bytes=\(size)"
         }
         record("开始", detail: "itemCount=\(items.count) metadataTruncated=\(items.count > 20)\n\(files.joined(separator: "\n"))")
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let detail = Self.describePath(path)
+            Task { @MainActor [weak self] in
+                guard let self, !self.monitoringStopped, self.defaultPath != detail else { return }
+                self.defaultPath = detail
+                self.record("网络路径变化", detail: "evidenceLimit=path_status_does_not_verify_third_party_server_reachability")
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "com.aiglass.share.diagnostics"))
     }
+
+    deinit { pathMonitor.cancel() }
 
     func recordCompletion(activityType: UIActivity.ActivityType?, completed: Bool, returnedItems: [Any]?, error: Error?) {
         callbackReceived = true
@@ -105,10 +120,25 @@ final class SystemShareDiagnostics {
         detail += "\nunderlyingErrorsTruncated=\(currentError != nil)"
         detail += "\nevidenceLimit=system_callback_only; third_party_internal_errors_may_not_be_returned; completed_does_not_confirm_recipient_delivery"
         record("系统回调", detail: detail)
+        stopMonitoring()
     }
 
     func recordDismissal() {
         record("界面结束", detail: "callbackObserved=\(callbackReceived); dismissal_alone_does_not_indicate_success_or_failure")
+        stopMonitoring()
+    }
+
+    private func stopMonitoring() {
+        monitoringStopped = true
+        pathMonitor.pathUpdateHandler = nil
+        pathMonitor.cancel()
+    }
+
+    nonisolated private static func describePath(_ path: NWPath) -> String {
+        let reason = path.status == .unsatisfied ? String(describing: path.unsatisfiedReason) : "notApplicable"
+        return "status=\(path.status) usesWiFi=\(path.usesInterfaceType(.wifi)) usesCellular=\(path.usesInterfaceType(.cellular))"
+            + " supportsDNS=\(path.supportsDNS) supportsIPv4=\(path.supportsIPv4) supportsIPv6=\(path.supportsIPv6)"
+            + " expensive=\(path.isExpensive) constrained=\(path.isConstrained) unsatisfiedReason=\(reason)"
     }
 
     private func record(_ event: String, detail: String) {
@@ -116,6 +146,7 @@ final class SystemShareDiagnostics {
         let wifiIPv4 = WifiDiagnosticSession.captureInterfaces().selectedIPv4 ?? "none"
         DebugLogStore.logShare(event, detail: "shareID=\(id) source=\(source) elapsedSeconds=\(elapsed)"
             + " appState=\(UIApplication.shared.applicationState.rawValue) wifiIPv4=\(wifiIPv4)"
+            + " onGlassesSubnet=\(wifiIPv4.hasPrefix("192.168.4.")) defaultPath=[\(defaultPath)]"
             + " internetReachability=notVerified\n\(detail)")
     }
 }

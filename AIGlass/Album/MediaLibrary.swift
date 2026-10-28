@@ -189,7 +189,7 @@ final class MediaLibrary: ObservableObject {
     /// The coordinator supplies a fully downloaded file at a unique, stable inbox
     /// path. Retries reuse its album ID, including after a crash or Photos failure.
     @discardableResult
-    func importGen1Original(fileURL: URL, fileName: String) async throws -> StoredMediaItem {
+    func importGen1Original(fileURL: URL, fileName: String, watermark: PhotoWatermarkConfiguration? = nil) async throws -> StoredMediaItem {
         try Task.checkCancellation()
         let id = Gen1MediaStaging.sourceID(for: fileURL)
         if let existing = gen1ImportTasks[id] {
@@ -202,7 +202,7 @@ final class MediaLibrary: ObservableObject {
             }
         }
         let task = Task { @MainActor in
-            try await self.performGen1Import(fileURL: fileURL, fileName: fileName)
+            try await self.performGen1Import(fileURL: fileURL, fileName: fileName, watermark: watermark)
         }
         gen1ImportTasks[id] = (fileName, task)
         defer { gen1ImportTasks[id] = nil }
@@ -214,7 +214,7 @@ final class MediaLibrary: ObservableObject {
         }
     }
 
-    private func performGen1Import(fileURL: URL, fileName: String) async throws -> StoredMediaItem {
+    private func performGen1Import(fileURL: URL, fileName: String, watermark: PhotoWatermarkConfiguration?) async throws -> StoredMediaItem {
         try Task.checkCancellation()
         let archive = gen1Archive
         // Large source copies and hashes must not block the UI. Nothing below may
@@ -290,10 +290,10 @@ final class MediaLibrary: ObservableObject {
         } else {
             let data = try Data(contentsOf: source, options: .mappedIfSafe)
             let rotated = try Gen1MediaOrientation.rotatePhotoClockwise90(data, fileName: fileName)
-            let photo = PhotoWatermarkApplier.applyIfNeeded(rotated, capturedAt: receipt.createdAt)
+            let photo = PhotoWatermarkApplier.applyIfNeeded(rotated, capturedAt: receipt.createdAt, configuration: watermark)
             try photo.write(to: temporary, options: .atomic)
             try Self.generatePhotoThumbnail(from: photo, to: temporaryThumbnail)
-            DebugLogStore.logWiFi("Gen1 photo processed", detail: "rotation=clockwise90 watermarkEnabled=\(AppSettings.imageWatermarkEnabled) style=\(AppSettings.imageWatermarkStyle) originalPreserved=true")
+            DebugLogStore.logWiFi("Gen1 photo processed", detail: "rotation=clockwise90 watermarkEnabled=\(watermark?.enabled ?? AppSettings.imageWatermarkEnabled) style=\(watermark?.style ?? AppSettings.imageWatermarkStyle) watermarkSource=\(watermark == nil ? "import_settings_fallback" : "capture_snapshot") originalPreserved=true")
         }
         guard Self.hasNonemptyFile(temporary), Self.hasNonemptyFile(temporaryThumbnail) else {
             throw MediaOrientationFixer.Error.encodeFailed

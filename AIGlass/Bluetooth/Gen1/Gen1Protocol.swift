@@ -507,8 +507,10 @@ final class Gen1TranslationAudioRouter {
         lock.lock(); defer { lock.unlock() }
         switch frame.type {
         case .start:
+            // A delayed START can belong to the translation we just stopped.
+            // Quarantine its whole stream until END, not only trailing DATA.
+            if state == .discarding { return .ignore }
             if state == .pendingStart, frame.sequence == 0 { state = .streaming; return .translationStarted }
-            if state == .discarding { state = .idle }
             return .ai(frame)
         case .data:
             if state == .discarding { return .ignore }
@@ -530,10 +532,16 @@ final class Gen1TranslationAudioRouter {
     }
 
     /// Abandon a cancelled/timed-out translation without treating its trailing DATA as AI.
-    /// END or a fresh START restores normal routing; a new explicit translation start also wins.
+    /// END or an explicit AI wake-up restores normal routing. An explicit translation start also wins.
     func discardPendingStream() {
         lock.lock(); defer { lock.unlock() }
         if state != .idle { state = .discarding }
+    }
+
+    /// Only an explicit AI control event may recover when a cancelled stream lost its END.
+    func onAIWakeup() {
+        lock.lock(); defer { lock.unlock() }
+        if state == .discarding { state = .idle }
     }
 }
 

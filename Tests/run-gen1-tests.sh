@@ -31,5 +31,6 @@ bash Tests/run-gen1-ap-import-tests.sh
 bash Tests/run-gen1-hotspot-cleanup-tests.sh
 bash Tests/run-gen1-wifi-gateway-tests.sh
 bash Tests/run-gen1-media-staging-tests.sh
+bash Tests/run-photo-capture-watermark-tests.sh
 bash Tests/run-gen1-media-tcp-tests.sh "$@"
 bash Tests/run-gen1-video-import-tests.sh

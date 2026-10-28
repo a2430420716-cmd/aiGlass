@@ -76,6 +76,7 @@ final class ConversationTranslationController: ObservableObject {
 
     private let phoneRecordMaxNs: UInt64 = 60_000_000_000
     private let glassesStartTimeoutNs: UInt64 = 3_000_000_000
+    private let gen1GlassesStartTimeoutNs: UInt64 = 15_000_000_000
     private let processingFallbackNs: UInt64 = 8_000_000_000
 
     func start(ble: AstraA1BleManager, token: String?) {
@@ -639,12 +640,15 @@ final class ConversationTranslationController: ObservableObject {
 
     private func scheduleGlassesStartTimeout() {
         cancelGlassesStartTimeout()
+        let timeout = ble?.deviceGeneration == .gen1G5K61 ? gen1GlassesStartTimeoutNs : glassesStartTimeoutNs
+        DebugLogStore.logBLEEvent("translation START waiting", detail: "generation=\(ble?.deviceGeneration.rawValue ?? "unknown") timeoutSeconds=\(timeout / 1_000_000_000) requires=START_or_valid_Opus_DATA")
         glassesStartTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: self?.glassesStartTimeoutNs ?? 3_000_000_000)
+            try? await Task.sleep(nanoseconds: timeout)
             guard let self, !Task.isCancelled else { return }
             guard self.isActive, self.glassesState.isWaitingForDevice,
                   self.glassesConnecting, !self.glassesRecording, self.activeSide == .glasses else { return }
-            self.failGlassesStart(reason: "3s elapsed without START or valid Opus DATA")
+            self.failGlassesStart(reason: "\(timeout / 1_000_000_000)s elapsed without START or valid Opus DATA")
+            self.alertMessage = L10n.t("未收到眼镜录音数据，请稍后重试", "No recording data received from the glasses. Please try again shortly.")
         }
     }
 

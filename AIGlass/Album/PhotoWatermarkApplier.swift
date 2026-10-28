@@ -18,12 +18,19 @@ enum PhotoWatermarkApplier {
     }
 
     /// 未开启水印则原样返回；失败也回退原图，不阻断导入。
-    static func applyIfNeeded(_ imageData: Data, capturedAt: Date = Date()) -> Data {
-        guard AppSettings.imageWatermarkEnabled else { return imageData }
-        guard let style = Style(rawValue: AppSettings.imageWatermarkStyle) else { return imageData }
+    static func applyIfNeeded(_ imageData: Data, capturedAt: Date = Date(), configuration: PhotoWatermarkConfiguration? = nil) -> Data {
+        let enabled = configuration?.enabled ?? AppSettings.imageWatermarkEnabled
+        let rawStyle = configuration?.style ?? AppSettings.imageWatermarkStyle
+        let date = configuration?.capturedAt ?? capturedAt
+        let settingsSource = configuration == nil ? "import_settings_fallback" : "capture_snapshot"
+        guard enabled else {
+            DebugLogStore.logWiFi("photo watermark skipped", detail: "enabled=false source=\(settingsSource)")
+            return imageData
+        }
+        guard let style = Style(rawValue: rawStyle) else { return imageData }
         do {
-            let stamped = try apply(imageData, style: style, capturedAt: capturedAt)
-            DebugLogStore.logWiFi("photo watermark applied", detail: "style=\(style.rawValue) inputBytes=\(imageData.count) outputBytes=\(stamped.count)")
+            let stamped = try apply(imageData, style: style, capturedAt: date)
+            DebugLogStore.logWiFi("photo watermark applied", detail: "style=\(style.rawValue) source=\(settingsSource) inputBytes=\(imageData.count) outputBytes=\(stamped.count)")
             return stamped
         } catch {
             print("[Watermark] apply failed style=\(style.rawValue): \(error.localizedDescription)")

@@ -206,9 +206,11 @@ struct GlassesSettingsView: View {
         }
         .onChangeCompat(of: imageWatermarkEnabled) { enabled in
             AppSettings.imageWatermarkEnabled = enabled
+            DebugLogStore.logWiFi("photo watermark setting", detail: "enabled=\(enabled) style=\(AppSettings.imageWatermarkStyle) source=settings_toggle")
         }
         .onChangeCompat(of: selectedWatermarkStyle) { style in
             AppSettings.imageWatermarkStyle = style
+            DebugLogStore.logWiFi("photo watermark setting", detail: "enabled=true style=\(style) source=settings_style")
             // 点选样式时自动打开水印开关，避免选了却没开。
             if !imageWatermarkEnabled {
                 imageWatermarkEnabled = true
