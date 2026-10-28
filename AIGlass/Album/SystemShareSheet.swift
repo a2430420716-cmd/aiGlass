@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Network
+import UniformTypeIdentifiers
 
 struct SharePayload: Identifiable {
     let id = UUID()
@@ -18,8 +19,15 @@ struct SystemShareSheet: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIActivityViewController {
         let diagnostics = SystemShareDiagnostics(items: urls, source: "album")
         context.coordinator.diagnostics = diagnostics
+        // URL-only activity items can be accepted as generic documents by chat
+        // extensions (including a single-file Open In activity for a batch).
+        // Advertise photos as native images and videos as their movie types.
+        let sources = urls.enumerated().map {
+            MediaShareItemSource(url: $0.element, index: $0.offset, diagnostics: diagnostics)
+        }
+        context.coordinator.sources = sources
         let controller = UIActivityViewController(
-            activityItems: urls,
+            activityItems: sources,
             applicationActivities: nil
         )
         let coordinator = context.coordinator
@@ -51,11 +59,52 @@ struct SystemShareSheet: UIViewControllerRepresentable {
     final class Coordinator {
         let onComplete: (() -> Void)?
         var diagnostics: SystemShareDiagnostics?
+        var sources: [MediaShareItemSource] = []
 
         init(onComplete: (() -> Void)?) {
             self.onComplete = onComplete
         }
     }
+}
+
+@MainActor
+final class MediaShareItemSource: NSObject, UIActivityItemSource {
+    private let url: URL
+    private let index: Int
+    private let diagnostics: SystemShareDiagnostics
+    private let type: UTType
+    private var isImage: Bool { type.conforms(to: .image) }
+
+    init(url: URL, index: Int, diagnostics: SystemShareDiagnostics) {
+        self.url = url
+        self.index = index
+        self.diagnostics = diagnostics
+        self.type = UTType(filenameExtension: url.pathExtension) ?? .data
+        super.init()
+    }
+
+    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
+        // Let UIKit choose UIImage's concrete supported representations instead
+        // of declaring a file URL (or labeling PNG bytes as JPEG).
+        if isImage { return UIImage() }
+        return url
+    }
+
+    func activityViewController(_ activityViewController: UIActivityViewController,
+                                itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
+        if isImage {
+            // Lazy load per item, without caching a second full-resolution batch.
+            let image = UIImage(contentsOfFile: url.path)
+            diagnostics.recordRepresentation(index: index, activityType: activityType,
+                representation: "UIImage", type: UTType.image.identifier, readable: image != nil)
+            return image
+        }
+        let readable = FileManager.default.isReadableFile(atPath: url.path)
+        diagnostics.recordRepresentation(index: index, activityType: activityType,
+            representation: "typedFileURL", type: type.identifier, readable: readable)
+        return readable ? url : nil
+    }
+
 }
 
 /// 只记录系统暴露的分享证据，不记录分享内容、接收人或第三方返回对象。
@@ -126,6 +175,11 @@ final class SystemShareDiagnostics {
     func recordDismissal() {
         record("界面结束", detail: "callbackObserved=\(callbackReceived); dismissal_alone_does_not_indicate_success_or_failure")
         stopMonitoring()
+    }
+
+    func recordRepresentation(index: Int, activityType: UIActivity.ActivityType?,
+                              representation: String, type: String, readable: Bool) {
+        record("媒体交付", detail: "itemIndex=\(index) activityType=\(activityType?.rawValue ?? "preview") representation=\(representation) type=\(type) readable=\(readable)")
     }
 
     private func stopMonitoring() {

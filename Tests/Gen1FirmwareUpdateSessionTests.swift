@@ -187,8 +187,8 @@ enum Gen1FirmwareUpdateSessionTests {
         let transient = Harness()
         transient.batteryReply = 75
         transient.baselineBattery = 80
-        try await transient.run()
-        check(transient.completed, "Android's higher baseline protects against transient low readings")
+        await expectFailure(transient, .batteryLow(75))
+        check(transient.codes == [0x05], "Fresh battery below 80% blocks provisioning despite older high cache")
 
         let failedQuery = Harness()
         failedQuery.baselineBattery = 80

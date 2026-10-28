@@ -216,44 +216,64 @@ struct TranslationRecordListView: View {
     }
 
     private var deleteConfirmationSheet: some View {
+        TranslationRecordDeleteConfirmation(
+            selectedCount: selectedIds.count,
+            onCancel: { showsDeleteConfirm = false },
+            onDelete: {
+                SimultaneousTranslationRecordStore.delete(ids: selectedIds)
+                showsDeleteConfirm = false
+                exitSelectionMode()
+                reload()
+            }
+        )
+    }
+
+}
+
+/// Shared by both translation record lists so deletion has the same presentation.
+struct TranslationRecordDeleteConfirmation: View {
+    let selectedCount: Int
+    let onCancel: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
         ZStack(alignment: .bottom) {
             Color.black.opacity(0.36)
                 .ignoresSafeArea()
-                .onTapGesture { showsDeleteConfirm = false }
+                .onTapGesture(perform: onCancel)
+                .accessibilityLabel(L10n.t("取消删除", "Cancel deletion"))
+                .accessibilityAddTraits(.isButton)
 
             VStack(spacing: 0) {
-                Text(L10n.t("确定删除选中的 \(selectedIds.count) 条记录吗？", "Delete \(selectedIds.count) selected record(s)?"))
+                Text(L10n.t("确定删除选中的 \(selectedCount) 条记录吗？", "Delete \(selectedCount) selected record(s)?"))
                     .font(AppTheme.notoSansSC(size: 17, weight: .medium))
                     .foregroundStyle(AppTheme.primaryText)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
                     .padding(.vertical, 28)
 
-                Divider()
+                Text(L10n.t("删除后无法恢复", "This cannot be undone."))
+                    .font(AppTheme.notoSansSC(size: 13, weight: .regular))
+                    .foregroundStyle(AppTheme.secondaryText)
 
                 HStack(spacing: 12) {
-                    Button(L10n.t("取消", "Cancel")) {
-                        showsDeleteConfirm = false
-                    }
-                    .foregroundStyle(AppTheme.primaryText)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Color(red: 0.93, green: 0.93, blue: 0.93))
-                    .clipShape(Capsule())
+                    Button(L10n.t("取消", "Cancel"), action: onCancel)
+                        .foregroundStyle(AppTheme.primaryText)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(Color(red: 0.80, green: 0.80, blue: 0.80))
+                        .clipShape(Capsule())
 
-                    Button(L10n.t("删除", "Delete")) {
-                        SimultaneousTranslationRecordStore.delete(ids: selectedIds)
-                        showsDeleteConfirm = false
-                        exitSelectionMode()
-                        reload()
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(AppTheme.accent)
-                    .clipShape(Capsule())
+                    Button(L10n.t("删除", "Delete"), action: onDelete)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(Color(red: 0.20, green: 0.20, blue: 0.20))
+                        .clipShape(Capsule())
+                        .disabled(selectedCount == 0)
                 }
                 .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                .buttonStyle(.plain)
                 .padding(20)
             }
             .background(AppTheme.cardBackground)
@@ -263,6 +283,7 @@ struct TranslationRecordListView: View {
         }
         .transition(.opacity)
         .zIndex(10)
+        .accessibilityAddTraits(.isModal)
     }
 }
 

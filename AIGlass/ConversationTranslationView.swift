@@ -230,7 +230,8 @@ struct ConversationTranslationView: View {
     private var recordControls: some View {
         HStack {
             recordButton(
-                title: controller.glassesActive ? L10n.t("停止录音", "Stop Recording") : L10n.t("眼镜录音", "Glasses Record"),
+                title: controller.glassesStopping ? L10n.t("正在结束…", "Finishing…")
+                    : (controller.glassesActive ? L10n.t("停止录音", "Stop Recording") : L10n.t("眼镜录音", "Glasses Record")),
                 idleImage: "conversation_glasses_record",
                 activeImages: [
                     "conversation_glasses_recording_frame1",
@@ -238,8 +239,8 @@ struct ConversationTranslationView: View {
                     "conversation_glasses_recording",
                     "conversation_glasses_recording_frame2"
                 ],
-                isActive: controller.glassesActive,
-                isDisabled: controller.phoneActive,
+                isActive: controller.glassesActive && !controller.glassesStopping,
+                isDisabled: controller.phoneActive || controller.glassesStopping,
                 action: controller.toggleGlassesRecording
             )
 

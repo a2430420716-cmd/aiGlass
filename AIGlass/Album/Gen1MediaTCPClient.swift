@@ -73,6 +73,14 @@ actor Gen1MediaTCPClient {
 
     func hadLocalNetworkDenial() -> Bool { observedLocalNetworkDenied }
 
+    /// Local processing has no pending file read. Expose only eligible network
+    /// failures so its monitor cannot turn protocol errors into reconnect loops.
+    func processingRecoveryError() -> Error? {
+        guard let terminalError, canRetryAfterPathChange(terminalError) else { return nil }
+        return terminalError
+    }
+
+
     private func observePath(_ path: NWPath) {
         logConnection("observedWiFiPath status=\(path.status) unsatisfiedReason=\(path.status == .unsatisfied ? String(describing: path.unsatisfiedReason) : "notApplicable")")
         if path.status == .satisfied && path.usesInterfaceType(.wifi) {
@@ -459,6 +467,10 @@ actor Gen1MediaTCPClient {
     }
 
     #if GEN1_MEDIA_TCP_TESTING
+    func deliverProcessingFailureForTesting(_ error: NWError) {
+        connectionChanged(.failed(error))
+    }
+
     /// Deterministic coverage for Network.framework's documented data+error callback.
     func deliverReceiveFailureForTesting(_ bytes: Data, failStateFirst: Bool) -> Bool {
         guard let pendingRead else { return false }

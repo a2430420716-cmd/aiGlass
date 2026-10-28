@@ -936,17 +936,23 @@ enum AstraA1BleProtocol {
 
     private static func formatStorageComponent(_ raw: String) -> String {
         let upper = raw.uppercased()
-        if upper.hasSuffix("GB") || upper.hasSuffix("MB") || upper.hasSuffix("KB") {
-            return raw
+        // Gen1 returns text such as 3.6G / 16.0K. Never strip non-digits:
+        // that changes these values into 36MB / 160MB.
+        let units = ["TB", "GB", "MB", "KB", "B", "T", "G", "M", "K"]
+        if let unit = units.first(where: { upper.hasSuffix($0) }) {
+            let number = String(upper.dropLast(unit.count)).trimmingCharacters(in: .whitespaces)
+            guard let value = Double(number), value.isFinite, value >= 0 else { return raw }
+            return number + (unit.count == 1 && unit != "B" ? unit + "B" : unit)
         }
-        guard let number = Int(raw.filter(\.isNumber)) else { return raw }
+        guard let number = Double(raw), number.isFinite, number >= 0 else { return raw }
         if number >= 1024 {
-            let gb = Double(number) / 1024.0
+            let gb = number / 1024.0
             if gb.truncatingRemainder(dividingBy: 1) == 0 {
-                return "\(Int(gb))GB"
+                return String(format: "%.0fGB", gb)
             }
             return String(format: "%.1fGB", gb)
         }
-        return "\(number)MB"
+        return number.truncatingRemainder(dividingBy: 1) == 0
+            ? String(format: "%.0fMB", number) : "\(raw)MB"
     }
 }

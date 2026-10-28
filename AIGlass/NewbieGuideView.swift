@@ -859,47 +859,65 @@ struct NewbieGuideView: View {
     }
 
     private var completionView: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 150)
+        GeometryReader { proxy in
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    Image("android_guide_complete_glasses")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: 342)
+                        .frame(height: 105)
 
-            Image("android_guide_complete_glasses")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 342, height: 105)
+                    Text(L10n.t("恭喜你完成新手引导", "Newbie guide complete"))
+                        .font(AppTheme.notoSansSC(size: 24, weight: .bold))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [Color(red: 0.33, green: 0.87, blue: 0.96), Color(red: 0.65, green: 0.66, blue: 1.0)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 36)
 
-            Text(L10n.t("恭喜你完成新手引导", "Newbie guide complete"))
-                .font(AppTheme.notoSansSC(size: 24, weight: .bold))
-                .foregroundStyle(Color(red: 0.33, green: 0.87, blue: 0.96))
-                .padding(.top, 45)
+                    Text(L10n.t("你可以随时在“APP首页-新手引导”中重新开始", "You can restart anytime from Home - Newbie Guide"))
+                        .font(AppTheme.notoSansSC(size: 15, weight: .regular))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 20)
 
-            Text(L10n.t("你可以随时在“APP首页-新手引导”中重新开始", "You can restart anytime from Home - Newbie Guide"))
-                .font(AppTheme.notoSansSC(size: 15, weight: .regular))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 30)
-                .padding(.top, 20)
+                    Button(L10n.t("开始使用眼镜", "Start Using Glasses")) {
+                        closeGuide()
+                    }
+                    .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: 276)
+                    .frame(height: 48)
+                    .background(Color.white.opacity(0.12))
+                    .clipShape(Capsule())
+                    .padding(.top, max(32, proxy.size.height * 0.10))
 
-            Button(L10n.t("开始使用眼镜", "Start Using Glasses")) {
-                closeGuide()
+                    Spacer(minLength: 32)
+
+                    Button(L10n.t("再看一遍", "View Again")) {
+                        controller.restart()
+                    }
+                    .font(AppTheme.notoSansSC(size: 14, weight: .regular))
+                    .foregroundStyle(.white)
+                    .frame(minHeight: 44)
+                    .padding(.bottom, 20)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, max(48, proxy.size.height * 0.20))
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: proxy.size.height)
             }
-            .font(AppTheme.notoSansSC(size: 16, weight: .medium))
-            .foregroundStyle(.white)
-            .frame(width: 276, height: 48)
-            .background(Color.white.opacity(0.12))
-            .clipShape(Capsule())
-            .padding(.top, 94)
-
-            Spacer()
-
-            Button(L10n.t("再看一遍", "View Again")) {
-                controller.restart()
-            }
-            .font(AppTheme.notoSansSC(size: 14, weight: .regular))
-            .foregroundStyle(.white)
-            .padding(.bottom, 32)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+
 }
 
 #Preview {

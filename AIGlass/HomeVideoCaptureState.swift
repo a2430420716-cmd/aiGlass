@@ -1,18 +1,17 @@
 import Foundation
 
 /// Tracks one recording across optimistic writes, device reports and rejected stop requests.
+/// The glasses own the recording duration; no local deadline sends STOP.
 /// A write or a timeout is never proof that the device finished recording.
 struct HomeVideoCaptureState {
     static let minimumDuration: TimeInterval = 3
 
     private(set) var startedAt: TimeInterval?
-    private(set) var maximumDuration: TimeInterval?
     private(set) var hasConfirmedRecording = false
     private(set) var isStopPending = false
 
-    mutating func startSent(at uptime: TimeInterval, maximumDuration: TimeInterval? = nil) {
+    mutating func startSent(at uptime: TimeInterval) {
         startedAt = uptime
-        self.maximumDuration = maximumDuration.map { max(Self.minimumDuration, $0) }
         hasConfirmedRecording = false
         isStopPending = false
     }
@@ -24,11 +23,6 @@ struct HomeVideoCaptureState {
 
     mutating func stopSent() { isStopPending = true }
     mutating func stopRejectedOrUnconfirmed() { isStopPending = false }
-
-    func autoStopDelayRemaining(at uptime: TimeInterval) -> TimeInterval? {
-        guard let startedAt, let maximumDuration, !isStopPending else { return nil }
-        return max(0, maximumDuration - max(0, uptime - startedAt))
-    }
 
     /// Only a device standby report can complete a recording. Repeated recording
     /// reports neither restart the minimum-duration clock nor unlock a pending stop.
@@ -55,7 +49,6 @@ struct HomeVideoCaptureState {
 
     mutating func reset() {
         startedAt = nil
-        maximumDuration = nil
         hasConfirmedRecording = false
         isStopPending = false
     }

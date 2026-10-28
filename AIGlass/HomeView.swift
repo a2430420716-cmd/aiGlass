@@ -251,7 +251,16 @@ struct HomeView: View {
         CompatibleNavigationStackPath(path: $pairingCoordinator.path) {
             scrollContent
                 .mainTabRootContent()
-                .background(AppTheme.background.ignoresSafeArea())
+                .background {
+                    GeometryReader { proxy in
+                        Image("bg")
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .clipped()
+                    }
+                    .ignoresSafeArea()
+                }
                 .sheet(isPresented: $showSoundEffectSheet) {
                     SoundEffectModeSheet(
                         selectedMode: selectedSoundMode,
@@ -364,23 +373,6 @@ struct HomeView: View {
                 "Connection still failed. Restart the glasses, turn system Bluetooth off and back on, then tap Retry again."
             ))
         }
-        .overlay(alignment: .bottom) {
-            if let mediaActionToastMessage {
-                Text(mediaActionToastMessage)
-                    .font(AppTheme.notoSansSC(size: 14, weight: .medium))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 11)
-                    .background(Color.black.opacity(0.80))
-                    .clipShape(Capsule())
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, (showsTabBar ? TabBarLayout.contentInset : 0) + 24)
-                    .transition(.opacity)
-                    .allowsHitTesting(false)
-            }
-        }
         .alert(L10n.t("蓝牙音频未连接", "Bluetooth Audio Not Connected"), isPresented: Binding(
             get: { pairingCoordinator.classicAudioTipMessage != nil },
             set: { if !$0 { pairingCoordinator.classicAudioTipMessage = nil } }
@@ -454,6 +446,25 @@ struct HomeView: View {
         }
     }
 
+    @ViewBuilder
+    private var mediaActionToast: some View {
+        if let mediaActionToastMessage {
+            Text(mediaActionToastMessage)
+                .font(AppTheme.notoSansSC(size: 14, weight: .medium))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 11)
+                .background(Color.black.opacity(0.80))
+                .clipShape(Capsule())
+                .padding(.horizontal, 24)
+                .transition(.opacity)
+                .allowsHitTesting(false)
+                .accessibilityAddTraits(.updatesFrequently)
+        }
+    }
+
     private var scrollContent: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 16) {
@@ -472,6 +483,11 @@ struct HomeView: View {
                     onReconnectDevice: reconnectBoundDevice
                 )
                 volumeSection
+                    .overlay(alignment: .bottom) {
+                        mediaActionToast
+                            .offset(y: 18)
+                    }
+                    .zIndex(1)
                 actionGrid
             }
             .frame(maxWidth: .infinity)
@@ -510,25 +526,11 @@ struct HomeView: View {
             showMediaActionToast(L10n.t("正在导入文件，请稍后再试", "Import in progress, try again later"))
             return
         }
-        let duration = DeviceMediaSettings.recordDurationSeconds(
-            userId: authSession.phoneNumber,
-            deviceKey: currentMediaSettingsDeviceKey
-        )
-        ble.toggleVideoRecordingFromHome(maxDurationSeconds: duration)
+        ble.toggleVideoRecordingFromHome()
     }
 
     private var isAnyDeviceFileImportActive: Bool {
         importManager.isImporting || recordingImportManager.isImporting
-    }
-
-    private var currentMediaSettingsDeviceKey: String? {
-        guard ble.isDeviceAvailable,
-              let card = homeDeviceCards.first(where: {
-                  !$0.isFindDevice && ble.matchesCurrentDevice(
-                      serialNumber: $0.serialNumber, hardwareSN: $0.hardwareSN
-                  )
-              }) else { return nil }
-        return card.serialNumber ?? ble.deviceBluetoothIdentifier
     }
 
     /// 首页入口：切到 AI Tab → 插 loading → 发 imgreccap0 → 收图后进聊天列表。
@@ -1321,7 +1323,7 @@ private struct DeviceCardView: View {
                                 Image("android_index_edit")
                                     .resizable()
                                     .scaledToFit()
-                                    .frame(width: 10, height: 10)
+                                    .frame(width: 16, height: 16)
                             }
                             .contentShape(Rectangle())
                         }

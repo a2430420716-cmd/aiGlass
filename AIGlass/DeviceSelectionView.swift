@@ -105,9 +105,9 @@ struct DeviceSelectionView: View {
                     .foregroundStyle(AppTheme.primaryText)
 
                 if !model.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(model.modelName)
-                        .font(AppTheme.notoSansSC(size: 14, weight: .regular))
-                        .foregroundStyle(AppTheme.secondaryText)
+                    Text(model.glassDeviceModel == .unknown ? model.modelName : model.glassDeviceModel.rawValue)
+                        .font(AppTheme.notoSansSC(size: 14, weight: .semibold))
+                        .foregroundStyle(AppTheme.primaryText)
                 }
             }
         }
@@ -119,7 +119,7 @@ struct DeviceSelectionView: View {
         .shadow(color: AppTheme.cardShadow, radius: 10, y: 4)
     }
 
-    /// 与 Android 一致：产品名、型号均来自接口，不硬编码 Lumina L1 等服务端数据。
+    /// 品牌名来自接口；已知型号仅在展示层映射产品名，配对仍使用接口型号。
     private func deviceSeriesName(for model: DeviceModelItem) -> String {
         let eqName = model.eqName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !eqName.isEmpty else { return L10n.t("AI 眼镜", "AI Glasses") }

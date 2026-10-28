@@ -109,7 +109,7 @@ struct FeedbackView: View {
                 .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                 .foregroundStyle(AppTheme.primaryText)
                 .frame(maxWidth: .infinity)
-                .frame(height: 88)
+                .frame(height: 72)
                 .background(
                     LinearGradient(
                         colors: [

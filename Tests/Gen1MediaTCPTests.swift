@@ -183,6 +183,7 @@ enum Gen1MediaTCPTests {
     #if GEN1_MEDIA_TCP_TESTING
     static func integrationTests() async throws {
         try await successfulBatch()
+        try await processingFailureRecovery()
         try await rejectedDownloads()
         try await idleAndOperationTimeouts()
         try await fileTransferTimeouts()
@@ -243,6 +244,42 @@ enum Gen1MediaTCPTests {
         try check(requests.commands.filter { $0 == 6 }.count >= 3, "heartbeat continues during idle postprocessing")
         try check(requests.invalidRequests == 0, "all request headers/lengths/trailers valid including serialized heartbeat writes")
         await client.close()
+    }
+
+    static func processingFailureRecovery() async throws {
+        let content = Data(repeating: 0xA7, count: 1024)
+        let peer = LoopbackPeer { command, payload in
+            command == 1 ? .fragmented(response(1, payload + content, external: payload.count), sizes: [4096]) : .none
+        }
+        let port = try await peer.start()
+        let root = try directory()
+        defer { peer.stop(); try? FileManager.default.removeItem(at: root) }
+        let original = Gen1MediaTCPClient(host: "127.0.0.1", port: port, testConfiguration: configuration())
+        try await original.connect()
+        let destination = root.appendingPathComponent("saved.mp4")
+        _ = try await original.downloadFile(named: "saved.mp4", to: destination)
+        let healthy = await original.processingRecoveryError()
+        try check(healthy == nil, "healthy processing connection does not request recovery")
+        await original.deliverProcessingFailureForTesting(.posix(.ECONNABORTED))
+        let failure = await original.processingRecoveryError()
+        try check(failure != nil, "idle processing surfaces eligible TCP abort without a pending file read")
+        try check(try Data(contentsOf: destination) == content, "TCP abort preserves the completed local original")
+        let replacementPeer = LoopbackPeer { _, _ in .none }
+        let replacementPort = try await replacementPeer.start()
+        defer { replacementPeer.stop() }
+        let replacement = Gen1MediaTCPClient(host: "127.0.0.1", port: replacementPort, testConfiguration: configuration())
+        try await replacement.connect()
+        try await Task.sleep(nanoseconds: 170_000_000)
+        let requests = await replacementPeer.snapshot()
+        try check(requests.commands.contains(6), "replacement connection resumes heartbeats during local processing")
+        try check(!requests.commands.contains(1) && !requests.commands.contains(3) && !requests.commands.contains(7), "processing reconnect does not redownload, relist or finish a different batch")
+        await replacement.deliverProcessingFailureForTesting(.posix(.ECONNREFUSED))
+        let refused = await replacement.processingRecoveryError()
+        try check(refused == nil, "service refusal does not create processing recovery loop")
+        await original.close()
+        let cancelled = await original.processingRecoveryError()
+        try check(cancelled == nil, "explicit close is not eligible processing recovery")
+        await replacement.close()
     }
 
     static func rejectedDownloads() async throws {

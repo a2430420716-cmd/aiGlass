@@ -54,6 +54,9 @@ final class RealtimeTranslationManager: NSObject {
     private var pcmSentBytes = 0
     private var pcmDroppedBytes = 0
     private var pcmSendErrors = 0
+    private var queueWaitTiming = TranslationAudioTiming()
+    private var sendCompletionTiming = TranslationAudioTiming()
+    private var sendCallbackTiming = TranslationAudioTiming()
     private var receivedEvents: [String: Int] = [:]
     private var sendQueue = TranslationSocketSendQueue()
     private var transportMonitorTask: Task<Void, Never>?
@@ -101,6 +104,9 @@ final class RealtimeTranslationManager: NSObject {
         pcmSentBytes = 0
         pcmDroppedBytes = 0
         pcmSendErrors = 0
+        queueWaitTiming = TranslationAudioTiming()
+        sendCompletionTiming = TranslationAudioTiming()
+        sendCallbackTiming = TranslationAudioTiming()
         receivedEvents.removeAll()
         logFlow("connect", "source=\(sourceLanguage) target=\(targetLanguage) inputRate=16000 playbackRate=24000 pcmBits=16 channels=1")
         connectionTask = Task { [weak self] in
@@ -577,10 +583,15 @@ final class RealtimeTranslationManager: NSObject {
         case .json: message = .string(String(decoding: packet.data, as: UTF8.self))
         }
         let attempt = connectionAttempt.current
+        let sendAt = ProcessInfo.processInfo.systemUptime
+        queueWaitTiming.record(at: sendAt, delay: sendAt - packet.queuedAt)
         task.send(message) { [weak self] error in
+            let completedAt = ProcessInfo.processInfo.systemUptime
             Task { @MainActor in
                 guard let self, self.connectionAttempt.isCurrent(attempt), self.webSocketTask === task else { return }
                 guard self.sendQueue.complete(packet.id) else { return }
+                self.sendCompletionTiming.record(at: completedAt, delay: completedAt - sendAt)
+                self.sendCallbackTiming.record(at: completedAt, delay: ProcessInfo.processInfo.systemUptime - completedAt)
                 if let error {
                     if case .pcm = packet.kind { self.pcmSendErrors += 1 }
                     self.handleSocketFailure(error, task: task, operation: "queued send")
@@ -663,7 +674,7 @@ final class RealtimeTranslationManager: NSObject {
     }
 
     private var audioSummary: String {
-        "queuedChunks=\(pcmQueuedChunks) queuedBytes=\(pcmQueuedBytes) sentChunks=\(pcmSentChunks) sentBytes=\(pcmSentBytes) outstandingPackets=\(sendQueue.packets.count) outstandingBytes=\(sendQueue.byteCount) pendingBytes=\(pendingPCM.count) droppedBytes=\(pcmDroppedBytes) sendErrors=\(pcmSendErrors) events=\(receivedEvents)"
+        "queuedChunks=\(pcmQueuedChunks) queuedBytes=\(pcmQueuedBytes) sentChunks=\(pcmSentChunks) sentBytes=\(pcmSentBytes) outstandingPackets=\(sendQueue.packets.count) outstandingBytes=\(sendQueue.byteCount) pendingBytes=\(pendingPCM.count) droppedBytes=\(pcmDroppedBytes) sendErrors=\(pcmSendErrors) queueWait={\(queueWaitTiming.detail)} sendCompletion={\(sendCompletionTiming.detail)} callbackToHandler={\(sendCallbackTiming.detail)} events=\(receivedEvents)"
     }
 
     private func logFlow(_ title: String, _ detail: String = "") {

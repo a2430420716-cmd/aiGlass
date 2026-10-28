@@ -149,7 +149,7 @@ final class Gen1FirmwareUpdateSession {
             throw Failure.batteryUnknown
         }
         log("battery reported=\(battery.map(String.init) ?? "nil") baseline=\(baselineBattery.map(String.init) ?? "nil") effective=\(level)")
-        guard level >= Gen1FirmwareUpdateProtocol.minimumBatteryPercent else { throw Failure.batteryLow(level) }
+        guard FirmwareUpgradeBatteryPolicy.allowsUpgrade(percent: level, minimumPercent: Gen1FirmwareUpdateProtocol.minimumBatteryPercent) else { throw Failure.batteryLow(level) }
 
         var provisioned = false
         for attempt in 1...2 {

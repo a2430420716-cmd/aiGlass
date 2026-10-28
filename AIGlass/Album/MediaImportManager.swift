@@ -39,6 +39,70 @@ private final class MediaImportBackgroundExecution {
     }
 }
 
+/// Covers short system UI interruptions without cancelling local processing on
+/// expiration. iOS may still tear down Wi-Fi; this is a finite execution grant.
+@MainActor
+private final class Gen1ImportInterruptionProtection {
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+    private var observers: [NSObjectProtocol] = []
+    private var backgroundAt: TimeInterval?
+    private var expiredDuringInterruption = false
+    private var ended = false
+
+    init() {
+        for name in [UIApplication.willResignActiveNotification, UIApplication.didEnterBackgroundNotification,
+                     UIApplication.didBecomeActiveNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                let name = notification.name
+                Task { @MainActor [weak self] in self?.receive(name) }
+            })
+        }
+        if UIApplication.shared.applicationState != .active { begin() }
+    }
+
+    private func begin() {
+        guard !ended, !expiredDuringInterruption, identifier == .invalid else { return }
+        identifier = UIApplication.shared.beginBackgroundTask(withName: "Gen1ImportInterruption") { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, !self.ended else { return }
+                self.expiredDuringInterruption = true
+                DebugLogStore.logWiFi("一代：短暂失活保护额度到期", detail: "cancelImport=false cancelStabilize=false systemMaySuspend=true")
+                self.releaseGrant()
+            }
+        }
+        DebugLogStore.logWiFi("一代：申请短暂失活保护", detail: "backgroundTaskActive=\(identifier != .invalid) finiteExecution=true")
+    }
+
+    private func receive(_ name: Notification.Name) {
+        guard !ended else { return }
+        if name == UIApplication.didBecomeActiveNotification {
+            let duration = backgroundAt.map { ProcessInfo.processInfo.systemUptime - $0 } ?? 0
+            DebugLogStore.logWiFi("一代：返回前台结束失活保护", detail: "backgroundDurationSeconds=\(duration) backgroundTaskActive=\(identifier != .invalid)")
+            backgroundAt = nil
+            expiredDuringInterruption = false
+            releaseGrant()
+        } else {
+            if name == UIApplication.didEnterBackgroundNotification { backgroundAt = ProcessInfo.processInfo.systemUptime }
+            begin()
+            DebugLogStore.logWiFi("一代：导入短暂失活", detail: "event=\(name.rawValue) backgroundTaskActive=\(identifier != .invalid) cancelImport=false cancelStabilize=false")
+        }
+    }
+
+    private func releaseGrant() {
+        guard identifier != .invalid else { return }
+        let grant = identifier
+        identifier = .invalid
+        UIApplication.shared.endBackgroundTask(grant)
+    }
+
+    func end() {
+        ended = true
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers.removeAll()
+        releaseGrant()
+    }
+}
+
 struct MediaImportFailureRecord: Equatable, Identifiable {
     let id = UUID()
     let fileName: String
@@ -755,6 +819,8 @@ final class MediaImportManager: ObservableObject {
         let deviceSN = ble.deviceSN
         let diagnostics = ImportDiagnosticContext(kind: "gen1-album", ble: ble)
         let hotspot = Gen1HotspotSession(ble: ble, identity: identity)
+        let interruptionProtection = Gen1ImportInterruptionProtection()
+        defer { interruptionProtection.end() }
         let inbox = Gen1ImportInbox()
         var client: Gen1MediaTCPClient?
         var ssid: String?
@@ -949,6 +1015,7 @@ final class MediaImportManager: ObservableObject {
             diagnostics.log("一代：关联拍照水印设置", detail: watermarkBinding)
             remainingFileCount = listedNames.count
             diagnostics.log("一代：TCP 文件列表已获取", detail: "endpoint=\(endpoint) count=\(listedNames.count); BLE_ready_not_required_during_transfer")
+            var finalProcessingReconnected = false
             for (index, name) in listedNames.enumerated() {
                 try checkTarget()
                 state = .downloading(current: index + 1, total: listedNames.count, fileName: name)
@@ -976,18 +1043,73 @@ final class MediaImportManager: ObservableObject {
                     throw error // A broken stream cannot safely continue with another request.
                 }
                 try checkTarget()
+                // The network monitor owns only its replacement connection. Local
+                // processing retains its cancellation/identity rules independently.
+                let processingTransport = client ?? transport
+                let retryBudget = max(0, 3 - pathRetryCount)
+                let processingRecovery = Task { @MainActor () -> (Gen1MediaTCPClient, Int) in
+                    var active = processingTransport
+                    var attempts = 0
+                    var failure: Error?
+                    while !Task.isCancelled, ble.isGen1MediaImportCurrent(identity) {
+                        do { try await Task.sleep(nanoseconds: 250_000_000) } catch { break }
+                        guard !Task.isCancelled else { break }
+                        if failure == nil { failure = await active.processingRecoveryError() }
+                        guard let error = failure else { continue }
+                        guard DeviceWifiManager.gen1HasClientIPv4 else {
+                            diagnostics.log("一代：算法期间离开眼镜网段，停止 TCP 保活重连", detail: "phase=localProcessing keptHotspot=true stabilizeCancelled=false noApply=true")
+                            break
+                        }
+                        guard attempts < retryBudget else {
+                            diagnostics.log("一代：算法期间 TCP 保活重试耗尽", detail: "phase=localProcessing attempts=\(attempts) keptHotspot=true stabilizeCancelled=false error=\(Self.formatErrorDetail(error))")
+                            break
+                        }
+                        let delays: [UInt64] = [300_000_000, 800_000_000, 1_500_000_000]
+                        do { try await Task.sleep(nanoseconds: delays[attempts]) } catch { break }
+                        guard !Task.isCancelled, ble.isGen1MediaImportCurrent(identity), DeviceWifiManager.gen1HasClientIPv4 else { break }
+                        attempts += 1
+                        diagnostics.log("一代：算法期间静默重连 TCP", detail: "phase=localProcessing keepaliveRetryIndex=\(attempts) remainingSessionBudget=\(retryBudget) selectedIPv4=\(WifiDiagnosticSession.captureInterfaces().selectedIPv4 ?? "none") keptHotspot=true stabilizeCancelled=false noApply=true noOpenHotspot=true noFileList=true noRedownload=true error=\(Self.formatErrorDetail(error))")
+                        await active.close()
+                        let replacement = Gen1MediaTCPClient(host: "192.168.4.1")
+                        do {
+                            try await replacement.connect()
+                            active = replacement
+                            failure = nil
+                            diagnostics.log("一代：算法期间 TCP 保活恢复", detail: "phase=localProcessing keepaliveRetryIndex=\(attempts) heartbeatResumed=true stabilizeCancelled=false")
+                        } catch {
+                            // Preserve its terminal error for the next transfer/finish.
+                            active = replacement
+                            failure = error
+                            let recoverable = await replacement.canRetryAfterPathChange(error)
+                            if Task.isCancelled || !recoverable { break }
+                        }
+                    }
+                    return (active, attempts)
+                }
                 do {
                     _ = try await commitGen1File(entry, inbox: inbox, library: library, autoSave: autoSave, validateOwnership: checkTarget)
                     importedNames.append(name)
                 } catch { record(name, index: index + 1, total: listedNames.count, stage: "importToLibrary", error: error) }
+                processingRecovery.cancel()
+                let recovered = await processingRecovery.value
+                client = recovered.0
+                pathRetryCount += recovered.1
+                // No confirmed cross-session semantics for the batch-end command.
+                if index == listedNames.count - 1, recovered.1 > 0 { finalProcessingReconnected = true }
+                try checkTarget()
             }
             try checkTarget()
             state = .finishing
             // Match Android: batch completion once, not a deletion ACK after each file.
             let finishingTransport = client ?? transport
             do {
-                try hotspot.prepareForTransferCompletion()
-                try await finishingTransport.finishTransfer()
+                if finalProcessingReconnected {
+                    transferFinishWarning = true
+                    diagnostics.log("一代：最终文件处理期间已重连，不跨 TCP 会话重发结束指令", detail: "imported=\(importedNames.count) listed=\(listedNames.count) transferCompleteUnconfirmed=true next=closeTCP_then_ownedHotspotCleanup")
+                } else {
+                    try hotspot.prepareForTransferCompletion()
+                    try await finishingTransport.finishTransfer()
+                }
             } catch {
                 hotspot.transferCompletionFailed()
                 try checkTarget()

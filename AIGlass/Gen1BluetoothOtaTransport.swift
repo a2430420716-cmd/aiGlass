@@ -33,6 +33,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
     private var log: (String) -> Void = { _ in }
     private var lastLoggedResult: JL_OTAResult?
     private var lastLoggedPercent: Int?
+    private var recoveryRecord: Gen1BluetoothOtaRecoveryStore.Record?
 
     override init() {
         super.init()
@@ -41,13 +42,16 @@ final class Gen1BluetoothOtaTransport: NSObject {
         central = CBCentralManager(delegate: self, queue: .main)
     }
 
-    func upgrade(data: Data, peripheralIdentifier: UUID, log: @escaping (String) -> Void,
+    func upgrade(data: Data, peripheralIdentifier: UUID,
+                 recoveryRecord: Gen1BluetoothOtaRecoveryStore.Record,
+                 log: @escaping (String) -> Void,
                  onProgress: @escaping (Int) -> Void) async throws {
         guard continuation == nil, !data.isEmpty else {
             throw TransportError.message("Invalid or already active first-generation Bluetooth update")
         }
         firmware = data
         targetIdentifier = peripheralIdentifier
+        self.recoveryRecord = recoveryRecord
         self.log = log
         self.onProgress = onProgress
         lastLoggedResult = nil
@@ -142,6 +146,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
         writeInFlight = false
         authenticated = false
         firmware = Data()
+        recoveryRecord = nil
         onProgress = nil
         log("RCSP transport released")
         log = { _ in }
@@ -364,6 +369,13 @@ extension Gen1BluetoothOtaTransport: JLHashHandlerDelegate, JL_OTAManagerDelegat
               peripheral?.state == .connected, writeCharacteristic != nil else { return }
         didStartImage = true
         log("RCSP start image bytes=\(firmware.count)")
+        // Persist before the SDK can write firmware, including an app termination
+        // before its first progress callback. Connection/authentication failures
+        // before this point neither create nor erase recovery evidence.
+        if let recoveryRecord {
+            Gen1BluetoothOtaRecoveryStore().markImageSubmitted(recoveryRecord)
+            log("RCSP recovery marker persisted before submitting image")
+        }
         armTimeout(seconds: 180, message: "一代蓝牙固件传输超时")
         sdk.cmdOTAData(firmware)
     }
@@ -391,6 +403,10 @@ extension Gen1BluetoothOtaTransport: JLHashHandlerDelegate, JL_OTAManagerDelegat
         case .success, .reboot:
             // Both are terminal events in the vendor's full OTA sample. The caller
             // reconnects the normal service and verifies the fresh firmware version.
+            if let recoveryRecord {
+                Gen1BluetoothOtaRecoveryStore().clearAfterSuccess(targetID: recoveryRecord.targetID)
+                log("RCSP terminal success; recovery marker cleared")
+            }
             onProgress?(100)
             finish(.success(()))
         case .upgrading:

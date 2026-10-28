@@ -324,3 +324,71 @@ struct TranslationGlassesRecordingState {
 
     mutating func reset() { phase = .idle }
 }
+
+/// One monotonic monitor per stop request; DATA extends only the idle deadline.
+/// A control ACK confirms the command, never the end of the audio stream.
+struct TranslationGlassesStopState {
+    enum Action: Equatable { case wait, retryStop, drainedWithoutEnd, timedOut }
+    static let idleTimeout: TimeInterval = 5
+    static let retryDelay: TimeInterval = 8
+    static let hardTimeout: TimeInterval = 45
+    private(set) var startedAt: TimeInterval?
+    private(set) var lastDataAt: TimeInterval?
+    private(set) var acknowledged = false
+    private(set) var retried = false
+
+    mutating func begin(now: TimeInterval) {
+        self = Self()
+        startedAt = now
+        lastDataAt = now
+    }
+
+    mutating func receivedData(now: TimeInterval) {
+        guard startedAt != nil else { return }
+        lastDataAt = now
+    }
+
+    mutating func acknowledge() {
+        guard startedAt != nil else { return }
+        acknowledged = true
+    }
+
+    mutating func nextAction(now: TimeInterval) -> Action {
+        guard let startedAt, let lastDataAt else { return .wait }
+        if now - startedAt >= Self.hardTimeout { return .timedOut }
+        if now - lastDataAt >= Self.idleTimeout { return .drainedWithoutEnd }
+        if !acknowledged, !retried, now - startedAt >= Self.retryDelay {
+            retried = true
+            return .retryStop
+        }
+        return .wait
+    }
+
+    mutating func reset() { self = Self() }
+}
+
+/// Aggregate timing only; no audio or transcripts retained.
+nonisolated struct TranslationAudioTiming {
+    private(set) var count = 0
+    private(set) var firstAt: TimeInterval?
+    private(set) var lastAt: TimeInterval?
+    private(set) var maxInterval: TimeInterval = 0
+    private(set) var maxDelay: TimeInterval = 0
+    private(set) var totalDelay: TimeInterval = 0
+
+    mutating func record(at: TimeInterval, delay: TimeInterval) {
+        if let lastAt { maxInterval = max(maxInterval, max(0, at - lastAt)) }
+        if firstAt == nil { firstAt = at }
+        lastAt = at
+        count += 1
+        let boundedDelay = max(0, delay)
+        maxDelay = max(maxDelay, boundedDelay)
+        totalDelay += boundedDelay
+    }
+
+    var detail: String {
+        let span = max(0, (lastAt ?? 0) - (firstAt ?? 0))
+        let mean = count > 0 ? totalDelay / Double(count) : 0
+        return "count=\(count) spanMs=\(Int(span * 1000)) maxIntervalMs=\(Int(maxInterval * 1000)) meanDelayMs=\(String(format: "%.2f", mean * 1000)) maxDelayMs=\(String(format: "%.2f", maxDelay * 1000))"
+    }
+}

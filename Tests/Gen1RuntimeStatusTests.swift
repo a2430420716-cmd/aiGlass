@@ -108,6 +108,19 @@ enum Gen1RuntimeStatusTests {
         testPhotoAndFileQuerySequence()
         testVideoSequence()
         testGen2Compatibility()
+        let storageCases = [
+            "3.6G / 16.0K": "3.6GB/16.0KB",
+            "29.3G / 3.7M": "29.3GB/3.7MB",
+            "3584/32768": "3.5GB/32GB",
+            "12.5/512": "12.5MB/512MB",
+            "3.6GB / 12.0KB": "3.6GB/12.0KB",
+            "bad36data": "bad36data",
+            "N/A": "—"
+        ]
+        for (input, expected) in storageCases {
+            check(AstraA1BleProtocol.formatStorageDisplay(input) == expected,
+                  "Storage units, decimal values and total/used order must survive: \(input)")
+        }
         print("Gen1 runtime status tests passed: \(assertions) assertions")
     }
 }

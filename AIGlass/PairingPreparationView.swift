@@ -236,8 +236,9 @@ struct PairingPreparationView: View {
                 .shadow(color: AppTheme.cardShadow, radius: 8, y: 2)
 
             Text(item.type)
-                .font(AppTheme.notoSansSC(size: 13, weight: .regular))
-                .foregroundStyle(AppTheme.secondaryText)
+                .font(AppTheme.notoSansSC(size: 15, weight: .regular))
+                .foregroundStyle(Color.black)
+                .lineSpacing(4)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

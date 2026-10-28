@@ -53,6 +53,9 @@ struct MainTabView: View {
     @StateObject private var recordingImportManager = AIRecordingImportManager.shared
     @StateObject private var deviceFirmwareUpdateCoordinator = DeviceFirmwareUpdateCoordinator()
     @StateObject private var bluetoothOtaUpgradeManager = BluetoothOtaUpgradeManager()
+    @State private var showsGen1RecoveryPrompt = false
+    @State private var gen1RecoverySheet: DeviceFirmwareUpdateCoordinator.UpdateOffer?
+    @State private var promptedGen1RecoveryTarget: String?
 
     /// 眼镜 Tab 内 push / 沉浸页隐藏 TabBar；导航容器尺寸保持不变。
     private var hidesTabBarForNavigation: Bool {
@@ -125,6 +128,10 @@ struct MainTabView: View {
             updateAudioConnectionState(available)
             if !available {
                 aiVoiceChat.resetAfterDisconnect()
+                promptedGen1RecoveryTarget = nil
+                showsGen1RecoveryPrompt = false
+            } else {
+                showGen1RecoveryPromptIfNeeded()
             }
             // 升级补查交给 DeviceFirmwareUpdateCoordinator，避免与初连 getdevinfo 叠发。
             scheduleFirmwareUpdateRefresh()
@@ -135,11 +142,43 @@ struct MainTabView: View {
         .onChangeCompat(of: pairingCoordinator.astraA1BleManager.deviceVersion6350) { _ in
             scheduleFirmwareUpdateRefresh()
         }
+        .onChangeCompat(of: pairingCoordinator.astraA1BleManager.deviceBluetoothIdentifier) { _ in
+            promptedGen1RecoveryTarget = nil
+            showGen1RecoveryPromptIfNeeded()
+            scheduleFirmwareUpdateRefresh()
+        }
+        .onChangeCompat(of: deviceFirmwareUpdateCoordinator.bluetoothUpdate) { _ in
+            showGen1RecoveryPromptIfNeeded()
+        }
         .onChangeCompat(of: bluetoothOtaUpgradeManager.state) { newState in
             if case .completed = newState {
                 Task { await authSession.refreshUserInfo() }
                 scheduleFirmwareUpdateRefresh()
+            } else if case .idle = newState {
+                scheduleFirmwareUpdateRefresh()
             }
+        }
+        .alert(L10n.t("需要重新升级蓝牙固件", "Bluetooth Firmware Recovery Required"), isPresented: $showsGen1RecoveryPrompt) {
+            Button(L10n.t("稍后", "Later"), role: .cancel) {}
+            Button(L10n.t("立即升级", "Update Now")) {
+                guard let offer = deviceFirmwareUpdateCoordinator.bluetoothUpdate,
+                      offer.isGen1BluetoothRecovery,
+                      pairingCoordinator.astraA1BleManager.deviceBluetoothIdentifier == offer.serialNumber else { return }
+                gen1RecoverySheet = offer
+            }
+        } message: {
+            Text(L10n.t("这副眼镜上次蓝牙固件升级未完成，请重新升级。若暂不升级，下次连接时会再次提醒。", "The previous Bluetooth firmware update for these glasses did not finish. Update again to recover. If you choose Later, you will be reminded on the next connection."))
+        }
+        .sheet(item: $gen1RecoverySheet, onDismiss: {
+            bluetoothOtaUpgradeManager.resetCompletedState()
+            scheduleFirmwareUpdateRefresh()
+        }) { offer in
+            DeviceOtaUpgradeDetailView(kind: .bluetooth, offer: offer, ble: pairingCoordinator.astraA1BleManager)
+                .environmentObject(deviceFirmwareUpdateCoordinator)
+                .environmentObject(bluetoothOtaUpgradeManager)
+                .environmentObject(importManager)
+                .environmentObject(authSession)
+                .interactiveDismissDisabled(bluetoothOtaUpgradeManager.isUpgrading)
         }
     }
 
@@ -194,6 +233,21 @@ struct MainTabView: View {
         )
     }
 
+    private func showGen1RecoveryPromptIfNeeded() {
+        let ble = pairingCoordinator.astraA1BleManager
+        guard let offer = deviceFirmwareUpdateCoordinator.bluetoothUpdate,
+              offer.isGen1BluetoothRecovery, ble.isDeviceAvailable,
+              ble.deviceGeneration == .gen1G5K61,
+              ble.deviceBluetoothIdentifier == offer.serialNumber,
+              let targetID = UUID(uuidString: offer.serialNumber),
+              Gen1BluetoothOtaRecoveryStore().record(for: targetID) != nil,
+              promptedGen1RecoveryTarget != offer.serialNumber,
+              gen1RecoverySheet == nil, !bluetoothOtaUpgradeManager.isUpgrading else { return }
+        promptedGen1RecoveryTarget = offer.serialNumber
+        showsGen1RecoveryPrompt = true
+        DebugLogStore.logBLEEvent("Gen1 Bluetooth OTA recovery prompt", detail: "target=\(offer.serialNumber) targetVersion=\(offer.serverInfo.version) fresh_version_not_required")
+    }
+
     @ViewBuilder
     private var tabContent: some View {
         switch tabRouter.selectedTab {
@@ -236,7 +290,8 @@ struct MainTabView: View {
         .padding(.top, 8)
         .padding(.bottom, 6)
         .background(
-            AppTheme.cardBackground
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(AppTheme.cardBackground)
                 .shadow(color: AppTheme.cardShadow, radius: 8, y: -2)
                 .ignoresSafeArea(edges: .bottom)
         )

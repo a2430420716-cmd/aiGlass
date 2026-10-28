@@ -1,5 +1,16 @@
 import Foundation
 
+/// Applies to main firmware and Bluetooth OTA on both generations.
+enum FirmwareUpgradeBatteryPolicy {
+    static let gen1MinimumPercent = 80
+    static let gen2MinimumPercent = 50
+
+    static func allowsUpgrade(percent: Int?, minimumPercent: Int) -> Bool {
+        guard let percent, (0...100).contains(minimumPercent) else { return false }
+        return (minimumPercent...100).contains(percent)
+    }
+}
+
 struct Gen1FirmwareWifiCredentials {
     let ssid: String
     let password: String
@@ -7,7 +18,7 @@ struct Gen1FirmwareWifiCredentials {
 
 /// 3303 firmware downloads the image itself using an unauthenticated HTTP GET.
 enum Gen1FirmwareUpdateProtocol {
-    static let minimumBatteryPercent = 80
+    static let minimumBatteryPercent = FirmwareUpgradeBatteryPolicy.gen1MinimumPercent
 
     static func wifiPayload(ssid: String, password: String) throws -> Data {
         let trimmedSSID = ssid.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -45,9 +56,11 @@ enum Gen1FirmwareUpdateProtocol {
     }
 
     static func batteryLevel(reported: Int?, baseline: Int?) -> Int? {
-        // Android stabilizes a transient low read against the pre-query snapshot.
-        // Discard malformed readings instead of allowing them to pass the gate.
-        [reported, baseline].compactMap { $0 }.filter { (0...100).contains($0) }.max()
+        // A fresh low reading must not be overridden by an older high snapshot.
+        // Use the baseline only when no valid fresh reading was received.
+        if let reported, (0...100).contains(reported) { return reported }
+        if let baseline, (0...100).contains(baseline) { return baseline }
+        return nil
     }
 
     static func progress(command: UInt8, payload: Data) -> Int? {

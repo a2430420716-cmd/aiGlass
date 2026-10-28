@@ -119,11 +119,11 @@ struct GlassesFirmwareUpgradeView: View {
                 versionRowLabel(
                     title: L10n.t("蓝牙版本", "Bluetooth Version"),
                     version: displayVersion(ble.deviceVersion2800),
-                    hasUpdate: !ble.deviceVersionQueryFailed
+                    hasUpdate: !ble.deviceVersionQueryFailed || offer.isGen1BluetoothRecovery
                 )
             }
             .buttonStyle(.plain)
-            .disabled(!ble.isDeviceAvailable || ble.deviceVersionQueryFailed)
+            .disabled(!ble.isDeviceAvailable || (ble.deviceVersionQueryFailed && !offer.isGen1BluetoothRecovery))
         } else {
             versionRowLabel(
                 title: L10n.t("蓝牙版本", "Bluetooth Version"),

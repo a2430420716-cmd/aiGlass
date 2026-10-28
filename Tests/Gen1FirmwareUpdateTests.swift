@@ -78,8 +78,22 @@ enum Gen1FirmwareUpdateTests {
         let slashPassword = try Gen1FirmwareUpdateProtocol.wifiPayload(ssid: "Wi-Fi", password: "pass/word")
         expect(slashPassword == Data("Wi-Fi/pass/word".utf8), "Password bytes follow Android without escaping")
 
+        expect(FirmwareUpgradeBatteryPolicy.gen1MinimumPercent == 80)
+        expect(FirmwareUpgradeBatteryPolicy.gen2MinimumPercent == 50)
+        for minimum in [FirmwareUpgradeBatteryPolicy.gen1MinimumPercent, FirmwareUpgradeBatteryPolicy.gen2MinimumPercent] {
+            for percent in 0...100 {
+                expect(FirmwareUpgradeBatteryPolicy.allowsUpgrade(percent: percent, minimumPercent: minimum) == (percent >= minimum),
+                       "Battery gate includes its threshold and rejects lower readings")
+            }
+            for percent: Int? in [nil, -1, 101, 255] {
+                expect(!FirmwareUpgradeBatteryPolicy.allowsUpgrade(percent: percent, minimumPercent: minimum),
+                       "Unknown or invalid battery blocks both generations")
+            }
+        }
+        expect(!FirmwareUpgradeBatteryPolicy.allowsUpgrade(percent: 100, minimumPercent: -1), "Invalid minimum cannot bypass gate")
+        expect(!FirmwareUpgradeBatteryPolicy.allowsUpgrade(percent: 100, minimumPercent: 101), "Invalid minimum cannot form a range")
         expect(Gen1FirmwareUpdateProtocol.minimumBatteryPercent == 80)
-        expect(Gen1FirmwareUpdateProtocol.batteryLevel(reported: 75, baseline: 80) == 80)
+        expect(Gen1FirmwareUpdateProtocol.batteryLevel(reported: 75, baseline: 80) == 75, "Fresh low battery overrides older high cache")
         expect(Gen1FirmwareUpdateProtocol.batteryLevel(reported: 85, baseline: 80) == 85)
         expect(Gen1FirmwareUpdateProtocol.batteryLevel(reported: 75, baseline: 70) == 75)
         expect(Gen1FirmwareUpdateProtocol.batteryLevel(reported: nil, baseline: 80) == 80)

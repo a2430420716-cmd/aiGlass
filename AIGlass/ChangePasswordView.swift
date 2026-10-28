@@ -68,9 +68,9 @@ struct ChangePasswordView: View {
 
     private var canSubmit: Bool {
         !normalizedVerificationCode.isEmpty
-            && normalizedPassword.count >= 8
+            && passwordValidationMessage(for: password) == nil
             && !normalizedPasswordConfirmation.isEmpty
-            && normalizedPassword == normalizedPasswordConfirmation
+            && password == passwordConfirmation
             && !isSubmitting
             && authSession.token?.isEmpty == false
             && isAccountValid
@@ -224,7 +224,7 @@ struct ChangePasswordView: View {
                             .frame(minWidth: 88)
                     } else {
                         Text(countdown > 0
-                             ? L10n.t("重新发送（\(countdown)S）", "Resend (\(countdown)S)")
+                             ? L10n.t("重新发送（\(countdown)s）", "Resend (\(countdown)s)")
                              : L10n.t("发送验证码", "Send Code"))
                             .font(AppTheme.notoSansSC(size: 15, weight: .medium))
                             .foregroundStyle(
@@ -317,7 +317,7 @@ struct ChangePasswordView: View {
             "请输入8-18位密码，支持英文、数字、符号，至少包含其中两种，不能包含空格",
             "Enter an 8–18 character password with letters, numbers, or symbols. Include at least two types. No spaces."
         ))
-            .font(AppTheme.notoSansSC(size: 12, weight: .regular))
+            .font(AppTheme.notoSansSC(size: 14, weight: .regular))
             .foregroundStyle(AppTheme.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
     }

@@ -31,6 +31,15 @@ struct DeviceOtaUpgradeDetailView: View {
         entryGeneration == .gen1G5K61 && kind == .firmware
     }
 
+    private var isGen1BluetoothRecovery: Bool {
+        kind == .bluetooth && entryGeneration == .gen1G5K61
+            && offer.isGen1BluetoothRecovery
+            && ble.deviceBluetoothIdentifier == offer.serialNumber
+            && UUID(uuidString: offer.serialNumber).map {
+                Gen1BluetoothOtaRecoveryStore().record(for: $0) != nil
+            } == true
+    }
+
     private var contentLines: [String] {
         HTMLPlainText.from(offer.serverInfo.content)
             .components(separatedBy: "\n")
@@ -243,6 +252,12 @@ struct DeviceOtaUpgradeDetailView: View {
 
     private var warningSection: some View {
         VStack(spacing: 12) {
+            if isGen1BluetoothRecovery {
+                Text(L10n.t("上次蓝牙固件升级未完成，本次将重新写入固件以恢复设备。当前版本读取失败不影响恢复升级。", "The previous Bluetooth firmware update did not finish. This update will rewrite the firmware to recover the glasses. Recovery is available even if the current version cannot be read."))
+                    .font(AppTheme.notoSansSC(size: 13, weight: .regular))
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .multilineTextAlignment(.center)
+            }
             if needsGen1Wifi {
                 Text(L10n.t("每次升级都会重新为眼镜配置可上网的 2.4 GHz Wi-Fi。升级期间请保持眼镜供电，完成后将自动重连并核对版本。", "Each update configures the glasses for a 2.4 GHz Wi-Fi network with internet access. Keep the glasses powered throughout the update. The app will reconnect and verify the version afterward."))
                     .font(AppTheme.notoSansSC(size: 13, weight: .regular))
@@ -272,9 +287,10 @@ struct DeviceOtaUpgradeDetailView: View {
             ? L10n.t("OTA升级需要眼镜保持 Wi-Fi 连接和", "OTA update requires Wi-Fi and ")
             : L10n.t("OTA升级需要", "OTA update requires ")
         var text = AttributedString(prefix)
-        var highlight = AttributedString(needsGen1Wifi
-            ? L10n.t("眼镜电量≥80%", "glasses battery ≥80%")
-            : L10n.t("眼镜电量>15%", "glasses battery >15%"))
+        let minimum = entryGeneration == .gen2
+            ? FirmwareUpgradeBatteryPolicy.gen2MinimumPercent
+            : FirmwareUpgradeBatteryPolicy.gen1MinimumPercent
+        var highlight = AttributedString(L10n.t("眼镜电量≥\(minimum)%", "glasses battery ≥\(minimum)%"))
         highlight.foregroundColor = .red
         text.append(highlight)
         return text
@@ -367,21 +383,16 @@ struct DeviceOtaUpgradeDetailView: View {
             batteryAlertMessage = L10n.t("请先连接对应的已绑定眼镜", "Please connect the bound glasses for this update first")
             return
         }
-        guard !ble.deviceVersionQueryFailed else {
+        guard !ble.deviceVersionQueryFailed || isGen1BluetoothRecovery else {
             batteryAlertMessage = L10n.t("未读取到完整版本信息，请返回并重新连接眼镜后重试。", "Complete version information was not received. Go back, reconnect your glasses, and try again.")
             return
         }
         // Gen1 main firmware queries 0x05 before enforcing its 80% gate. A stale
         // cached low value must not prevent that fresh query from being sent.
-        if !needsGen1Wifi {
-            guard let battery = ble.deviceBatteryPercent else {
-                batteryAlertMessage = L10n.t("正在读取眼镜电量，请稍后再试。", "Reading glasses battery. Please try again later.")
-                return
-            }
-            guard battery > 15 else {
-                batteryAlertMessage = L10n.t("眼镜电量不足（当前\(battery)%），请充电至 15% 以上再升级。", "Battery too low (\(battery)%). Charge to above 15% before updating.")
-                return
-            }
+        if !needsGen1Wifi, let message = ble.firmwareUpgradeBatteryAlertMessage {
+            batteryAlertMessage = message
+            ble.queryBatteryOnly()
+            return
         }
 
         var gen1Wifi: Gen1FirmwareWifiCredentials?

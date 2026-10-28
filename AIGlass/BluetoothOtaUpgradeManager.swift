@@ -334,6 +334,16 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             return
         }
 
+        // Gen1 main firmware performs a fresh 0x05 read in its session before
+        // provisioning. All other OTA paths enforce the same gate here.
+        if !(ble.deviceGeneration == .gen1G5K61 && kind == .firmware),
+           let message = ble.firmwareUpgradeBatteryAlertMessage {
+            DebugLogStore.logBLEEvent("OTA battery gate blocked", detail: "generation=\(ble.deviceGeneration.rawValue) kind=\(kind) battery=\(ble.deviceBatteryPercent.map(String.init) ?? "unknown") minimum=\(ble.firmwareUpgradeMinimumBatteryPercent)")
+            state = .failed(message)
+            ble.queryBatteryOnly()
+            return
+        }
+
         if ble.deviceGeneration == .gen1G5K61 {
             await runGen1Upgrade(kind: kind, serverInfo: serverInfo, ble: ble, gen1Wifi: gen1Wifi)
             return
@@ -422,6 +432,9 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             }
 
             try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "before-opening-hotspot")
+            if let message = ble.firmwareUpgradeBatteryAlertMessage {
+                throw BluetoothOtaUpgradeError.message(message)
+            }
             state = .openingWifi
             btLog("step2 toopenwifi (purpose=ota)", kind: kind)
             DebugLogStore.logWiFi(
@@ -842,10 +855,6 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             await runGen1MainFirmwareUpgrade(serverInfo: serverInfo, wifi: gen1Wifi, ble: ble)
             return
         }
-        guard let battery = ble.deviceBatteryPercent, battery > 15 else {
-            state = .failed(L10n.t("请将眼镜充电至 15% 以上再升级", "Charge glasses above 15% before updating"))
-            return
-        }
         guard ble.isDeviceRuntimeIdle else {
             state = .failed(ble.deviceRuntimeStatus.busyMessage)
             return
@@ -869,6 +878,9 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                       ble.savedPeripheralUUIDString == targetIdentifier else {
                     throw BluetoothOtaUpgradeError.message(L10n.t("眼镜连接或绑定已改变，升级已停止", "Glasses connection or binding changed. Update stopped"))
                 }
+                if let message = ble.firmwareUpgradeBatteryAlertMessage {
+                    throw BluetoothOtaUpgradeError.message(message)
+                }
                 ble.suspendNormalConnectionForGen1OTA()
                 do {
                     try await Task.sleep(nanoseconds: 800_000_000)
@@ -877,7 +889,12 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                     }
                     state = .uploadingFirmware(percent: 0)
                     let transport = Gen1BluetoothOtaTransport()
-                    try await transport.upgrade(data: prepared.data, peripheralIdentifier: peripheralIdentifier, log: log) { percent in
+                    let recoveryRecord = Gen1BluetoothOtaRecoveryStore.Record(
+                        targetID: peripheralIdentifier, version: serverInfo.version,
+                        downloadURL: serverInfo.downloadURL, content: serverInfo.content
+                    )
+                    try await transport.upgrade(data: prepared.data, peripheralIdentifier: peripheralIdentifier,
+                                                recoveryRecord: recoveryRecord, log: log) { percent in
                         self.state = .uploadingFirmware(percent: percent)
                     }
                 } catch {
@@ -954,7 +971,19 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             DebugLogStore.logWiFi("一代主固件升级：版本确认成功", detail: "diagnosticID=\(diagnosticID) target=\(identity.targetID) version=\(serverInfo.version)")
         } catch {
             DebugLogStore.logWiFi("一代主固件升级：停止", detail: "diagnosticID=\(diagnosticID) elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - startedAt))s bleReady=\(ble.isReady) errorType=\(String(describing: type(of: error))) error=\(error.localizedDescription)")
-            state = .failed(error.localizedDescription)
+            if let failure = error as? Gen1FirmwareUpdateSession.Failure {
+                switch failure {
+                case .batteryUnknown:
+                    state = .failed(L10n.t("未能读取眼镜电量，请重新连接后再升级", "Could not read glasses battery. Reconnect before updating."))
+                case .batteryLow(let percent):
+                    let minimum = FirmwareUpgradeBatteryPolicy.gen1MinimumPercent
+                    state = .failed(L10n.t("眼镜电量不足（当前\(percent)%），请充电至 \(minimum)% 或以上再升级。", "Glasses battery is too low (\(percent)%). Charge to at least \(minimum)% before updating."))
+                default:
+                    state = .failed(error.localizedDescription)
+                }
+            } else {
+                state = .failed(error.localizedDescription)
+            }
         }
     }
 

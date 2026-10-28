@@ -176,7 +176,13 @@ enum Gen1ProtocolTests {
         try check(router.onFrame(start) == .translationStarted, "translation starts on sequence zero")
         try check(router.onFrame(data) == .translationData(sequence: 1, opus: Data([1, 2])), "translation routes Opus")
         router.onStopRequested()
-        try check(router.onAck(0) == .ignore, "stop ACK preserves audio boundary")
+        try check(router.onBusy() == .translationStopRejected, "busy STOP is distinct from START failure")
+        try check(router.onFrame(data) == .translationData(sequence: 1, opus: Data([1, 2])), "busy STOP preserves tail")
+        try check(router.onAck(1) == .ignore, "start ACK cannot confirm STOP")
+        try check(router.onAck(0) == .translationStopAcknowledged, "stop ACK observed independently of END")
+        try check(router.onAck(0) == .ignore, "duplicate stop ACK ignored")
+        router.onStopRequested()
+        try check(router.onAck(0) == .ignore, "retry does not reset observed stop ACK")
         try check(router.onFrame(data) == .translationData(sequence: 1, opus: Data([1, 2])), "pending stop keeps final DATA")
         try check(router.onFrame(end) == .translationStopped, "END completes translation")
         try check(router.onFrame(data) == .ai(data), "next DATA returns to AI")
@@ -216,7 +222,14 @@ enum Gen1ProtocolTests {
         router.onAIWakeup()
         try check(router.onFrame(data) == .translationData(sequence: 1, opus: Data([1, 2])),
                   "AI status does not steal an active translation stream")
+        router.onStopRequested()
+        try check(router.onAck(0) == .translationStopAcknowledged, "new translation has independent stop acknowledgement")
+        try check(router.onFrame(data) == .translationData(sequence: 1, opus: Data([1, 2])), "acknowledged STOP still accepts tail")
         try check(router.onFrame(end) == .translationStopped, "retried translation ends normally")
+        try check(router.onAck(0) == .ignore, "late STOP ACK cannot end another stream")
+        router.onStartRequested()
+        try check(router.onBusy() == .translationStartFailed, "busy START still fails promptly")
+        try check(router.onFrame(data) == .ai(data), "busy START leaves no translation recording intent")
     }
 
     static func imageTests() throws {

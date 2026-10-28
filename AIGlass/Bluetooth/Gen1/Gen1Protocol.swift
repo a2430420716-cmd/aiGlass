@@ -471,6 +471,8 @@ enum Gen1VoiceRoute: Equatable, Sendable {
     case translationStarted
     case translationData(sequence: Int, opus: Data)
     case translationStopped
+    case translationStopAcknowledged
+    case translationStopRejected
     case translationStartFailed
     case translationStreamError(reason: String)
     case ignore
@@ -480,11 +482,13 @@ enum Gen1VoiceRoute: Equatable, Sendable {
 final class Gen1TranslationAudioRouter {
     private enum State { case idle, pendingStart, streaming, pendingStop, discarding }
     private var state = State.idle
+    private var stopAcknowledged = false
     private let lock = NSLock()
 
     func onStartRequested() {
         lock.lock(); defer { lock.unlock() }
         state = .pendingStart
+        stopAcknowledged = false
     }
 
     func onStartFailed() {
@@ -500,6 +504,18 @@ final class Gen1TranslationAudioRouter {
     func onAck(_ status: UInt8) -> Gen1VoiceRoute {
         lock.lock(); defer { lock.unlock() }
         if status == 0, state == .pendingStart { state = .idle; return .translationStartFailed }
+        if status == 0, state == .pendingStop, !stopAcknowledged {
+            stopAcknowledged = true
+            return .translationStopAcknowledged
+        }
+        return .ignore
+    }
+
+    /// A busy STOP must not close an already streaming translation or drop its tail.
+    func onBusy() -> Gen1VoiceRoute {
+        lock.lock(); defer { lock.unlock() }
+        if state == .pendingStart { state = .idle; return .translationStartFailed }
+        if state == .pendingStop { return .translationStopRejected }
         return .ignore
     }
 
@@ -529,6 +545,7 @@ final class Gen1TranslationAudioRouter {
     func reset() {
         lock.lock(); defer { lock.unlock() }
         state = .idle
+        stopAcknowledged = false
     }
 
     /// Abandon a cancelled/timed-out translation without treating its trailing DATA as AI.

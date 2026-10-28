@@ -44,15 +44,19 @@ struct ConversationTranslationRecordListView: View {
         .compatibleNavigationDestination(item: $selectedRecord) { record in
             ConversationTranslationRecordDetailView(record: record)
         }
-        .alert(L10n.t("删除确认", "Confirm Delete"), isPresented: $showsDeleteConfirm) {
-            Button(L10n.t("取消", "Cancel"), role: .cancel) {}
-            Button(L10n.t("确定", "OK"), role: .destructive) {
-                ConversationTranslationRecordStore.delete(ids: selectedIds)
-                exitSelectionMode()
-                reload()
+        .overlay {
+            if showsDeleteConfirm {
+                TranslationRecordDeleteConfirmation(
+                    selectedCount: selectedIds.count,
+                    onCancel: { showsDeleteConfirm = false },
+                    onDelete: {
+                        ConversationTranslationRecordStore.delete(ids: selectedIds)
+                        showsDeleteConfirm = false
+                        exitSelectionMode()
+                        reload()
+                    }
+                )
             }
-        } message: {
-            Text(L10n.t("确定要删除选中 \(selectedIds.count) 条记录吗？此操作不可恢复", "Delete \(selectedIds.count) selected record(s)? This cannot be undone."))
         }
     }
 
@@ -63,13 +67,22 @@ struct ConversationTranslationRecordListView: View {
                 .foregroundStyle(AppTheme.primaryText)
 
             HStack {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(AppTheme.primaryText)
-                        .frame(width: 44, height: 44, alignment: .leading)
+                if selectionMode {
+                    Button(allRecordsSelected ? L10n.t("取消全选", "Deselect All") : L10n.t("全选", "Select All")) {
+                        selectedIds = allRecordsSelected ? [] : Set(records.map(\.id))
+                    }
+                    .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                    .foregroundStyle(AppTheme.primaryText)
+                    .frame(minHeight: 44)
+                } else {
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundStyle(AppTheme.primaryText)
+                            .frame(width: 44, height: 44, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
 
                 Spacer()
 
@@ -81,9 +94,10 @@ struct ConversationTranslationRecordListView: View {
                     Button {
                         enterSelectionMode()
                     } label: {
-                        Image(systemName: "square.and.pencil")
-                            .font(.system(size: 18, weight: .regular))
-                            .foregroundStyle(AppTheme.primaryText)
+                        Image("android_album_edit")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 24, height: 24)
                             .frame(width: 44, height: 44)
                     }
                     .buttonStyle(.plain)
@@ -95,36 +109,25 @@ struct ConversationTranslationRecordListView: View {
         .padding(.bottom, 4)
     }
 
+    private var allRecordsSelected: Bool {
+        !records.isEmpty && selectedIds.count == records.count
+    }
+
     private var actionBar: some View {
-        HStack {
-            Button {
-                if selectedIds.count == records.count {
-                    selectedIds.removeAll()
-                } else {
-                    selectedIds = Set(records.map(\.id))
-                }
-            } label: {
-                Text(selectedIds.count == records.count ? L10n.t("取消全选", "Deselect All") : L10n.t("全选", "Select All"))
-                    .font(AppTheme.notoSansSC(size: 16, weight: .medium))
-                    .foregroundStyle(AppTheme.primaryText)
-            }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            Button {
-                guard !selectedIds.isEmpty else { return }
-                showsDeleteConfirm = true
-            } label: {
-                Text(L10n.t("删除", "Delete"))
-                    .font(AppTheme.notoSansSC(size: 16, weight: .medium))
-                    .foregroundStyle(selectedIds.isEmpty ? AppTheme.secondaryText : Color.red)
-            }
-            .buttonStyle(.plain)
-            .disabled(selectedIds.isEmpty)
+        Button {
+            guard !selectedIds.isEmpty else { return }
+            showsDeleteConfirm = true
+        } label: {
+            Label(L10n.t("删除", "Delete"), systemImage: "trash")
+                .font(AppTheme.notoSansSC(size: 15, weight: .medium))
+                .foregroundStyle(selectedIds.isEmpty ? AppTheme.secondaryText : AppTheme.primaryText)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 44)
         }
+        .buttonStyle(.plain)
+        .disabled(selectedIds.isEmpty)
         .padding(.horizontal, 24)
-        .frame(height: 56)
+        .padding(.vertical, 8)
         .background(AppTheme.cardBackground)
     }
 
@@ -145,9 +148,11 @@ struct ConversationTranslationRecordListView: View {
 
                 VStack(alignment: .leading, spacing: 9) {
                     HStack {
-                        Text("\(TranslationLanguage.fromDisplayName(record.glassesLanguage).displayName) ⇄ \(TranslationLanguage.fromDisplayName(record.phoneLanguage).displayName)")
+                        Text(L10n.t("对话记录", "Conversation ") + Self.titleDateFormatter.string(from: record.updatedAt))
                             .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                             .foregroundStyle(AppTheme.primaryText)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                         Spacer()
                         if !selectionMode {
                             Image(systemName: "chevron.right")
@@ -155,6 +160,9 @@ struct ConversationTranslationRecordListView: View {
                                 .foregroundStyle(AppTheme.secondaryText)
                         }
                     }
+                    Text("\(TranslationLanguage.fromDisplayName(record.glassesLanguage).displayName) ⇄ \(TranslationLanguage.fromDisplayName(record.phoneLanguage).displayName)")
+                        .font(AppTheme.notoSansSC(size: 12, weight: .regular))
+                        .foregroundStyle(AppTheme.secondaryText)
                     Text(previewText(for: record))
                         .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                         .foregroundStyle(AppTheme.secondaryText)
@@ -200,6 +208,13 @@ struct ConversationTranslationRecordListView: View {
             selectedIds.insert(id)
         }
     }
+
+    private static let titleDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMddHHmm"
+        return formatter
+    }()
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()

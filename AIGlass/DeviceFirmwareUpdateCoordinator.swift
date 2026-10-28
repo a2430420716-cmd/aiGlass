@@ -4,10 +4,12 @@ import SwiftUI
 
 @MainActor
 final class DeviceFirmwareUpdateCoordinator: ObservableObject {
-    struct UpdateOffer: Equatable {
+    struct UpdateOffer: Equatable, Identifiable {
         let serialNumber: String
         let currentVersion: String
         let serverInfo: DeviceOTAInfo
+        var isGen1BluetoothRecovery = false
+        var id: String { "\(serialNumber)|\(serverInfo.version)|\(isGen1BluetoothRecovery)" }
     }
 
     @Published private(set) var bluetoothUpdate: UpdateOffer?
@@ -76,6 +78,22 @@ final class DeviceFirmwareUpdateCoordinator: ObservableObject {
         // 结果页关闭前保留当前升级入口，避免版本刷新移除 NavigationLink，
         // 导致详情页在收到 completed/failed 后立刻被 SwiftUI 弹回。
         guard !otaManager.isUpgrading, !otaManager.state.isTerminal else { return }
+        // An interrupted Gen1 Bluetooth image may not answer version queries.
+        // Evaluate recovery before the ordinary fresh-version guards.
+        if authSession.isLoggedIn, ble.isDeviceAvailable, ble.deviceGeneration == .gen1G5K61,
+           let identifier = ble.deviceBluetoothIdentifier.flatMap(UUID.init(uuidString:)),
+           let record = Gen1BluetoothOtaRecoveryStore().record(for: identifier) {
+            let keys = [ble.deviceSN ?? "", identifier.uuidString].filter { !$0.isEmpty }
+            let server = authSession.userInfo.flatMap { lookupOTA($0.bluetoothBySerialNumber, keys: keys) }
+            let recoveryInfo = server ?? DeviceOTAInfo(version: record.version, downloadURL: record.downloadURL, content: record.content)
+            bluetoothUpdate = UpdateOffer(
+                serialNumber: identifier.uuidString,
+                currentVersion: ble.deviceVersion2800 ?? "",
+                serverInfo: recoveryInfo, isGen1BluetoothRecovery: true
+            )
+            firmwareUpdate = nil
+            return
+        }
         guard !ble.isQueryingDeviceVersionsAndStorage, !ble.isQueryingAboutDeviceInfo else { return }
         // 保留导航节点，避免读取失败弹回详情页；页面负责禁用升级入口。
         guard !ble.deviceVersionQueryFailed else { return }

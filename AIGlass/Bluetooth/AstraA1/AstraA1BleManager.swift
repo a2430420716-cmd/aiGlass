@@ -288,8 +288,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var videoCompletedResetTask: Task<Void, Never>?
     /// 对齐 Android：拍照命令成功 2.5 秒后主动查询 hasnewfile。
     private var homePhotoNewFileQueryWorkItem: DispatchWorkItem?
-    /// 对齐 Android HomeFragment：达到设置的录像时长后自动发送停止命令。
-    private var homeVideoAutoStopWorkItem: DispatchWorkItem?
+    /// Track device recording state and the minimum duration for a manual stop; no timed STOP.
     private var homeVideoCapture = HomeVideoCaptureState()
 
     /// 智能识图传图中：暂停首页例行电量 / hasnewfile，避免写通道抢带宽导致 imgrecdata 丢包。
@@ -745,6 +744,25 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     var deviceBatteryPercent: Int? {
         guard isBatteryLevelKnown, let deviceBattery else { return nil }
         return Int(deviceBattery.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Both main and Bluetooth firmware use the threshold for the connected generation.
+    var firmwareUpgradeMinimumBatteryPercent: Int {
+        deviceGeneration == .gen2
+            ? FirmwareUpgradeBatteryPolicy.gen2MinimumPercent
+            : FirmwareUpgradeBatteryPolicy.gen1MinimumPercent
+    }
+
+    /// Charging does not bypass the generation-specific battery requirement.
+    var firmwareUpgradeBatteryAlertMessage: String? {
+        guard let percent = deviceBatteryPercent, (0...100).contains(percent) else {
+            return L10n.t("正在读取眼镜电量，请稍后再试。", "Reading glasses battery. Please try again later.")
+        }
+        let minimum = firmwareUpgradeMinimumBatteryPercent
+        guard FirmwareUpgradeBatteryPolicy.allowsUpgrade(percent: percent, minimumPercent: minimum) else {
+            return L10n.t("眼镜电量不足（当前\(percent)%），请充电至 \(minimum)% 或以上再升级。", "Glasses battery is too low (\(percent)%). Charge to at least \(minimum)% before updating.")
+        }
+        return nil
     }
 
     /// 拍照、开始录像、导入文件、AI 录音、智能识图共用低电量门禁；未知电量不误拦截。
@@ -3230,8 +3248,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     @discardableResult
     func stopTranslateRecording() -> Bool {
-        guard isReady else { return false }
+        guard isReady else {
+            DebugLogStore.logBLEEvent("translation STOP rejected", detail: "reason=BLE_not_ready target=\(deviceBluetoothIdentifier ?? "nil")")
+            return false
+        }
         let sent = sendCommand(AstraA1BleProtocol.buildTranslateRecordCommand(enable: false))
+        DebugLogStore.logBLEEvent("translation STOP requested", detail: "generation=\(deviceGeneration.rawValue) target=\(deviceBluetoothIdentifier ?? "nil") sent=\(sent) requires_audio_END=\(deviceGeneration == .gen1G5K61)")
         print("\(logTag) trslate000 stop sent=\(sent)")
         if sent {
             finishRuntimeOperationIfNeeded(
@@ -3306,7 +3328,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         return sendCommand(AstraA1BleProtocol.buildStartVideoCommand())
     }
 
-    /// 停止录像；业务是否接受以 actionrsp0 为准。
+    /// 手动停止录像；命令回包不代表结束，以设备空闲状态确认完成。
     @discardableResult
     func stopVideo() -> Bool {
         guard isReady else { return false }
@@ -3348,17 +3370,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         print("\(logTag) takephoto0 sent, wait PHOTO_TAKING→STANDBY")
     }
 
-    func toggleVideoRecordingFromHome(
-        maxDurationSeconds: Int = DeviceMediaSettings.defaultRecordDurationSeconds
-    ) {
+    func toggleVideoRecordingFromHome() {
         if deviceRuntimeStatus == .videoRecording || isVideoRecording {
             stopVideoRecordingFromHome()
         } else {
-            startVideoRecordingFromHome(maxDurationSeconds: maxDurationSeconds)
+            startVideoRecordingFromHome()
         }
     }
 
-    private func startVideoRecordingFromHome(maxDurationSeconds: Int) {
+    private func startVideoRecordingFromHome() {
         guard !isBatteryTooLowForMedia else {
             mediaActionAlertMessage = lowBatteryMediaMessage
             return
@@ -3377,11 +3397,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         // 对齐 Android：写命令成功后立即切成“结束录像”，后续回包可纠正真实状态。
         isVideoRecording = true
         isVideoStopping = false
-        homeVideoCapture.startSent(at: ProcessInfo.processInfo.systemUptime,
-                                   maximumDuration: TimeInterval(maxDurationSeconds))
-        scheduleHomeVideoAutoStop()
+        // Recording duration is configured on the glasses. Only the device's
+        // recording -> standby reports complete this capture; no timed STOP.
+        homeVideoCapture.startSent(at: ProcessInfo.processInfo.systemUptime)
         mediaActionToastMessage = L10n.t("眼镜开始录像，请从相册中导入", "Recording started. Import it from Album.")
-        logVideoCapture("start-sent", detail: "maxDuration=\(maxDurationSeconds)s minimumDuration=3s")
+        logVideoCapture("start-sent", detail: "durationOwner=device automaticStopCommand=false minimumManualStopDuration=3s")
     }
 
     private func stopVideoRecordingFromHome() {
@@ -3475,20 +3495,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if isTakingPhoto {
             logPhotoCapture("device-status", detail: "previous=\(previous.name) current=\(current.name)")
         }
-        let firstRecordingConfirmation = current == .videoRecording && !homeVideoCapture.hasConfirmedRecording
-        let startConfirmationDelay = homeVideoCapture.startedAt.map { ProcessInfo.processInfo.systemUptime - $0 }
         let videoFinished = homeVideoCapture.receive(
             current, at: ProcessInfo.processInfo.systemUptime, allowsCompletion: allowsVideoCompletion
         )
         isVideoRecording = current == .videoRecording
             || (current == .unknown && homeVideoCapture.startedAt != nil)
         isVideoStopping = homeVideoCapture.isStopPending
-        if firstRecordingConfirmation, homeVideoCapture.maximumDuration != nil {
-            // Device startup latency is not part of the selected recording length.
-            // Only the first confirmation moves the deadline; periodic reports do not.
-            scheduleHomeVideoAutoStop()
-            logVideoCapture("duration-anchored", detail: "startConfirmationDelay=\(startConfirmationDelay ?? 0)s maximumDuration=\(homeVideoCapture.maximumDuration ?? 0)s anchor=first_recording_status")
-        }
         if current == .videoRecording || previous == .videoRecording || videoFinished {
             logVideoCapture("device-status", detail: "previous=\(previous.name) current=\(current.name) completionAllowed=\(allowsVideoCompletion)")
         }
@@ -3525,7 +3537,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func finishVideoCaptureSuccess() {
         cancelMediaCompletionFallback()
-        cancelHomeVideoAutoStop()
         isVideoStopping = false
         isVideoRecording = false
         homeVideoCapture.reset()
@@ -3587,13 +3598,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 print("\(logTag) startvideo ACCEPTED status=\(response.currentStatus.name)")
                 cancelMediaCompletionFallback()
             case .busy:
-                cancelHomeVideoAutoStop()
                 mediaActionAlertMessage = response.currentStatus.busyMessage
             case .invalidState:
-                cancelHomeVideoAutoStop()
                 mediaActionAlertMessage = L10n.t("当前状态不允许开始录像", "Can't start video in current state")
             case .failed:
-                cancelHomeVideoAutoStop()
                 mediaActionAlertMessage = L10n.t("开始录像失败，请重试", "Failed to start video. Try again.")
             }
 
@@ -3693,29 +3701,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
         homePhotoNewFileQueryWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
-    }
-
-    private func scheduleHomeVideoAutoStop() {
-        cancelHomeVideoAutoStop()
-        guard let delay = homeVideoCapture.autoStopDelayRemaining(at: ProcessInfo.processInfo.systemUptime) else { return }
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.isReady else { return }
-            guard self.isVideoRecording || self.deviceRuntimeStatus == .videoRecording else { return }
-            guard let remaining = self.homeVideoCapture.autoStopDelayRemaining(at: ProcessInfo.processInfo.systemUptime) else { return }
-            if remaining > 0 {
-                self.scheduleHomeVideoAutoStop()
-                return
-            }
-            print("\(self.logTag) video duration reached: auto stop after \(Int(delay))s")
-            self.stopVideoRecordingFromHome()
-        }
-        homeVideoAutoStopWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
-    private func cancelHomeVideoAutoStop() {
-        homeVideoAutoStopWorkItem?.cancel()
-        homeVideoAutoStopWorkItem = nil
     }
 
     private func logVideoCapture(_ event: String, detail: String = "") {
@@ -3890,7 +3875,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         videoCompletedResetTask?.cancel()
         homePhotoNewFileQueryWorkItem?.cancel()
         homePhotoNewFileQueryWorkItem = nil
-        cancelHomeVideoAutoStop()
         isTakingPhoto = false
         photoCompleted = false
         isVideoRecording = false
@@ -5098,6 +5082,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         gen1ControlDecoder.reset()
         gen1VoiceDecoder.reset()
         gen1SequenceTracker.reset()
+        gen1VoiceDeliveryTiming = TranslationAudioTiming()
         gen1TranslationRouter.reset()
         gen1FactoryResetGeneration += 1
         settingsRecordDurationSeconds = nil
@@ -5178,8 +5163,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                     aiVisionNotifyHandler?("gen1busy0", payload)
                 }
                 if frame.command == Gen1Commands.translateRecord {
-                    gen1TranslationRouter.onStartFailed()
-                    emitGen1TranslationStatus(2)
+                    routeGen1Voice(gen1TranslationRouter.onBusy())
                 }
                 if frame.command == Gen1Commands.aiRecord {
                     Gen1AiRecordingManager.shared.stop()
@@ -5232,7 +5216,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 emitGen1Canonical("devstatus0", Data([status]))
             case Gen1Commands.takePhoto: emitGen1Canonical("actionrsp0", Data([1, 0, 1]))
             case Gen1Commands.startVideo: emitGen1Canonical("actionrsp0", Data([2, 0, 2]))
-            case Gen1Commands.stopVideo: emitGen1Canonical("actionrsp0", Data([3, 0, 0]))
+            case Gen1Commands.stopVideo:
+                // Gen1 ACK has no current-status field. Do not invent STANDBY.
+                logVideoCapture("stop-command-reply", detail: "payloadBytes=\(payload.count) completionConfirmed=false awaiting=device_standby")
+                forceQueryDeviceStatus(reason: "gen1-video-stop-reply-awaiting-standby")
             case Gen1Commands.factoryReset:
                 guard let state = payload.first else {
                     connectLog("Gen1 factory reset response ignored", detail: "reason=invalid_payload bytes=\(payload.count)")
@@ -5276,7 +5263,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                     aiVoiceNotifyHandler?("gen1voiceStatus", payload)
                 }
             case Gen1Commands.translateRecord:
-                if let status = payload.first { routeGen1Voice(gen1TranslationRouter.onAck(status)) }
+                DebugLogStore.logBLEEvent("Gen1 translation command reply", detail: "target=\(deviceBluetoothIdentifier ?? "nil") payloadBytes=\(payload.count) status=\(payload.count == 1 ? payload.first.map(Int.init) ?? -1 : -1); ACK_is_not_audio_END")
+                if payload.count == 1, let status = payload.first {
+                    routeGen1Voice(gen1TranslationRouter.onAck(status))
+                }
             case Gen1Commands.aiRecord:
                 guard let status = payload.first else { continue }
                 if status == 1 { isAIRecording = Gen1AiRecordingManager.shared.start() }
@@ -5314,17 +5304,25 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         emitGen1Canonical("getdevinfo", body)
     }
 
-    private func handleGen1VoiceData(_ data: Data) {
+    private var gen1VoiceDeliveryTiming = TranslationAudioTiming()
+
+    private func handleGen1VoiceData(_ data: Data, receivedUptime: TimeInterval) {
+        let handlerDelay = max(0, ProcessInfo.processInfo.systemUptime - receivedUptime)
+        gen1VoiceDeliveryTiming.record(at: receivedUptime, delay: handlerDelay)
         for event in gen1VoiceDecoder.appendEvents(data) {
             switch event {
             case .frame(let frame, _):
+                if frame.type == .start {
+                    gen1VoiceDeliveryTiming = TranslationAudioTiming()
+                    gen1VoiceDeliveryTiming.record(at: receivedUptime, delay: handlerDelay)
+                }
                 let sequence = gen1SequenceTracker.onFrame(frame)
                 if case .duplicateOrLate = sequence { continue }
                 if case .gap(let expected, let actual, let missing) = sequence {
                     DebugLogStore.logBLEEvent("Gen1 audio sequence gap", detail: "expected=\(expected) actual=\(actual) missing=\(missing)")
                 }
                 if frame.type != .data {
-                    DebugLogStore.logBLEEvent("Gen1 audio stream boundary", detail: "type=\(frame.type) sequence=\(frame.sequence) flags=\(frame.flags) bytes=\(frame.payload.count)")
+                    DebugLogStore.logBLEEvent("Gen1 audio stream boundary", detail: "type=\(frame.type) sequence=\(frame.sequence) flags=\(frame.flags) bytes=\(frame.payload.count) callbackToHandler={\(gen1VoiceDeliveryTiming.detail)}; excludes_delay_before_CoreBluetooth_callback")
                 }
                 routeGen1Voice(gen1TranslationRouter.onFrame(frame))
             case .dropped(let drop):
@@ -5361,9 +5359,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             gen1TranslationFrameCount += 1
             gen1TranslationOpusBytes += opus.count
             if gen1TranslationFrameCount == 1 || gen1TranslationFrameCount.isMultiple(of: 100) {
-                DebugLogStore.logBLEEvent("Gen1 translation DATA routed", detail: "sequence=\(sequence) frames=\(gen1TranslationFrameCount) opusBytes=\(gen1TranslationOpusBytes) handlerPresent=\(translationVoiceNotifyHandler != nil)")
+                DebugLogStore.logBLEEvent("Gen1 translation DATA routed", detail: "sequence=\(sequence) frames=\(gen1TranslationFrameCount) opusBytes=\(gen1TranslationOpusBytes) handlerPresent=\(translationVoiceNotifyHandler != nil) callbackToHandler={\(gen1VoiceDeliveryTiming.detail)}")
             }
             translationVoiceNotifyHandler?("gen1trdat0", opus)
+        case .translationStopAcknowledged:
+            DebugLogStore.logBLEEvent("Gen1 translation STOP acknowledged", detail: "frames=\(gen1TranslationFrameCount) opusBytes=\(gen1TranslationOpusBytes); preserving DATA until END")
+            translationVoiceNotifyHandler?("gen1trsak", Data([0]))
+        case .translationStopRejected:
+            DebugLogStore.logBLEEvent("Gen1 translation STOP busy", detail: "frames=\(gen1TranslationFrameCount); preserving tail and original END deadline")
+            translationVoiceNotifyHandler?("gen1trsb0", Data([Gen1Commands.busy]))
         case .translationStopped: emitGen1TranslationStatus(0)
         case .translationStartFailed, .translationStreamError: emitGen1TranslationStatus(2)
         case .ignore: break
@@ -8335,6 +8339,7 @@ extension AstraA1BleManager: CBPeripheralDelegate {
         let dataCopy = characteristic.value.map { Data($0) }
         let errorCopy = error
         let capturedAt = Date()
+        let receivedUptime = ProcessInfo.processInfo.systemUptime
         Task { @MainActor in
             if uuid == Self.gen1ControlUUID, gen1GuideEventSessionID != nil || errorCopy != nil {
                 let nsError = errorCopy.map { $0 as NSError }
@@ -8375,7 +8380,7 @@ extension AstraA1BleManager: CBPeripheralDelegate {
                     DebugLogStore.logBLEEvent("Gen1 firmware notify callback failed", detail: "target=\(peripheral.identifier) characteristic=\(uuid) payloadBytes=\(dataCopy?.count ?? 0) errorDomain=\(nsError?.domain ?? "none") errorCode=\(nsError?.code ?? 0); no_payload_dump", capturedAt: capturedAt)
                 }
                 guard errorCopy == nil, let data = dataCopy else { return }
-                if uuid == Self.gen1VoiceUUID { handleGen1VoiceData(data) }
+                if uuid == Self.gen1VoiceUUID { handleGen1VoiceData(data, receivedUptime: receivedUptime) }
                 else { handleGen1ControlData(data, capturedAt: capturedAt) }
                 return
             }
