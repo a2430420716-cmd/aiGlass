@@ -44,6 +44,7 @@ actor Gen1MediaTCPClient {
     private var state = State.idle
     private var connection: NWConnection?
     private var terminalError: Error?
+    private var explicitlyClosed = false
     private var remoteEnded = false
     private var connectWaiter: CheckedContinuation<Void, Error>?
     private var connectTimer: Task<Void, Never>?
@@ -76,7 +77,8 @@ actor Gen1MediaTCPClient {
     /// Local processing has no pending file read. Expose only eligible network
     /// failures so its monitor cannot turn protocol errors into reconnect loops.
     func processingRecoveryError() -> Error? {
-        guard let terminalError, canRetryAfterPathChange(terminalError) else { return nil }
+        guard !explicitlyClosed, state != .finished,
+              let terminalError, canRetryAfterPathChange(terminalError) else { return nil }
         return terminalError
     }
 
@@ -229,7 +231,12 @@ actor Gen1MediaTCPClient {
         }
     }
 
-    func close() async { abort(CancellationError()) }
+    func close() async {
+        // A prior network failure may already have closed the socket. Preserve
+        // its diagnostic error, but revoke recovery after the owner closes it.
+        explicitlyClosed = true
+        abort(CancellationError())
+    }
 
     private func performOperation<T>(
         timeout: TimeInterval, reason: String, isFileTransfer: Bool = false,
