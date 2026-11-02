@@ -575,7 +575,9 @@ struct NewbieGuideView: View {
         .navigationControllerBackground(.black)
         .navigationBarHidden(true)
         .suppressTabBarOnAppear()
-        .preferredColorScheme(.dark)
+        // This guide has a fixed black design; keep its local styling without
+        // requesting a dark appearance for the app's presentation container.
+        .environment(\.colorScheme, .dark)
         .onAppear {
             controller.start(ble: ble, modelName: modelName, token: token)
         }

@@ -79,6 +79,7 @@ struct AIGlassApp: App {
                         DebugFloatingPanel()
                     }
                 }
+                .preferredColorScheme(.light)
                 .onAppear {
                     UIWindow.appearance().backgroundColor = AppTheme.uiBackground
                 }
