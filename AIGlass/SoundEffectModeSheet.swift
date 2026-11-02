@@ -48,7 +48,7 @@ struct SoundEffectModeSheet: View {
     var body: some View {
         VStack(spacing: 24) {
             Text(L10n.t("音效模式", "Sound Mode"))
-                .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                .font(AppTheme.notoSansSC(size: 18, weight: .semibold))
                 .foregroundStyle(AppTheme.primaryText)
 
             HStack(spacing: 16) {
@@ -94,24 +94,25 @@ private struct SoundEffectOptionView: View {
                 Image(mode.iconName)
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 40, height: 40)
+                    .frame(width: 44, height: 44)
 
                 Text(mode.title)
                     .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                     .foregroundStyle(AppTheme.primaryText)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 96)
+            .aspectRatio(1, contentMode: .fit)
             .background(AppTheme.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay {
-                RoundedRectangle(cornerRadius: 16)
+                RoundedRectangle(cornerRadius: 12)
                     .strokeBorder(
                         isSelected
                             ? AnyShapeStyle(
                                 LinearGradient(
                                     colors: [
                                         Color(red: 0.965, green: 0.796, blue: 0.851),
+                                        Color(red: 0.690, green: 0.831, blue: 0.988),
                                         Color(red: 0.769, green: 0.906, blue: 0.898)
                                     ],
                                     startPoint: .topLeading,
@@ -127,13 +128,13 @@ private struct SoundEffectOptionView: View {
                     ZStack {
                         Circle()
                             .fill(AppTheme.accent)
-                            .frame(width: 20, height: 20)
+                            .frame(width: 24, height: 24)
 
                         Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .bold))
+                            .font(.system(size: 13, weight: .bold))
                             .foregroundStyle(.white)
                     }
-                    .offset(x: 6, y: -6)
+                    .offset(x: 8, y: -8)
                 }
             }
         }

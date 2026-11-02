@@ -10,6 +10,8 @@ struct TranslationRecordListView: View {
     @State private var showsDeleteConfirm = false
     @State private var alertMessage: String?
     @State private var detailRecord: SimultaneousTranslationRecord?
+    @State private var sharePayload: SharePayload?
+    @State private var exportDirectory: URL?
 
     var body: some View {
         ZStack {
@@ -31,7 +33,7 @@ struct TranslationRecordListView: View {
                         }
                         .padding(.horizontal, 16)
                         .padding(.top, 12)
-                        .padding(.bottom, selectionMode ? 90 : 24)
+                        .padding(.bottom, 24)
                     }
                 }
 
@@ -51,6 +53,9 @@ struct TranslationRecordListView: View {
         .compatibleNavigationDestination(item: $detailRecord) { record in
             TranslationRecordDetailView(record: record)
         }
+        .sheet(item: $sharePayload, onDismiss: removeExport) { payload in
+            SystemShareSheet(urls: payload.urls)
+        }
         .alert(L10n.t("提示", "Notice"), isPresented: Binding(
             get: { alertMessage != nil },
             set: { if !$0 { alertMessage = nil } }
@@ -66,46 +71,58 @@ struct TranslationRecordListView: View {
             Text(selectionMode ? L10n.t("已选择\(selectedIds.count)项", "\(selectedIds.count) Selected") : L10n.t("同声传译记录", "Interpretation History"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, selectionMode ? 100 : 52)
 
             HStack {
-                if selectionMode {
-                    Button(allRecordsSelected ? L10n.t("取消全选", "Deselect All") : L10n.t("全选", "Select All")) {
-                        toggleSelectAll()
+                Group {
+                    if selectionMode {
+                        Button(allRecordsSelected ? L10n.t("取消全选", "Deselect All") : L10n.t("全选", "Select All")) {
+                            toggleSelectAll()
+                        }
+                        .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                        .foregroundStyle(AppTheme.primaryText)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(minHeight: 44)
+                    } else {
+                        Button { dismiss() } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 22, weight: .medium))
+                                .foregroundStyle(AppTheme.primaryText)
+                                .frame(width: 44, height: 44, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .font(AppTheme.notoSansSC(size: 16, weight: .medium))
-                    .foregroundStyle(AppTheme.primaryText)
-                } else {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 22, weight: .medium))
+                }
+                .frame(width: selectionMode ? 92 : 44, alignment: .leading)
+
+                Spacer(minLength: 0)
+
+                Group {
+                    if selectionMode {
+                        Button(L10n.t("完成", "Done")) { exitSelectionMode() }
+                            .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                             .foregroundStyle(AppTheme.primaryText)
-                            .frame(width: 44, height: 44, alignment: .leading)
+                            .frame(minHeight: 44)
+                    } else if !records.isEmpty {
+                        Button {
+                            enterSelectionMode()
+                        } label: {
+                            Image("android_album_edit")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 28, height: 28)
+                                .frame(width: 44, height: 44, alignment: .trailing)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(L10n.t("选择记录", "Select Records"))
                     }
-                    .buttonStyle(.plain)
                 }
-
-                Spacer()
-
-                if selectionMode {
-                    Button(L10n.t("完成", "Done")) {
-                        exitSelectionMode()
-                    }
-                    .font(AppTheme.notoSansSC(size: 16, weight: .medium))
-                    .foregroundStyle(AppTheme.primaryText)
-                } else if !records.isEmpty {
-                    Button {
-                        enterSelectionMode()
-                    } label: {
-                        Image("android_album_edit")
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 24, height: 24)
-                            .frame(width: 44, height: 44)
-                    }
-                    .buttonStyle(.plain)
-                }
+                .frame(width: selectionMode ? 92 : 44, alignment: .trailing)
             }
         }
         .padding(.horizontal, 20)
@@ -114,22 +131,11 @@ struct TranslationRecordListView: View {
     }
 
     private var actionBar: some View {
-        Button {
-            if selectedIds.isEmpty {
-                alertMessage = L10n.t("请选择要删除的记录", "Select records to delete")
-            } else {
-                showsDeleteConfirm = true
-            }
-        } label: {
-            Label(L10n.t("删除", "Delete"), systemImage: "trash")
-                .font(AppTheme.notoSansSC(size: 15, weight: .medium))
-                .foregroundStyle(AppTheme.accent)
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 16)
-        .background(AppTheme.cardBackground)
+        TranslationRecordSelectionBar(
+            hasSelection: !selectedIds.isEmpty,
+            onDelete: { showsDeleteConfirm = true },
+            onShare: shareSelection
+        )
     }
 
     private func recordRow(_ record: SimultaneousTranslationRecord) -> some View {
@@ -143,7 +149,7 @@ struct TranslationRecordListView: View {
             HStack(spacing: 10) {
                 if selectionMode {
                     Image(systemName: selectedIds.contains(record.id) ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 20))
+                        .font(.system(size: 24))
                         .foregroundStyle(
                             selectedIds.contains(record.id)
                                 ? AppTheme.accent
@@ -153,17 +159,17 @@ struct TranslationRecordListView: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text(record.title)
-                        .font(AppTheme.notoSansSC(size: 15, weight: .bold))
+                        .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                         .foregroundStyle(AppTheme.primaryText)
                         .lineLimit(1)
 
                     Text(record.sourceText.replacingOccurrences(of: "\n", with: " "))
-                        .font(AppTheme.notoSansSC(size: 13, weight: .regular))
+                        .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                         .foregroundStyle(AppTheme.secondaryText)
                         .lineLimit(1)
 
                     Text(metaText(for: record))
-                        .font(AppTheme.notoSansSC(size: 12, weight: .regular))
+                        .font(AppTheme.notoSansSC(size: 13, weight: .regular))
                         .foregroundStyle(AppTheme.secondaryText)
                         .lineLimit(1)
                 }
@@ -182,7 +188,7 @@ struct TranslationRecordListView: View {
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy/MM/dd HH:mm"
         let date = formatter.string(from: Date(timeIntervalSince1970: record.createdAt))
-        return "\(TranslationLanguage.fromDisplayName(record.sourceLanguage).displayName)-\(TranslationLanguage.fromDisplayName(record.targetLanguage).displayName)  \(date)"
+        return L10n.t("语言：", "Languages: ") + "\(TranslationLanguage.fromDisplayName(record.sourceLanguage).displayName)-\(TranslationLanguage.fromDisplayName(record.targetLanguage).displayName)  \(date)"
     }
 
     private func reload() {
@@ -216,54 +222,39 @@ struct TranslationRecordListView: View {
     }
 
     private var deleteConfirmationSheet: some View {
-        ZStack(alignment: .bottom) {
-            Color.black.opacity(0.36)
-                .ignoresSafeArea()
-                .onTapGesture { showsDeleteConfirm = false }
-
-            VStack(spacing: 0) {
-                Text(L10n.t("确定删除选中的 \(selectedIds.count) 条记录吗？", "Delete \(selectedIds.count) selected record(s)?"))
-                    .font(AppTheme.notoSansSC(size: 17, weight: .medium))
-                    .foregroundStyle(AppTheme.primaryText)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 28)
-
-                Divider()
-
-                HStack(spacing: 12) {
-                    Button(L10n.t("取消", "Cancel")) {
-                        showsDeleteConfirm = false
-                    }
-                    .foregroundStyle(AppTheme.primaryText)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Color(red: 0.93, green: 0.93, blue: 0.93))
-                    .clipShape(Capsule())
-
-                    Button(L10n.t("删除", "Delete")) {
-                        SimultaneousTranslationRecordStore.delete(ids: selectedIds)
-                        showsDeleteConfirm = false
-                        exitSelectionMode()
-                        reload()
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(AppTheme.accent)
-                    .clipShape(Capsule())
-                }
-                .font(AppTheme.notoSansSC(size: 16, weight: .medium))
-                .padding(20)
+        TranslationRecordDeleteConfirmation(
+            count: selectedIds.count,
+            onCancel: { showsDeleteConfirm = false },
+            onDelete: {
+                SimultaneousTranslationRecordStore.delete(ids: selectedIds)
+                showsDeleteConfirm = false
+                exitSelectionMode()
+                reload()
             }
-            .background(AppTheme.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
-        }
-        .transition(.opacity)
+        )
         .zIndex(10)
     }
+
+    private func shareSelection() {
+        let selected = records.filter { selectedIds.contains($0.id) }
+        guard !selected.isEmpty else { return }
+        let text = selected.map { record in
+            "\(record.title)\n\(metaText(for: record))\n\n\(record.sourceText)\n\n\(record.targetText)"
+        }.joined(separator: "\n\n--------------------------------\n\n")
+        do {
+            let payload = try TranslationRecordTextExport.makePayload(text: text)
+            exportDirectory = payload.urls.first?.deletingLastPathComponent()
+            sharePayload = payload
+        } catch {
+            alertMessage = L10n.t("记录导出失败，请重试", "Could not export the records. Please try again.")
+        }
+    }
+
+    private func removeExport() {
+        if let exportDirectory { try? FileManager.default.removeItem(at: exportDirectory) }
+        exportDirectory = nil
+    }
+
 }
 
 #Preview {

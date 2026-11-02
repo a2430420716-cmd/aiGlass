@@ -703,7 +703,7 @@ struct NewbieGuideView: View {
                 }
 
                 Text(actionType)
-                    .font(AppTheme.notoSansSC(size: 30, weight: .bold))
+                    .font(AppTheme.notoSansSC(size: 32, weight: .bold))
                     .foregroundStyle(.black)
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
@@ -711,6 +711,7 @@ struct NewbieGuideView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 18)
             .padding(.vertical, 24)
+            .frame(minHeight: 163, alignment: .topLeading)
             .background(Color(red: 0.82, green: 0.92, blue: 1.0))
             .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
 
@@ -728,18 +729,19 @@ struct NewbieGuideView: View {
         VStack(spacing: 12) {
             tipRow(
                 icon: "android_guide_volume_up",
-                text: L10n.t("向前滑动：音量+", "Swipe forward: Volume +"),
+                text: L10n.t("前滑调大音量", "Swipe forward: Volume +"),
                 trailing: "android_guide_right_arrows"
             )
             tipRow(
                 icon: "android_guide_volume_down",
-                text: L10n.t("向后滑动：音量-", "Swipe backward: Volume -"),
+                text: L10n.t("后滑调小音量", "Swipe back: Volume -"),
                 trailing: "android_guide_left_arrows"
             )
         }
-        .padding(16)
-        .background(Color.white.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+        .background(Color(red: 0.65, green: 0.75, blue: 0.82))
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
     }
 
     private var captureTip: some View {
@@ -782,15 +784,16 @@ struct NewbieGuideView: View {
             Text(text)
                 .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                 .foregroundStyle(.white)
-            Spacer()
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
             Image(trailing)
                 .resizable()
                 .scaledToFit()
                 .frame(width: 22, height: 22)
         }
         .padding(.horizontal, 8)
-        .frame(height: 36)
-        .background(Color.black.opacity(0.55))
+        .frame(minHeight: 36)
+        .background(Color.black)
         .clipShape(Capsule())
     }
 
@@ -821,8 +824,7 @@ struct NewbieGuideView: View {
     }
 
     private var shouldShowVolumeTips: Bool {
-        guard let title = controller.currentItem?.title else { return false }
-        return title.contains("音量")
+        controller.stepIndex == 4
     }
 
     private var shouldShowCaptureTip: Bool {
@@ -859,47 +861,66 @@ struct NewbieGuideView: View {
     }
 
     private var completionView: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 150)
+        GeometryReader { proxy in
+            let compactLayout = proxy.size.height < 650
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                        .frame(height: proxy.size.height * (compactLayout ? 0.16 : 0.27))
 
-            Image("android_guide_complete_glasses")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 342, height: 105)
+                    Image("android_guide_complete_glasses")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: proxy.size.width * 0.90, height: proxy.size.height * (compactLayout ? 0.14 : 0.15))
 
-            Text(L10n.t("恭喜你完成新手引导", "Newbie guide complete"))
-                .font(AppTheme.notoSansSC(size: 24, weight: .bold))
-                .foregroundStyle(Color(red: 0.33, green: 0.87, blue: 0.96))
-                .padding(.top, 45)
+                    Text(L10n.t("恭喜你完成新手引导", "Newbie guide complete"))
+                        .font(AppTheme.notoSansSC(size: 24, weight: .bold))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [Color(red: 0.33, green: 0.87, blue: 0.96), Color(red: 0.63, green: 0.58, blue: 1.0)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
+                        .padding(.top, proxy.size.height * (compactLayout ? 0.05 : 0.08))
 
-            Text(L10n.t("你可以随时在“APP首页-新手引导”中重新开始", "You can restart anytime from Home - Newbie Guide"))
-                .font(AppTheme.notoSansSC(size: 15, weight: .regular))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 30)
-                .padding(.top, 20)
+                    Text(L10n.t("你可以随时在“APP首页-新手引导”\n中重新开始", "You can restart anytime from\nHome - Newbie Guide"))
+                        .font(AppTheme.notoSansSC(size: 15, weight: .regular))
+                        .foregroundStyle(Color(red: 0.72, green: 0.72, blue: 0.72))
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(4)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 20)
 
-            Button(L10n.t("开始使用眼镜", "Start Using Glasses")) {
-                closeGuide()
+                    Spacer(minLength: compactLayout ? 12 : 20)
+
+                    Button(L10n.t("开始使用眼镜", "Start Using Glasses")) {
+                        closeGuide()
+                    }
+                    .font(AppTheme.notoSansSC(size: 18, weight: .regular))
+                    .foregroundStyle(.white)
+                    .frame(width: proxy.size.width * 0.74, height: 48)
+                    .background(Color(red: 0.20, green: 0.20, blue: 0.20))
+                    .clipShape(Capsule())
+
+                    Spacer(minLength: compactLayout ? 12 : 24)
+
+                    Button(L10n.t("再看一遍", "View Again")) {
+                        controller.restart()
+                    }
+                    .font(AppTheme.notoSansSC(size: 14, weight: .regular))
+                    .foregroundStyle(.white)
+                    .frame(minHeight: 44)
+                    .padding(.bottom, 12)
+                }
+                .frame(width: proxy.size.width)
+                .frame(minHeight: proxy.size.height)
             }
-            .font(AppTheme.notoSansSC(size: 16, weight: .medium))
-            .foregroundStyle(.white)
-            .frame(width: 276, height: 48)
-            .background(Color.white.opacity(0.12))
-            .clipShape(Capsule())
-            .padding(.top, 94)
-
-            Spacer()
-
-            Button(L10n.t("再看一遍", "View Again")) {
-                controller.restart()
-            }
-            .font(AppTheme.notoSansSC(size: 14, weight: .regular))
-            .foregroundStyle(.white)
-            .padding(.bottom, 32)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+
 }
 
 #Preview {

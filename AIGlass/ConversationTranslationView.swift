@@ -111,9 +111,11 @@ struct ConversationTranslationView: View {
                 Image("android_translation_swap")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 32, height: 24)
+                    .frame(width: 38, height: 28)
             }
             .buttonStyle(.plain)
+            .frame(minWidth: 44, minHeight: 44)
+            .accessibilityLabel(L10n.t("互换语言", "Swap Languages"))
             .disabled(controller.glassesActive || controller.phoneActive)
 
             languageButton(

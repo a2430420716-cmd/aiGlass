@@ -94,6 +94,7 @@ struct PairingPreparationView: View {
             if hasPrepareHTML && !webLoadFailed {
                 HTMLWebView(
                     html: prepareHTML,
+                    textStyle: .pairingInstructions,
                     onLoadResult: { success in
                         if !success {
                             webLoadFailed = true
@@ -180,9 +181,11 @@ struct PairingPreparationView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("眼镜配对准备", "Glasses Pairing Preparation"))
+            Text(L10n.t("MOCO AI眼镜配对准备", "MOCO AI Glasses Pairing Prep"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 44)
 
             HStack {
                 Button {
@@ -236,8 +239,9 @@ struct PairingPreparationView: View {
                 .shadow(color: AppTheme.cardShadow, radius: 8, y: 2)
 
             Text(item.type)
-                .font(AppTheme.notoSansSC(size: 13, weight: .regular))
-                .foregroundStyle(AppTheme.secondaryText)
+                .font(AppTheme.notoSansSC(size: 16, weight: .regular))
+                .foregroundStyle(AppTheme.primaryText)
+                .lineSpacing(4)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

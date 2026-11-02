@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 struct GlassesSettingsView: View {
@@ -433,8 +434,6 @@ struct GlassesSettingsView: View {
             SettingsSectionHeader(title: L10n.t("通用", "General"))
 
             SettingsCard {
-                SettingsNavigationRow(title: L10n.t("指示灯亮度", "Indicator Brightness"), value: L10n.t("中", "Medium"))
-                SettingsDivider()
                 if showsCapability(\.wearingDetection) {
                     SettingsToggleRow(
                         title: L10n.t("摘下休眠", "Sleep When Removed"),
@@ -858,6 +857,13 @@ struct GlassesSettingsView: View {
                     voiceWakeUpRow
                     SettingsDivider()
                 }
+                NavigationLink {
+                    GlassesVoiceCommandsView(model: GlassDeviceModel(modelName: guideModelName))
+                } label: {
+                    SettingsNavigationLinkLabel(title: L10n.t("语音指令", "Voice Commands"))
+                }
+                .buttonStyle(.plain)
+                SettingsDivider()
                 if showsCapability(\.voiceWakeupSetting) {
                     SettingsNavigationRow(
                         title: L10n.t("连续对话时长", "Continuous conversation duration"),
@@ -896,6 +902,19 @@ struct GlassesSettingsView: View {
             SettingsSectionHeader(title: L10n.t("其他", "Other"))
 
             SettingsCard {
+                if GlassDeviceModel(modelName: guideModelName) == .luminaL1 {
+                    NavigationLink {
+                        Gen1GlassesWifiSettingsView(
+                            ble: pairingCoordinator.astraA1BleManager,
+                            targetSerialNumber: targetSerialNumber,
+                            targetHardwareSN: targetHardwareSN
+                        )
+                    } label: {
+                        SettingsNavigationLinkLabel(title: L10n.t("眼镜Wi-Fi", "Glasses Wi-Fi"))
+                    }
+                    .buttonStyle(.plain)
+                    SettingsDivider()
+                }
                 NavigationLink {
                     GlassesFirmwareUpgradeView(ble: pairingCoordinator.astraA1BleManager)
                 } label: {
@@ -1242,5 +1261,338 @@ private struct WatermarkStyleOptionView: View {
             .environmentObject(DeviceFirmwareUpdateCoordinator())
             .environmentObject(BluetoothOtaUpgradeManager())
             .environmentObject(MainTabRouter())
+    }
+}
+
+
+/// Voice command reference shared with the Android VoiceCommandsActivity screen.
+private struct GlassesVoiceCommandsView: View {
+    let model: GlassDeviceModel
+    @Environment(\.dismiss) private var dismiss
+
+    private struct Command: Identifiable {
+        let zh: String
+        let en: String
+        var unsupportedOnAstra = false
+        var id: String { zh }
+    }
+
+    private struct Section: Identifiable {
+        let zh: String
+        let en: String
+        let commands: [Command]
+        var id: String { zh }
+    }
+
+    private var sections: [Section] {
+        [
+            Section(zh: "唤醒词", en: "Wake Word", commands: [
+                Command(zh: "嗨，眸刻/嘿，眸刻", en: "Hi Moco / Hey Moco")
+            ]),
+            Section(zh: "拍摄指令", en: "Capture Commands", commands: [
+                Command(zh: "开始拍照", en: "Take a photo"),
+                Command(zh: "开始录像", en: "Take a video")
+            ]),
+            Section(zh: "播放指令", en: "Playback Commands", commands: [
+                Command(zh: "播放音乐", en: "Play music"),
+                Command(zh: "停止播放（音乐）", en: "Stop playing", unsupportedOnAstra: true),
+                Command(zh: "播放下一曲/下一首", en: "Play next song/track", unsupportedOnAstra: true),
+                Command(zh: "播放上一曲/上一首", en: "Play previous song/track", unsupportedOnAstra: true),
+                Command(zh: "调高音量/（声音）音量大一点", en: "Volume up"),
+                Command(zh: "调低音量/（声音）音量小一点", en: "Volume down")
+            ]),
+            Section(zh: "通话指令", en: "Call Commands", commands: [
+                Command(zh: "接听电话", en: "Answer the phone"),
+                Command(zh: "挂断电话", en: "Hang up"),
+                Command(zh: "拒接电话", en: "Reject the call", unsupportedOnAstra: true)
+            ])
+        ]
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                Text(L10n.t("语音指令", "Voice Commands"))
+                    .font(AppTheme.notoSansSC(size: 18, weight: .bold))
+                HStack {
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .medium))
+                            .frame(width: 44, height: 44, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 12) {
+                    ForEach(sections) { section in
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(L10n.t(section.zh, section.en))
+                                .font(AppTheme.notoSansSC(size: 15, weight: .medium))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(16)
+                                .background(Color.black.opacity(0.04))
+                            ForEach(section.commands) { command in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(L10n.t(command.zh, command.en))
+                                        .font(AppTheme.notoSansSC(size: 15, weight: .regular))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    if model == .astraA1, command.unsupportedOnAstra {
+                                        Text(L10n.t("*Astra A1 暂不支持", "*Astra A1 not supported"))
+                                            .font(AppTheme.notoSansSC(size: 12, weight: .regular))
+                                            .foregroundStyle(AppTheme.secondaryText)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 14)
+                                if command.id != section.commands.last?.id {
+                                    Divider().padding(.horizontal, 16)
+                                }
+                            }
+                        }
+                        .background(AppTheme.cardBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+            }
+        }
+        .foregroundStyle(AppTheme.primaryText)
+        .background(AppTheme.background.ignoresSafeArea())
+        .navigationBarHidden(true)
+        .suppressTabBarOnAppear()
+    }
+}
+
+
+/// Configures Gen1's existing router connection; it never starts an OTA update.
+private struct Gen1GlassesWifiSettingsView: View {
+    @ObservedObject var ble: AstraA1BleManager
+    let targetSerialNumber: String?
+    let targetHardwareSN: String?
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var otaManager: BluetoothOtaUpgradeManager
+    @EnvironmentObject private var importManager: MediaImportManager
+    @StateObject private var ssidReader = CurrentWifiSSIDReader()
+    @State private var ssid = ""
+    @State private var password = ""
+    @State private var hasEditedSSID = false
+    @State private var requestTask: Task<Void, Never>?
+    @State private var requestID: UUID?
+    @State private var resultMessage: String?
+    private var isProvisioning: Bool { requestID != nil }
+
+    private var requiresReconnect: Bool {
+        guard !isProvisioning,
+              let target = (ble.deviceBluetoothIdentifier ?? targetSerialNumber).flatMap(UUID.init(uuidString:)) else { return false }
+        return Gen1WifiProvisionCoordinator.shared.isNetworkOperationBlocked(targetID: target)
+    }
+
+    private var isTargetAvailable: Bool {
+        ble.deviceGeneration == .gen1G5K61 && ble.isDeviceAvailable
+            && ble.matchesCurrentDevice(serialNumber: targetSerialNumber, hardwareSN: targetHardwareSN)
+    }
+
+    private var isDeviceIdle: Bool {
+        !otaManager.isUpgrading && !ble.isFirmwareUpgradeFlowBusy
+            && !ble.isAIVisionTransferBusy && !importManager.isImporting
+            && !AIRecordingImportManager.shared.isImporting
+            && !ble.isAIRecording && !ble.isVideoRecording && !ble.isTakingPhoto
+            && (ble.isDeviceRuntimeIdle || ble.deviceRuntimeStatus == .networkOperating)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                Text(L10n.t("眼镜Wi-Fi", "Glasses Wi-Fi"))
+                    .font(AppTheme.notoSansSC(size: 18, weight: .bold))
+                HStack {
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .medium))
+                            .frame(width: 44, height: 44, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 20) {
+                    Text(L10n.t("请输入可上网的 2.4 GHz Wi-Fi 名称与密码。开放网络可不填密码。", "Enter the name and password of a 2.4 GHz Wi-Fi network with internet access. Leave the password empty for an open network."))
+                        .font(AppTheme.notoSansSC(size: 14, weight: .regular))
+                        .foregroundStyle(AppTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(spacing: 16) {
+                        TextField(L10n.t("Wi-Fi 名称（SSID）", "Wi-Fi Name (SSID)"), text: Binding(
+                            get: { ssid },
+                            set: { value in
+                                hasEditedSSID = true
+                                ssid = value
+                                ssidReader.cancel()
+                            }
+                        ))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        Divider()
+                        SecureField(L10n.t("Wi-Fi 密码", "Wi-Fi Password"), text: $password)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    .padding(20)
+                    .background(AppTheme.cardBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .disabled(isProvisioning)
+
+                    if requiresReconnect {
+                        Text(L10n.t("配网结果尚未确认，请先断开并重新连接眼镜，再重试。", "The configuration result is unconfirmed. Disconnect and reconnect your glasses before retrying."))
+                            .foregroundStyle(AppTheme.secondaryText)
+                            .font(AppTheme.notoSansSC(size: 14, weight: .regular))
+                    } else if !isTargetAvailable || !isDeviceIdle {
+                        Text(L10n.t("请连接当前眼镜，并结束拍摄、录音、导入或升级后再配置。", "Connect these glasses and finish any capture, recording, import, or update before configuring Wi-Fi."))
+                            .foregroundStyle(AppTheme.secondaryText)
+                            .font(AppTheme.notoSansSC(size: 14, weight: .regular))
+                    }
+                }
+                .padding(20)
+            }
+
+            Button(action: configureWifi) {
+                HStack(spacing: 8) {
+                    if isProvisioning { ProgressView().tint(.white) }
+                    Text(isProvisioning ? L10n.t("正在连接", "Connecting") : L10n.t("连接Wi-Fi", "Connect Wi-Fi"))
+                        .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .background(Color(red: 0.20, green: 0.20, blue: 0.20))
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(isProvisioning || !isTargetAvailable || !isDeviceIdle || requiresReconnect || ssid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .opacity(isTargetAvailable && isDeviceIdle && !requiresReconnect ? 1 : 0.45)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 28)
+        }
+        .foregroundStyle(AppTheme.primaryText)
+        .background(AppTheme.background.ignoresSafeArea())
+        .navigationBarHidden(true)
+        .suppressTabBarOnAppear()
+        .onAppear {
+            ssidReader.start { value in
+                guard !hasEditedSSID, !isProvisioning, let value else { return }
+                ssid = value
+            }
+        }
+        .onChangeCompat(of: ble.isReady) { ready in
+            if !ready { cancelRequest() }
+        }
+        .onDisappear {
+            cancelRequest()
+            ssidReader.cancel()
+            password = ""
+        }
+        .alert(L10n.t("眼镜Wi-Fi", "Glasses Wi-Fi"), isPresented: Binding(
+            get: { resultMessage != nil },
+            set: { if !$0 { resultMessage = nil } }
+        )) {
+            Button(L10n.t("知道了", "Got It"), role: .cancel) {}
+        } message: {
+            Text(resultMessage ?? "")
+        }
+    }
+
+    private func cancelRequest() {
+        requestTask?.cancel()
+        requestTask = nil
+        requestID = nil
+        password = ""
+    }
+
+    private func configureWifi() {
+        guard isTargetAvailable, isDeviceIdle, !isProvisioning, !requiresReconnect,
+              let target = ble.deviceBluetoothIdentifier.flatMap(UUID.init(uuidString:)),
+              let account = ble.gen1ImportAccount(for: target) else { return }
+        let payload: Data
+        do {
+            payload = try Gen1FirmwareUpdateProtocol.wifiPayload(ssid: ssid, password: password)
+        } catch {
+            resultMessage = error.localizedDescription
+            return
+        }
+        ssidReader.cancel()
+        let authorization = ble.gen1ImportAuthorizationID
+        let coordinator = Gen1WifiProvisionCoordinator.shared
+        guard let lease = coordinator.acquire(targetID: target, bootstrapConnected: ble.isReady) else {
+            resultMessage = L10n.t("上次配网结果未确认，请断开并重新连接眼镜后再试。", "The previous configuration result is unconfirmed. Disconnect and reconnect your glasses before retrying.")
+            return
+        }
+        let request = UUID()
+        requestID = request
+        requestTask = Task { @MainActor in
+            var wasQueued = false
+            var acknowledged = false
+            let session = Gen1WifiProvisionSession(
+                send: { command, payload in
+                    let accepted = ble.sendGen1Command(command: command, payload: payload)
+                    wasQueued = accepted
+                    return accepted
+                },
+                validate: {
+                    requestID == request && coordinator.isCurrent(lease) && isTargetAvailable && isDeviceIdle
+                        && ble.deviceBluetoothIdentifier == target.uuidString
+                        && ble.gen1ImportAuthorizationID == authorization
+                        && ble.gen1ImportAccount(for: target) == account
+                },
+                isConnected: { ble.isReady && ble.deviceBluetoothIdentifier == target.uuidString }
+            )
+            let subscription = ble.gen1ControlSubject.sink { frame in
+                session.receive(command: frame.command, payload: frame.payload)
+            }
+            defer {
+                subscription.cancel()
+                coordinator.finish(lease, wasQueued: wasQueued, acknowledged: acknowledged)
+                if requestID == request {
+                    requestID = nil
+                    requestTask = nil
+                    password = ""
+                }
+            }
+            do {
+                try await session.run(payload: payload)
+                acknowledged = true
+                guard requestID == request else { return }
+                resultMessage = L10n.t("Wi-Fi网络配置成功", "Wi-Fi network configured successfully")
+            } catch is CancellationError {
+                // Leaving the page never turns a queued write into a success message.
+            } catch let failure as Gen1WifiProvisionSession.Failure {
+                guard requestID == request else { return }
+                switch failure {
+                case .rejected:
+                    acknowledged = true
+                    resultMessage = L10n.t("眼镜回复Wi-Fi配置失败，请检查2.4 GHz网络名称与密码。", "The glasses reported a Wi-Fi configuration failure. Check the 2.4 GHz network name and password.")
+                case .timedOut, .malformedReply, .unexpectedReply:
+                    resultMessage = L10n.t("未能确认眼镜的Wi-Fi配置结果。请重新连接眼镜后再试；这不代表密码错误。", "The glasses' Wi-Fi configuration result could not be confirmed. Reconnect and retry; this does not establish that the password is incorrect.")
+                case .sendFailed:
+                    resultMessage = L10n.t("配网指令未发送，请重新连接眼镜后再试。", "The configuration command was not sent. Reconnect your glasses and retry.")
+                case .unavailable, .disconnected:
+                    resultMessage = L10n.t("连接、账号或设备状态已变化，配网结果未确认。", "The connection, account, or device state changed. The configuration result is unconfirmed.")
+                }
+            } catch {
+                guard requestID == request else { return }
+                resultMessage = error.localizedDescription
+            }
+        }
     }
 }

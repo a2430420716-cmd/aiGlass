@@ -3,7 +3,25 @@ import WebKit
 
 /// 用于渲染接口返回的 HTML（配对准备说明等）。
 struct HTMLWebView: UIViewRepresentable {
+    enum TextStyle {
+        case standard
+        case pairingInstructions
+
+        var overrides: String {
+            switch self {
+            case .standard:
+                return ""
+            case .pairingInstructions:
+                return """
+                body, p, div, span, li, h1, h2, h3 { color: #000000 !important; }
+                body, p, div, span, li { font-size: 16px !important; }
+                """
+            }
+        }
+    }
+
     let html: String
+    var textStyle: TextStyle = .standard
     var baseURL: URL? = URL(string: "https://glasses.kaimou.net/")
     var onLoadResult: ((Bool) -> Void)?
 
@@ -23,9 +41,6 @@ struct HTMLWebView: UIViewRepresentable {
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         let processed = Self.normalizeHTML(html)
-        guard context.coordinator.loadedHTML != processed else { return }
-        context.coordinator.loadedHTML = processed
-
         let wrapped = """
         <!DOCTYPE html>
         <html>
@@ -62,6 +77,7 @@ struct HTMLWebView: UIViewRepresentable {
             margin: 16px 0 8px;
           }
           p { margin: 8px 0; }
+          \(textStyle.overrides)
         </style>
         </head>
         <body>
@@ -69,6 +85,8 @@ struct HTMLWebView: UIViewRepresentable {
         </body>
         </html>
         """
+        guard context.coordinator.loadedHTML != wrapped else { return }
+        context.coordinator.loadedHTML = wrapped
         webView.loadHTMLString(wrapped, baseURL: baseURL)
     }
 

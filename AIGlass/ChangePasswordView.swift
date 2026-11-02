@@ -207,7 +207,7 @@ struct ChangePasswordView: View {
                 )
                 .keyboardType(.numberPad)
                 .textContentType(.oneTimeCode)
-                .font(AppTheme.notoSansSC(size: 15, weight: .regular))
+                .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                 .foregroundStyle(AppTheme.primaryText)
                 .focused($focusedField, equals: .code)
                 .onChangeCompat(of: verificationCode) { newValue in
@@ -224,7 +224,7 @@ struct ChangePasswordView: View {
                             .frame(minWidth: 88)
                     } else {
                         Text(countdown > 0
-                             ? L10n.t("重新发送（\(countdown)S）", "Resend (\(countdown)S)")
+                             ? L10n.t("重新发送（\(countdown)s）", "Resend (\(countdown)s)")
                              : L10n.t("发送验证码", "Send Code"))
                             .font(AppTheme.notoSansSC(size: 15, weight: .medium))
                             .foregroundStyle(
@@ -287,7 +287,7 @@ struct ChangePasswordView: View {
                 }
             }
             .textContentType(textContentType)
-            .font(AppTheme.notoSansSC(size: 15, weight: .regular))
+            .font(AppTheme.notoSansSC(size: 16, weight: .regular))
             .foregroundStyle(AppTheme.primaryText)
             .focused($focusedField, equals: field)
             .onChangeCompat(of: text.wrappedValue) { newValue in
@@ -302,9 +302,13 @@ struct ChangePasswordView: View {
                 Image(isVisible.wrappedValue ? "android_password_visible" : "android_password_hidden")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 20, height: 20)
+                    .frame(width: 24, height: 24)
                     .frame(width: 28, height: 44)
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isVisible.wrappedValue
+                                ? L10n.t("隐藏密码", "Hide password")
+                                : L10n.t("显示密码", "Show password"))
         }
         .padding(.horizontal, 20)
         .frame(height: 52)
@@ -317,7 +321,7 @@ struct ChangePasswordView: View {
             "请输入8-18位密码，支持英文、数字、符号，至少包含其中两种，不能包含空格",
             "Enter an 8–18 character password with letters, numbers, or symbols. Include at least two types. No spaces."
         ))
-            .font(AppTheme.notoSansSC(size: 12, weight: .regular))
+            .font(AppTheme.notoSansSC(size: 14, weight: .regular))
             .foregroundStyle(AppTheme.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -328,7 +332,7 @@ struct ChangePasswordView: View {
         } label: {
             ZStack {
                 Text(L10n.t("修改密码", "Change Password"))
-                    .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                    .font(AppTheme.notoSansSC(size: 18, weight: .medium))
                     .foregroundStyle(.white)
                     .opacity(isSubmitting ? 0 : 1)
 

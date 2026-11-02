@@ -96,8 +96,9 @@ struct StaticPairingPreparationView: View {
                 .shadow(color: AppTheme.cardShadow, radius: 8, y: 2)
 
             Text(description)
-                .font(AppTheme.notoSansSC(size: 13, weight: .regular))
-                .foregroundStyle(AppTheme.secondaryText)
+                .font(AppTheme.notoSansSC(size: 16, weight: .regular))
+                .foregroundStyle(AppTheme.primaryText)
+                .lineSpacing(4)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

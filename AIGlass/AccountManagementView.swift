@@ -355,6 +355,7 @@ struct AccountManagementView: View {
 
 private struct AccountSignOutConfirmView: View {
     @Environment(\.dismiss) private var dismiss
+    private let warningColor = Color(red: 1, green: 0, blue: 0)
     let isSigningOut: Bool
     let onConfirm: () -> Void
 
@@ -365,16 +366,18 @@ private struct AccountSignOutConfirmView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 32) {
                     HStack(alignment: .top, spacing: 14) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 34))
-                            .foregroundStyle(Color.orange)
+                        Image(systemName: "exclamationmark.circle")
+                            .font(.system(size: 28, weight: .regular))
+                            .foregroundStyle(warningColor)
+                            .frame(width: 32, height: 32)
 
                         Text(L10n.t(
                             "账号一经注销，将无法恢复，请认真阅读以下说明",
                             "Account deletion is irreversible. Please read the following carefully."
                         ))
-                        .font(AppTheme.notoSansSC(size: 17, weight: .medium))
-                        .foregroundStyle(AppTheme.primaryText)
+                        .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                        .foregroundStyle(warningColor)
+                        .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Text(L10n.t(
@@ -385,8 +388,8 @@ private struct AccountSignOutConfirmView: View {
                     .foregroundStyle(AppTheme.primaryText)
                     .lineSpacing(7)
                 }
-                .padding(.horizontal, 28)
-                .padding(.top, 52)
+                .padding(.horizontal, 20)
+                .padding(.top, 32)
             }
 
             Button(action: onConfirm) {
@@ -395,18 +398,18 @@ private struct AccountSignOutConfirmView: View {
                         ProgressView().tint(.white)
                     } else {
                         Text(L10n.t("确认注销", "Confirm Deletion"))
-                            .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                            .font(AppTheme.notoSansSC(size: 18, weight: .medium))
                             .foregroundStyle(.white)
                     }
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 52)
-                .background(Color(red: 0.20, green: 0.20, blue: 0.20))
+                .background(warningColor)
                 .clipShape(Capsule())
             }
             .disabled(isSigningOut)
-            .padding(.horizontal, 28)
-            .padding(.bottom, 24)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 120)
         }
         .background(AppTheme.background.ignoresSafeArea())
         .navigationBarHidden(true)

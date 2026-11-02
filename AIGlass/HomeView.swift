@@ -739,7 +739,7 @@ struct HomeView: View {
                 Image("android_home_volume")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 20, height: 20)
+                    .frame(width: 28, height: 28)
 
                 VolumeSlider(
                     value: Binding(
@@ -1224,7 +1224,7 @@ private struct DeviceCardView: View {
                                 Image("android_index_edit")
                                     .resizable()
                                     .scaledToFit()
-                                    .frame(width: 10, height: 10)
+                                    .frame(width: 16, height: 16)
                             }
                             .contentShape(Rectangle())
                         }

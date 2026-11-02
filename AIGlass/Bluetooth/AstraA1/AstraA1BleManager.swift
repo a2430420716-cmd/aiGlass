@@ -4690,6 +4690,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// Claim only the current account's Gen1 main-firmware flow. AP import and
     /// firmware provisioning must never compete for the glasses' network state.
     func beginGen1FirmwareUpgrade() throws -> Gen1FirmwareUpgradeIdentity {
+        if let targetID = connectedPeripheral?.identifier,
+           Gen1WifiProvisionCoordinator.shared.isNetworkOperationBlocked(targetID: targetID) {
+            throw Gen1FirmwareUpdateSession.Failure.unavailable
+        }
         if let targetID = connectedPeripheral?.identifier {
             try requireGen1HotspotCleanupFinished(for: targetID)
         }
@@ -4725,6 +4729,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     func beginGen1MediaImport(targetID: UUID) throws -> Gen1APImportIdentity {
+        guard !Gen1WifiProvisionCoordinator.shared.isNetworkOperationBlocked(targetID: targetID) else {
+            throw Gen1APImportError.unavailable
+        }
         try requireGen1HotspotCleanupFinished(for: targetID)
         guard deviceGeneration == .gen1G5K61, isDeviceAvailable,
               connectedPeripheral?.identifier == targetID, savedPeripheralID() == targetID,
@@ -4759,6 +4766,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     func requireGen1HotspotCleanupFinished(for targetID: UUID) throws {
+        // Bluetooth OTA also enters through this gate before claiming the device.
+        guard !Gen1WifiProvisionCoordinator.shared.isNetworkOperationBlocked(targetID: targetID) else {
+            throw Gen1APImportError.unavailable
+        }
         guard gen1HotspotCleanup.isPending(targetID) else { return }
         gen1HotspotCleanup.resume(targetID)
         DebugLogStore.logWiFi("一代：上次热点尚未收尾，阻止新操作", detail: "target=\(targetID)")
@@ -7572,6 +7583,7 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
             guard central === centralManager else { return }
+            Gen1WifiProvisionCoordinator.shared.didConnect(targetID: peripheral.identifier)
             if isManualHardReconnectOldContext(central: central, peripheral: peripheral) {
                 connectLog(
                     "old central didConnect while releasing; cancel again",
@@ -7748,6 +7760,7 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
         let callbackError = error as NSError?
         Task { @MainActor in
             guard central === centralManager else { return }
+            Gen1WifiProvisionCoordinator.shared.didDisconnect(targetID: peripheral.identifier)
             if savedPeripheralID() == peripheral.identifier, peripheral.state == .disconnected {
                 boundBLEStopWaitingForRelease = false
             }
