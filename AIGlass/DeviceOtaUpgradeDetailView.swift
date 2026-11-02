@@ -90,22 +90,22 @@ struct DeviceOtaUpgradeDetailView: View {
 
             if showsSuccess {
                 resultView(
-                    imageName: "ota_upgrade_success",
+                    imageName: "android_ota_success",
                     title: L10n.t("升级成功", "Update Successful"),
                     subtitle: L10n.t("快去体验新版本吧！", "Enjoy the new version!")
                 )
             } else if let unconfirmedMessage {
                 resultView(
-                    imageName: "questionmark.circle",
+                    imageName: nil,
                     title: L10n.t("升级结果待确认", "Update Awaiting Confirmation"),
-                    subtitle: unconfirmedMessage,
-                    isSystemImage: true
+                    subtitle: unconfirmedMessage
                 )
             } else if let failureMessage {
                 resultView(
-                    imageName: "ota_upgrade_failure",
+                    imageName: "android_ota_failure",
                     title: L10n.t("升级失败", "Update Failed"),
-                    subtitle: failureMessage
+                    subtitle: L10n.t("很抱歉，本次更新未能成功。", "Sorry, this update was unsuccessful."),
+                    detail: failureMessage
                 )
             } else {
                 ScrollView(showsIndicators: false) {
@@ -116,7 +116,9 @@ struct DeviceOtaUpgradeDetailView: View {
                         if needsGen1Wifi, !isUpgradingForThisPage {
                             gen1WifiSection
                         }
-                        warningSection
+                        if isUpgradingForThisPage {
+                            warningSection
+                        }
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 12)
@@ -124,6 +126,9 @@ struct DeviceOtaUpgradeDetailView: View {
                 }
 
                 if !isUpgradingForThisPage {
+                    warningSection
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 20)
                     upgradeButton
                         .padding(.horizontal, 20)
                         .padding(.bottom, 28)
@@ -171,9 +176,10 @@ struct DeviceOtaUpgradeDetailView: View {
                 Button {
                     dismissPage()
                 } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(AppTheme.primaryText)
+                    Image("android_settings_back")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 21, height: 21)
                         .frame(width: 44, height: 44, alignment: .leading)
                 }
                 .disabled(isUpgradingForThisPage)
@@ -215,7 +221,7 @@ struct DeviceOtaUpgradeDetailView: View {
                 Image("android_upgrade")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 120, height: 120)
+                    .frame(width: 136, height: 136)
             }
 
             Text(targetVersionLine)
@@ -242,12 +248,17 @@ struct DeviceOtaUpgradeDetailView: View {
                 .foregroundStyle(AppTheme.primaryText)
 
             ForEach(Array(contentLines.enumerated()), id: \.offset) { index, line in
-                Text("\(index + 1). \(line)")
+                Text(releaseNoteLine(line, index: index))
                     .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                     .foregroundStyle(AppTheme.primaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private func releaseNoteLine(_ line: String, index: Int) -> String {
+        let hasNumber = line.range(of: #"^\d+[.、．)]"#, options: .regularExpression) != nil
+        return hasNumber ? line : "\(index + 1). \(line)"
     }
 
     private var warningSection: some View {
@@ -270,12 +281,14 @@ struct DeviceOtaUpgradeDetailView: View {
                 .frame(maxWidth: .infinity)
 
             HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.red)
+                Image("android_ota_warning")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 16, height: 16)
                 Text(L10n.t("更新过程中眼镜系统功能不可使用", "Glasses features are unavailable during the update"))
                     .font(AppTheme.notoSansSC(size: 13, weight: .regular))
-                    .foregroundStyle(AppTheme.secondaryText)
+                    .foregroundStyle(AppTheme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity)
         }
@@ -283,10 +296,16 @@ struct DeviceOtaUpgradeDetailView: View {
     }
 
     private var attributedBatteryWarning: AttributedString {
-        let prefix = kind == .firmware
-            ? L10n.t("OTA升级需要眼镜保持 Wi-Fi 连接和", "OTA update requires Wi-Fi and ")
-            : L10n.t("OTA升级需要", "OTA update requires ")
-        var text = AttributedString(prefix)
+        var text = AttributedString(kind == .firmware
+            ? L10n.t("OTA升级需要眼镜保持", "OTA update requires ")
+            : L10n.t("OTA升级需要", "OTA update requires "))
+        text.foregroundColor = .black
+        if kind == .firmware {
+            var connection = AttributedString(L10n.t("Wi-Fi连接", "Wi-Fi"))
+            connection.foregroundColor = .red
+            text.append(connection)
+            text.append(AttributedString(L10n.t("和", " and ")))
+        }
         let minimum = entryGeneration == .gen2
             ? FirmwareUpgradeBatteryPolicy.gen2MinimumPercent
             : FirmwareUpgradeBatteryPolicy.gen1MinimumPercent
@@ -352,29 +371,42 @@ struct DeviceOtaUpgradeDetailView: View {
         }
     }
 
-    private func resultView(imageName: String, title: String, subtitle: String, isSystemImage: Bool = false) -> some View {
-        VStack(spacing: 20) {
-            Spacer()
+    private func resultView(imageName: String?, title: String, subtitle: String, detail: String? = nil) -> some View {
+        GeometryReader { geometry in
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    if let imageName {
+                        Image(imageName)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 136, height: 136)
+                    }
 
-            (isSystemImage ? Image(systemName: imageName) : Image(imageName))
-                .resizable()
-                .scaledToFit()
-                .frame(width: 120, height: 120)
-                .foregroundStyle(AppTheme.secondaryText)
+                    Text(title)
+                        .font(AppTheme.notoSansSC(size: 18, weight: .bold))
+                        .foregroundStyle(AppTheme.primaryText)
+                        .padding(.top, 32)
 
-            Text(title)
-                .font(AppTheme.notoSansSC(size: 20, weight: .bold))
-                .foregroundStyle(AppTheme.primaryText)
+                    Text(subtitle)
+                        .font(AppTheme.notoSansSC(size: 15, weight: .regular))
+                        .foregroundStyle(AppTheme.primaryText)
+                        .padding(.top, 8)
 
-            Text(subtitle)
-                .font(AppTheme.notoSansSC(size: 14, weight: .regular))
-                .foregroundStyle(AppTheme.secondaryText)
+                    if let detail, !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, detail != subtitle {
+                        Text(detail)
+                            .font(AppTheme.notoSansSC(size: 14, weight: .regular))
+                            .foregroundStyle(AppTheme.secondaryText)
+                            .padding(.top, 16)
+                    }
+                }
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-
-            Spacer()
+                .padding(.top, max(48, geometry.size.height * 0.16))
+                .padding(.bottom, 32)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: geometry.size.height, alignment: .top)
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func startUpgrade() {
@@ -478,14 +510,7 @@ struct DeviceOtaUpgradeDetailView: View {
     }
 
     private static func formatFileSize(_ bytes: Int) -> String {
-        let mb = Double(bytes) / 1024 / 1024
-        if mb >= 100 {
-            return String(format: "%.0fM", mb)
-        }
-        if mb >= 10 {
-            return String(format: "%.0fM", mb)
-        }
-        return String(format: "%.1fM", mb)
+        String(format: "%.1fM", Double(bytes) / 1024 / 1024)
     }
 }
 

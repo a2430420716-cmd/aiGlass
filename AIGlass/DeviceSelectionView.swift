@@ -105,8 +105,8 @@ struct DeviceSelectionView: View {
                     .foregroundStyle(AppTheme.primaryText)
 
                 if !model.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(model.glassDeviceModel == .unknown ? model.modelName : model.glassDeviceModel.rawValue)
-                        .font(AppTheme.notoSansSC(size: 14, weight: .semibold))
+                    Text(deviceModelName(for: model))
+                        .font(AppTheme.notoSansSC(size: 16, weight: .bold))
                         .foregroundStyle(AppTheme.primaryText)
                 }
             }
@@ -119,11 +119,20 @@ struct DeviceSelectionView: View {
         .shadow(color: AppTheme.cardShadow, radius: 10, y: 4)
     }
 
-    /// 品牌名来自接口；已知型号仅在展示层映射产品名，配对仍使用接口型号。
+    /// 产品名来自接口；已识别型号使用完整展示名，接口请求仍保留原始 modelName。
     private func deviceSeriesName(for model: DeviceModelItem) -> String {
         let eqName = model.eqName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !eqName.isEmpty else { return L10n.t("AI 眼镜", "AI Glasses") }
         return "\(eqName) AI Glasses"
+    }
+
+    private func deviceModelName(for model: DeviceModelItem) -> String {
+        switch model.glassDeviceModel {
+        case .luminaL1, .astraA1:
+            return model.glassDeviceModel.rawValue
+        case .unknown:
+            return model.modelName
+        }
     }
 
     private func loadModels() async {

@@ -355,6 +355,7 @@ struct AccountManagementView: View {
 
 private struct AccountSignOutConfirmView: View {
     @Environment(\.dismiss) private var dismiss
+    private let warningColor = Color(red: 1, green: 0, blue: 0)
     let isSigningOut: Bool
     let onConfirm: () -> Void
 
@@ -365,16 +366,18 @@ private struct AccountSignOutConfirmView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 32) {
                     HStack(alignment: .top, spacing: 14) {
-                        Image(systemName: "exclamationmark.circle")
-                            .font(.system(size: 24))
-                            .foregroundStyle(Color.red)
+                        Image("android_account_signout_warning")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 32, height: 32)
 
                         Text(L10n.t(
                             "账号一经注销，将无法恢复，请认真阅读以下说明",
                             "Account deletion is irreversible. Please read the following carefully."
                         ))
-                        .font(AppTheme.notoSansSC(size: 17, weight: .medium))
-                        .foregroundStyle(Color.red)
+                        .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                        .foregroundStyle(warningColor)
+                        .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Text(L10n.t(
@@ -385,8 +388,8 @@ private struct AccountSignOutConfirmView: View {
                     .foregroundStyle(AppTheme.primaryText)
                     .lineSpacing(7)
                 }
-                .padding(.horizontal, 28)
-                .padding(.top, 52)
+                .padding(.horizontal, 20)
+                .padding(.top, 32)
             }
 
             Button(action: onConfirm) {
@@ -395,18 +398,18 @@ private struct AccountSignOutConfirmView: View {
                         ProgressView().tint(.white)
                     } else {
                         Text(L10n.t("确认注销", "Confirm Deletion"))
-                            .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                            .font(AppTheme.notoSansSC(size: 18, weight: .medium))
                             .foregroundStyle(.white)
                     }
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 52)
-                .background(Color.red)
+                .background(warningColor)
                 .clipShape(Capsule())
             }
             .disabled(isSigningOut)
-            .padding(.horizontal, 28)
-            .padding(.bottom, 24)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 120)
         }
         .background(AppTheme.background.ignoresSafeArea())
         .navigationBarHidden(true)
@@ -420,9 +423,10 @@ private struct AccountSignOutConfirmView: View {
 
             HStack {
                 Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(AppTheme.primaryText)
+                    Image("android_settings_back")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 21, height: 21)
                         .frame(width: 44, height: 44, alignment: .leading)
                 }
                 Spacer()

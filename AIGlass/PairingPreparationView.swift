@@ -94,6 +94,7 @@ struct PairingPreparationView: View {
             if hasPrepareHTML && !webLoadFailed {
                 HTMLWebView(
                     html: prepareHTML,
+                    textStyle: .pairingInstructions,
                     onLoadResult: { success in
                         if !success {
                             webLoadFailed = true
@@ -236,8 +237,8 @@ struct PairingPreparationView: View {
                 .shadow(color: AppTheme.cardShadow, radius: 8, y: 2)
 
             Text(item.type)
-                .font(AppTheme.notoSansSC(size: 15, weight: .regular))
-                .foregroundStyle(Color.black)
+                .font(AppTheme.notoSansSC(size: 16, weight: .regular))
+                .foregroundStyle(AppTheme.primaryText)
                 .lineSpacing(4)
                 .fixedSize(horizontal: false, vertical: true)
         }

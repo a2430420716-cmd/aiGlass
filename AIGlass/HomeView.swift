@@ -818,7 +818,7 @@ struct HomeView: View {
                 Image("android_home_volume")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 20, height: 20)
+                    .frame(width: 28, height: 28)
 
                 VolumeSlider(
                     value: Binding(

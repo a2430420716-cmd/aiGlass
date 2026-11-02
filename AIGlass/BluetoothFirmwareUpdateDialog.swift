@@ -7,6 +7,7 @@ struct BluetoothFirmwareUpdateDialog: View {
     var showsUpgradeButton: Bool = true
     let onCancel: () -> Void
     let onUpgrade: () -> Void
+    @State private var packageSizeText: String?
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -21,11 +22,11 @@ struct BluetoothFirmwareUpdateDialog: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 24)
 
-                Text(displayVersion(prompt.serverInfo.version))
+                Text(versionLine)
                     .font(AppTheme.notoSansSC(size: 14, weight: .regular))
-                    .foregroundStyle(AppTheme.secondaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 10)
+                    .foregroundStyle(AppTheme.primaryText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
 
                 Text(L10n.t("欢迎使用MOCO AI Glasses，为了提升体验，我们推荐升级至此版本。", "Welcome to MOCO AI Glasses. We recommend updating to this version for a better experience."))
                     .font(AppTheme.notoSansSC(size: 14, weight: .regular))
@@ -55,6 +56,19 @@ struct BluetoothFirmwareUpdateDialog: View {
             .padding(.bottom, 12)
         }
         .transition(.opacity)
+        .task(id: prompt.serverInfo.downloadURL) {
+            packageSizeText = nil
+            guard let url = URL(string: prompt.serverInfo.downloadURL),
+                  let bytes = await FirmwareDownloadClient.fetchContentLength(url: url),
+                  !Task.isCancelled else { return }
+            packageSizeText = String(format: "%.1fM", Double(bytes) / 1024 / 1024)
+        }
+    }
+
+    private var versionLine: String {
+        let version = displayVersion(prompt.serverInfo.version)
+        guard let packageSizeText else { return version }
+        return "\(version) | \(packageSizeText)"
     }
 
     private var actionButtons: some View {

@@ -101,7 +101,7 @@ struct TranslationRecordListView: View {
                         Image("android_album_edit")
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 24, height: 24)
+                            .frame(width: 28, height: 28)
                             .frame(width: 44, height: 44)
                     }
                     .buttonStyle(.plain)

@@ -97,7 +97,7 @@ struct ConversationTranslationRecordListView: View {
                         Image("android_album_edit")
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 24, height: 24)
+                            .frame(width: 28, height: 28)
                             .frame(width: 44, height: 44)
                     }
                     .buttonStyle(.plain)
@@ -148,27 +148,21 @@ struct ConversationTranslationRecordListView: View {
 
                 VStack(alignment: .leading, spacing: 9) {
                     HStack {
-                        Text(L10n.t("对话记录", "Conversation ") + Self.titleDateFormatter.string(from: record.updatedAt))
+                        Text(selectionMode
+                             ? "\(TranslationLanguage.fromDisplayName(record.glassesLanguage).displayName) ⇄ \(TranslationLanguage.fromDisplayName(record.phoneLanguage).displayName)"
+                             : title(for: record))
                             .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                             .foregroundStyle(AppTheme.primaryText)
-                            .lineLimit(1)
+                            .lineLimit(selectionMode ? nil : 1)
                             .minimumScaleFactor(0.8)
                         Spacer()
-                        if !selectionMode {
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(AppTheme.secondaryText)
-                        }
                     }
-                    Text("\(TranslationLanguage.fromDisplayName(record.glassesLanguage).displayName) ⇄ \(TranslationLanguage.fromDisplayName(record.phoneLanguage).displayName)")
-                        .font(AppTheme.notoSansSC(size: 12, weight: .regular))
-                        .foregroundStyle(AppTheme.secondaryText)
-                    Text(previewText(for: record))
+                    Text(selectionMode ? previewText(for: record) : listPreviewText(for: record))
                         .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                         .foregroundStyle(AppTheme.secondaryText)
-                        .lineLimit(2)
-                    Text(Self.dateFormatter.string(from: record.updatedAt))
-                        .font(.system(size: 11))
+                        .lineLimit(selectionMode ? 2 : 1)
+                    Text(selectionMode ? Self.dateFormatter.string(from: record.updatedAt) : metaText(for: record))
+                        .font(selectionMode ? .system(size: 11) : AppTheme.notoSansSC(size: 12, weight: .regular))
                         .foregroundStyle(AppTheme.secondaryText)
                 }
             }
@@ -177,6 +171,28 @@ struct ConversationTranslationRecordListView: View {
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
+    }
+
+    private func title(for record: ConversationTranslationRecord) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMddHHmmss"
+        return L10n.t("对话翻译记录", "Conversation Record ") + formatter.string(from: record.updatedAt)
+    }
+
+    private func listPreviewText(for record: ConversationTranslationRecord) -> String {
+        if let first = record.messages.first {
+            let text = first.sourceText.isEmpty ? first.translatedText : first.sourceText
+            if !text.isEmpty { return text.replacingOccurrences(of: "\n", with: " ") }
+        }
+        return L10n.t("\(record.messages.count) 条对话", "\(record.messages.count) messages")
+    }
+
+    private func metaText(for record: ConversationTranslationRecord) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy/MM/dd HH:mm"
+        let languages = "\(TranslationLanguage.fromDisplayName(record.glassesLanguage).displayName)-\(TranslationLanguage.fromDisplayName(record.phoneLanguage).displayName)"
+        return L10n.t("语言：", "Languages: ") + languages + "  " + formatter.string(from: record.updatedAt)
     }
 
     private func previewText(for record: ConversationTranslationRecord) -> String {
@@ -208,13 +224,6 @@ struct ConversationTranslationRecordListView: View {
             selectedIds.insert(id)
         }
     }
-
-    private static let titleDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyyMMddHHmm"
-        return formatter
-    }()
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
