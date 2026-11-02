@@ -21,7 +21,7 @@ enum Gen1CommandAdapter {
                   payload[5] == 1, payload[6] == 0 else { return nil }
             let commands: [UInt8: UInt8] = [1: 0x63, 2: 0x64, 3: 0x36, 4: 0x45, 5: 0x14, 6: 0x15, 7: 0x05]
             return commands[payload[7]].map { Command(code: $0) }
-        case "hasnewfile": return Command(code: 0x33)
+        case "hasnewfile": return Command(code: Gen1Commands.fileList, payload: Gen1Payloads.fileListQuery())
         case "getdevstat": return Command(code: 0x72)
         case "takephoto0": return Command(code: 0x60)
         case "startvideo": return Command(code: 0x61)

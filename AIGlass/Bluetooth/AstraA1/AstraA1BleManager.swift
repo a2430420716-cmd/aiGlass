@@ -205,6 +205,14 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var initialDeviceInfoQueryGeneration = 0
     private var isInitialDeviceInfoQueryInProgress = false
     private var routineRefreshWorkItem: DispatchWorkItem?
+    private var gen1BackgroundQueryGate = Gen1BackgroundQueryGate()
+    private var deferredRoutineRetryWorkItem: DispatchWorkItem?
+    private var deferredRoutineRetryAt: TimeInterval?
+    private var needsFreshGen1FileList = false
+    private var isHomeVideoStartInProgress = false
+    private var lastGen1ControlReceivedAt: TimeInterval?
+    private var lastGen1CommandSent: (command: UInt8, uptime: TimeInterval)?
+    private var gen1ControlDiagnosticBudget = BLERawDiagnosticBudget(limit: 256)
     /// 最近一次有效（非 0）电量读数：重连补刷期间先顶上，避免首页闪 0% / 「已连接」。
     private var lastKnownBatteryPercent: Int?
     private var lastKnownBatteryPeripheralID: UUID?
@@ -248,6 +256,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         let packetID: UUID
         let requiresAvailableDevice: Bool
         let redactPayload: Bool
+        let gen1Command: UInt8?
     }
     private var pendingBLEWrites: [PendingBLEWrite] = []
     private var activeBLEWritePacketID: UUID?
@@ -552,6 +561,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         errorDomain=\(error?.domain ?? "none") errorCode=\(error.map { String($0.code) } ?? "none") errorDescription=\((error?.localizedDescription ?? "none").debugDescription)
         callbackHandlerAppLifecycleRaw=\(callbackAppState) callbackGATTState=\(callbackGATTState) callbackReadyIsPreCleanup=true
         userInitiated=\(userInitiatedDisconnect) autoReconnect=\(autoReconnectEnabled) otaFlowBusy=\(isFirmwareUpgradeFlowBusy)
+        runtime=\(deviceRuntimeStatus.name) videoRecording=\(isVideoRecording) videoStopping=\(isVideoStopping) pendingWriteFragments=\(pendingBLEWrites.count)
+        lastGen1Command=\(lastGen1CommandSent.map { String(format: "0x%02X", $0.command) } ?? "none") lastGen1CommandAgeSeconds=\(lastGen1CommandSent.map { String(format: "%.3f", callbackUptime - $0.uptime) } ?? "none") lastGen1ControlAgeSeconds=\(lastGen1ControlReceivedAt.map { String(format: "%.3f", callbackUptime - $0) } ?? "none")
         """
         emitDisconnectDiagnosticSnapshot(
             central: central, peripheral: peripheral, incidentID: incidentID,
@@ -734,6 +745,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
     }
 
+    var isBoundConnectionSearchInProgress: Bool {
+        boundReconnectScanTargetID != nil || isManualReconnectScan
+    }
+
     /// 用户点击硬重连后，旧 central 尚未释放或新 central 尚未创建。
     private var isManualHardReconnectCentralTransitionInProgress: Bool {
         manualHardReconnectOldCentral != nil
@@ -777,6 +792,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 首页进入：系统蓝牙已连接才接管 GATT；否则只监听系统连接事件。
     func ensureConnected(reason: String = "") {
+        guard !isPairingSessionActive else {
+            connectLog("background connection deferred: pairing owns BLE", detail: "reason=\(reason)")
+            return
+        }
         if stopBoundReconnectIfExhausted() { return }
         guard gen1OTAPeripheralID == nil else { return }
         if !isReady, reason == "gen1-ota-version-verification" || isRestoringGen1OTAConnection {
@@ -831,6 +850,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 首页显示时刷新电量：已连接则查询，否则恢复已绑定目标的 BLE 连接。
     func refreshBatteryLevel() {
+        guard !isPairingSessionActive else { return }
         if stopBoundReconnectIfExhausted() { return }
         guard gen1OTAPeripheralID == nil else { return }
         if isRestoringGen1OTAConnection, !isReady {
@@ -1739,17 +1759,20 @@ final class AstraA1BleManager: NSObject, ObservableObject {
               let id = savedPeripheralID() else { return false }
         guard boundBLEReconnectPolicy.canRetry(now: ProcessInfo.processInfo.systemUptime) else { return false }
         if boundReconnectScanTargetID == id { return true }
-        if let peripheral = centralManager.retrievePeripherals(withIdentifiers: [id]).first
-            ?? reconnectPeripheral.flatMap({ $0.identifier == id ? $0 : nil }) {
+        let cached = centralManager.retrievePeripherals(withIdentifiers: [id]).first
+            ?? reconnectPeripheral.flatMap({ $0.identifier == id ? $0 : nil })
+        if let peripheral = cached {
             // Wait for release callbacks before issuing a new connection request.
             if peripheral.state == .disconnecting {
                 startSystemReconnectMonitor()
                 return true
             }
-            connectLog("reconnect saved BLE without system connection", detail: "source=\(source) id=\(id.uuidString)")
-            standingConnectAllowed = true
-            armSystemAutoConnect(peripheral, force: true)
-            return true
+            if !boundBLEReconnectPolicy.requiresRediscovery {
+                connectLog("reconnect saved BLE without system connection", detail: "source=\(source) id=\(id.uuidString)")
+                standingConnectAllowed = true
+                armSystemAutoConnect(peripheral, force: true)
+                return true
+            }
         }
         guard !centralManager.isScanning,
               boundBLEReconnectPolicy.claimScan(now: ProcessInfo.processInfo.systemUptime) else { return false }
@@ -1966,7 +1989,50 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
     }
 
+    private var shouldDeferGen1BackgroundQueries: Bool {
+        deviceGeneration == .gen1G5K61 && (
+            isHomeVideoStartInProgress || isVideoRecording || isVideoStopping
+                || homeVideoCapture.startedAt != nil || isAIRecording
+                || (!isDeviceRuntimeIdle && deviceRuntimeStatus != .photoTaking) || gen1APImportIdentity != nil
+                || connectedPeripheral.map { gen1HotspotCleanup.isPending($0.identifier) } == true
+        )
+    }
+
+    private func scheduleDeferredRoutineRetry(after seconds: TimeInterval) {
+        let deadline = ProcessInfo.processInfo.systemUptime + max(0.1, seconds)
+        if let existing = deferredRoutineRetryAt, existing <= deadline { return }
+        deferredRoutineRetryWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.deferredRoutineRetryAt = nil
+            self.deferredRoutineRetryWorkItem = nil
+            self.runDeferredRoutineQueriesIfNeeded()
+        }
+        deferredRoutineRetryAt = deadline
+        deferredRoutineRetryWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.1, seconds), execute: work)
+    }
+
+    private func deferGen1QueryIfNeeded(_ query: Gen1BackgroundQueryGate.Query) -> Bool {
+        guard deviceGeneration == .gen1G5K61 else { return false }
+        // Photo completion can depend on the fresh file list when firmware omits
+        // its idle notification. Do not suppress that existing completion path.
+        let blocked = shouldDeferGen1BackgroundQueries || (query == .battery && isTakingPhoto)
+        let delay = gen1BackgroundQueryGate.delay(
+            for: query, at: ProcessInfo.processInfo.systemUptime,
+            freshContent: query == .fileList && needsFreshGen1FileList
+        )
+        guard blocked || delay > 0 else { return false }
+        if query == .battery { deferredBatteryQuery = true }
+        else { deferredPendingImportQuery = true }
+        DebugLogStore.logBLEEvent("Gen1 background query deferred", detail: "query=\(query) busy=\(blocked) delay=\(delay) runtime=\(deviceRuntimeStatus.name) recording=\(isVideoRecording) pendingWrites=\(pendingBLEWrites.count)")
+        if !blocked { scheduleDeferredRoutineRetry(after: delay) }
+        return true
+    }
+
     func queryBatteryOnly() {
+        guard isReady else { return }
+        if deferGen1QueryIfNeeded(.battery) { return }
         if isFirmwareUpgradeFlowBusy {
             deferredBatteryQuery = true
             print("\(logTag) queryBatteryOnly deferred: firmware upgrade busy")
@@ -2105,7 +2171,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func runDeferredRoutineQueriesIfNeeded() {
-        guard !isFirmwareUpgradeFlowBusy else { return }
+        guard isReady, !isFirmwareUpgradeFlowBusy, !shouldDeferGen1BackgroundQueries else { return }
         runDeferredBatteryQueryIfNeeded()
         guard deferredPendingImportQuery else { return }
         deferredPendingImportQuery = false
@@ -2114,21 +2180,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 查询眼镜端待导入媒体文件数量。
     func queryPendingImportFiles() {
-        if deviceGeneration == .gen1G5K61,
-           isVideoRecording || isVideoStopping || deviceRuntimeStatus == .videoRecording {
-            // Gen1 0x33 switches the device to network mode and can interrupt recording.
-            deferredPendingImportQuery = true
-            logVideoCapture("defer-file-query", detail: "reason=recording command=0x33")
-            return
-        }
-        if deviceGeneration == .gen1G5K61, gen1APImportIdentity != nil {
-            deferredPendingImportQuery = true
-            return
-        }
         guard isReady else {
             print("\(logTag) queryPendingImportFiles skipped: not ready")
             return
         }
+        if deferGen1QueryIfNeeded(.fileList) { return }
         if isFirmwareUpgradeFlowBusy {
             deferredPendingImportQuery = true
             print("\(logTag) queryPendingImportFiles deferred: firmware upgrade busy")
@@ -3325,6 +3381,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             mediaActionAlertMessage = lowBatteryMediaMessage
             return false
         }
+        isHomeVideoStartInProgress = true
+        defer { isHomeVideoStartInProgress = false }
         return sendCommand(AstraA1BleProtocol.buildStartVideoCommand())
     }
 
@@ -3390,7 +3448,14 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
         homePhotoNewFileQueryWorkItem?.cancel()
         homePhotoNewFileQueryWorkItem = nil
+        if deviceGeneration == .gen1G5K61 {
+            routineRefreshWorkItem?.cancel()
+            routineRefreshWorkItem = nil
+            deferredBatteryQuery = true
+            deferredPendingImportQuery = true
+        }
         guard startVideo() else {
+            scheduleDeferredRoutineRetry(after: 1)
             mediaActionAlertMessage = L10n.t("发送开始录像命令失败，请重试", "Failed to start video. Try again.")
             return
         }
@@ -3479,6 +3544,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         handleDeviceRuntimeStatusTransition(from: previous, to: status,
                                             allowsPhotoCompletion: receivedFromDevice && allowsPhotoCompletion,
                                             allowsVideoCompletion: receivedFromDevice && allowsVideoCompletion)
+        if receivedFromDevice, deviceGeneration == .gen1G5K61, status == .standby,
+           deferredBatteryQuery || deferredPendingImportQuery {
+            scheduleDeferredRoutineRetry(after: 0.6)
+        }
     }
 
     /// 每次状态变化都看上次状态：拍照/录像完成只认这里的跳变。
@@ -3705,7 +3774,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func logVideoCapture(_ event: String, detail: String = "") {
         DebugLogStore.logBLEEvent("Video capture \(event)", detail:
-            "generation=\(deviceGeneration) runtime=\(deviceRuntimeStatus.name) recording=\(isVideoRecording) stopping=\(isVideoStopping) completed=\(videoCompleted) \(detail)")
+            "target=\(deviceBluetoothIdentifier ?? "none") generation=\(deviceGeneration) gattState=\(connectStateDescription(connectionState)) peripheralState=\(connectedPeripheral.map { peripheralStateDescription($0.state) } ?? "none") runtime=\(deviceRuntimeStatus.name) recording=\(isVideoRecording) stopping=\(isVideoStopping) completed=\(videoCompleted) \(detail)")
     }
 
     private func forceQueryDeviceStatus(reason: String) {
@@ -4558,6 +4627,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// Repeated view refreshes keep the current target's three-attempt budget.
     @discardableResult
     func selectBoundHomeDevice(peripheralID: UUID, reason: String) -> Bool {
+        guard !isPairingSessionActive, !isUserInitiatedPairingConnect else { return false }
         if savedPeripheralID() == peripheralID {
             homeSelectionTargetID = peripheralID
             ensureConnected(reason: reason)
@@ -4590,6 +4660,41 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if !isReady, !isConnectionInProgress {
             _ = reconnectSavedPeripheralWithoutSystemConnection(source: reason)
         }
+        return true
+    }
+
+    /// Explicit retry reopens the budget; page appearances and polling never do.
+    @discardableResult
+    func retryBoundHomeDevice(peripheralID: UUID, reason: String) -> Bool {
+        guard !isPairingSessionActive, !isUserInitiatedPairingConnect,
+              gen1OTAPeripheralID == nil, !isFirmwareUpgradeFlowBusy,
+              !isManualHardReconnectCentralTransitionInProgress else { return false }
+        if savedPeripheralID() != peripheralID {
+            var retry = BoundBLEReconnectPolicy()
+            retry.beginUserRetry()
+            homeSelectionRetryPolicies[peripheralID] = retry
+            return selectBoundHomeDevice(peripheralID: peripheralID, reason: reason)
+        }
+        guard !isReady, !isConnectionInProgress else { return true }
+        guard boundReconnectScanTargetID != peripheralID, !isManualReconnectScan,
+              !isManualHardReconnectAttemptInProgress else { return true }
+        if case .failed = connectionState,
+           manualHardReconnectPeripheralID == peripheralID,
+           freshlyRetrievedSystemConnectedPeripheral(matching: peripheralID) != nil {
+            return hardReconnectAfterUserTap(peripheralID: peripheralID)
+        }
+        boundBLEReconnectPolicy.beginUserRetry()
+        boundBLEAttemptFailureCounted = false
+        homeSelectionRetryPolicies[peripheralID] = boundBLEReconnectPolicy
+        cancelManualHardReconnectState(reason: "explicit home retry")
+        homeSelectionTargetID = peripheralID
+        userInitiatedDisconnect = false
+        autoReconnectEnabled = true
+        standingConnectAllowed = true
+        lastManualReconnectFailure = nil
+        connectLog("explicit home BLE retry", detail: "source=\(reason) id=\(peripheralID.uuidString) resetAutomaticBudget=true fallback=exact_UUID_scan")
+        ensureConnected(reason: reason)
+        if !isReady { startSystemReconnectMonitor() }
         return true
     }
 
@@ -4742,7 +4847,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         return writeProtocolPacket(data, requiresAvailableDevice: requiresAvailableDevice)
     }
 
-    private func writeProtocolPacket(_ data: Data, requiresAvailableDevice: Bool, redactPayload: Bool = false) -> Bool {
+    private func writeProtocolPacket(_ data: Data, requiresAvailableDevice: Bool, redactPayload: Bool = false,
+                                     gen1Command: UInt8? = nil) -> Bool {
         guard case .ready = connectionState,
               let peripheral = connectedPeripheral,
               let characteristic = writeCharacteristic else {
@@ -4773,13 +4879,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 DebugLogStore.logBLEEvent("Gen1 Wi-Fi packet queued", detail: "packetID=\(packetID) fragments=\(chunks.count) fragmentSizes=\(chunks.map { $0.count }) frameBytes=\(data.count) payload=<redacted>")
             }
             pendingBLEWrites.append(contentsOf: chunks.map {
-                PendingBLEWrite(data: $0, packetID: packetID, requiresAvailableDevice: requiresAvailableDevice, redactPayload: redactPayload)
+                PendingBLEWrite(data: $0, packetID: packetID, requiresAvailableDevice: requiresAvailableDevice,
+                                redactPayload: redactPayload, gen1Command: gen1Command)
             })
             flushPendingBLEWrites()
             return true
         }
 
         peripheral.writeValue(data, for: characteristic, type: .withResponse)
+        if let gen1Command { recordGen1CommandSubmission(gen1Command) }
         print("\(logTag) sendCommand \(data.count) bytes to \(characteristic.uuid) withResponse")
         if redactPayload {
             DebugLogStore.logBLEEvent("Gen1 Wi-Fi credentials sent", detail: "bytes=\(data.count) payload=<redacted>")
@@ -4806,6 +4914,17 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 return
             }
             let write = pendingBLEWrites[0]
+            if activeBLEWritePacketID != write.packetID,
+               let command = write.gen1Command,
+               command == Gen1Commands.battery || command == Gen1Commands.fileList,
+               !isFirmwareUpgradeFlowBusy, gen1FirmwareUpgradeIdentity == nil,
+               shouldDeferGen1BackgroundQueries || (command == Gen1Commands.battery && isTakingPhoto) {
+                pendingBLEWrites.removeAll { $0.packetID == write.packetID }
+                if command == Gen1Commands.battery { deferredBatteryQuery = true }
+                else { deferredPendingImportQuery = true }
+                DebugLogStore.logBLEEvent("Gen1 queued query deferred", detail: "command=\(String(format: "0x%02X", command)) reason=device_busy")
+                continue
+            }
             if write.requiresAvailableDevice,
                activeBLEWritePacketID != write.packetID,
                !ensureDeviceAvailable(for: "queued-device-command") {
@@ -4817,6 +4936,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             activeBLEWritePacketID = write.packetID
             pendingBLEWrites.removeFirst()
             peripheral.writeValue(write.data, for: characteristic, type: .withoutResponse)
+            if let command = write.gen1Command { recordGen1CommandSubmission(command) }
             print("\(logTag) sendCommand \(write.data.count) bytes to \(characteristic.uuid)")
             if write.redactPayload {
                 DebugLogStore.logBLEEvent("Gen1 Wi-Fi credential fragment sent", detail: "packetID=\(write.packetID) bytes=\(write.data.count) remainingPacketFragments=\(pendingBLEWrites.filter { $0.packetID == write.packetID }.count) payload=<redacted>; submitted_to_CoreBluetooth_not_device_ack")
@@ -4838,6 +4958,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     // MARK: - First-generation G5K61
+
+    private func recordGen1CommandSubmission(_ command: UInt8) {
+        lastGen1CommandSent = (command, ProcessInfo.processInfo.systemUptime)
+    }
 
     /// Claim only the current account's Gen1 main-firmware flow. AP import and
     /// firmware provisioning must never compete for the glasses' network state.
@@ -4941,6 +5065,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     @discardableResult
     private func sendGen1Command(command: UInt8, payload: Data, hotspotCleanup: Bool) -> Bool {
+        if command == Gen1Commands.fileList, deferGen1QueryIfNeeded(.fileList) { return false }
+        // Explicit OTA battery reads require a new reply, even when a recent
+        // background poll exists. Rate-limit only queryBatteryOnly(), not 0x05 itself.
         let cleanupPending = connectedPeripheral.map { gen1HotspotCleanup.isPending($0.identifier) } ?? false
         // Shared Gen2 cleanup paths must not enqueue an unowned/duplicate Gen1
         // shutdown after the user switches devices. Only the coordinator sends 0x38.
@@ -5004,7 +5131,18 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             }
         }
         let sent = writeProtocolPacket(packet, requiresAvailableDevice: requiresAvailableDevice,
-                                       redactPayload: command == Gen1Commands.wifiProvision)
+                                       redactPayload: command == Gen1Commands.wifiProvision,
+                                       gen1Command: command)
+        if sent, command == Gen1Commands.battery || command == Gen1Commands.fileList {
+            let query: Gen1BackgroundQueryGate.Query = command == Gen1Commands.battery ? .battery : .fileList
+            gen1BackgroundQueryGate.sent(query, at: ProcessInfo.processInfo.systemUptime)
+            if command == Gen1Commands.fileList {
+                needsFreshGen1FileList = false
+                deferredPendingImportQuery = false
+            } else {
+                deferredBatteryQuery = false
+            }
+        }
         if command == Gen1Commands.translateRecord, !sent { gen1TranslationRouter.onStartFailed() }
         if isRecordingCommand {
             if !sent { finishGen1Recording() }
@@ -5077,6 +5215,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func resetGen1Session() {
+        gen1BackgroundQueryGate.reset()
+        needsFreshGen1FileList = false
+        lastGen1ControlReceivedAt = nil
+        lastGen1CommandSent = nil
+        gen1ControlDiagnosticBudget.reset()
         gen1HotspotCleanup.connectionInterrupted()
         gen1MediaListAccumulator.begin()
         gen1ControlDecoder.reset()
@@ -5096,8 +5239,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         finishGen1Recording()
     }
 
-    private func handleGen1ControlData(_ data: Data, capturedAt: Date) {
+    private func handleGen1ControlData(_ data: Data, capturedAt: Date, receivedUptime: TimeInterval) {
+        lastGen1ControlReceivedAt = receivedUptime
         let decoded = gen1ControlDecoder.appendWithDiagnostics(data)
+        if gen1ControlDiagnosticBudget.record() == .record {
+            DebugLogStore.logBLEEvent("Gen1 control receive", detail: "target=\(connectedPeripheral?.identifier.uuidString ?? "nil") callbackDelaySeconds=\(ProcessInfo.processInfo.systemUptime - receivedUptime) \(decoded.diagnosticSummary); payload=omitted", capturedAt: capturedAt)
+        }
         if gen1FirmwareUpgradeIdentity != nil {
             DebugLogStore.logBLEEvent("Gen1 firmware control decode", detail: "target=\(connectedPeripheral?.identifier.uuidString ?? "nil") \(decoded.diagnosticSummary); payload=<redacted>", capturedAt: capturedAt)
         }
@@ -5146,6 +5293,21 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             }
             gen1ControlSubject.send(frame)
             let payload = frame.payload
+            // Only exact, bounded control frames are safe to dump. Hotspot,
+            // Wi-Fi credentials, audio and image payloads are never included.
+            if [Gen1Commands.takePhoto, Gen1Commands.startVideo, Gen1Commands.stopVideo,
+                Gen1Commands.deviceStatusQuery, Gen1Commands.deviceStatusChanged,
+                Gen1Commands.newFileCount].contains(frame.command) {
+                let hex = frame.raw.prefix(32).map { String(format: "%02X", $0) }.joined(separator: " ")
+                DebugLogStore.logBLEEvent("Gen1 media control frame", detail: "command=\(String(format: "0x%02X", frame.command)) bytes=\(frame.raw.count) hex=\(hex) omittedBytes=\(max(0, frame.raw.count - 32))", capturedAt: capturedAt)
+            }
+            if frame.command == Gen1Commands.battery || frame.command == Gen1Commands.fileList {
+                let query: Gen1BackgroundQueryGate.Query = frame.command == Gen1Commands.battery ? .battery : .fileList
+                gen1BackgroundQueryGate.received(query, at: ProcessInfo.processInfo.systemUptime)
+                if deferredBatteryQuery || deferredPendingImportQuery {
+                    scheduleDeferredRoutineRetry(after: 0.6)
+                }
+            }
             if Gen1APImportProtocol.ownsReply(command: frame.command,
                                               sameTarget: cleanupPending || gen1HotspotReplyTarget == connectedPeripheral?.identifier,
                                               apActive: gen1APImportIdentity != nil,
@@ -5201,6 +5363,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                     applyGen1DeviceInfo(key: "stor0", payload: Data(value.utf8))
                 }
             case Gen1Commands.newFileCount:
+                needsFreshGen1FileList = true
                 queryPendingImportFiles()
             case Gen1Commands.fileList:
                 let count = gen1MediaListAccumulator.append(payload)
@@ -5504,6 +5667,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         cancelInitialDeviceInfoQuery(reason: "resetConnectionHandles")
         routineRefreshWorkItem?.cancel()
         routineRefreshWorkItem = nil
+        deferredRoutineRetryWorkItem?.cancel()
+        deferredRoutineRetryWorkItem = nil
+        deferredRoutineRetryAt = nil
         stopBatteryPolling()
         standingConnectPeripheralID = nil
         hasStartedConnect = false
@@ -6473,10 +6639,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 // Native connect otherwise waits forever outside BLE range.
                 if self.freshlyRetrievedSystemConnectedPeripheral(matching: peripheral.identifier) == nil {
                     self.recordBoundBLEAttemptFailure()
+                    self.systemTransportConnectedPeripheralIDs.remove(peripheral.identifier)
                     self.standingConnectPeripheralID = nil
                     self.resetConnectionHandles()
                     self.updateState(.failed(L10n.t("蓝牙连接超时", "Bluetooth connection timed out")))
-                    self.connectLog("bound BLE connection attempt timed out", detail: "id=\(peripheral.identifier.uuidString) failedAttempts=\(self.boundBLEReconnectPolicy.failedAttempts)")
+                    self.connectLog("bound BLE connection attempt timed out", detail: "id=\(peripheral.identifier.uuidString) failedAttempts=\(self.boundBLEReconnectPolicy.failedAttempts) nextRecovery=exact_UUID_scan")
                     if self.stopBoundReconnectIfExhausted() { return }
                     self.centralManager.cancelPeripheralConnection(peripheral)
                     self.startSystemReconnectMonitor()
@@ -7615,6 +7782,13 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
                 }
                 return
             }
+            // Pairing has its own connection pipeline. System audio events and
+            // another glasses' callbacks must not reset or cancel that pipeline.
+            guard !isPairingSessionActive,
+                  savedPeripheralID() == peripheral.identifier else {
+                connectLog("system connection event ignored: target not owned", detail: "id=\(peripheral.identifier.uuidString) pairing=\(isPairingSessionActive)")
+                return
+            }
             switch event {
             case .peerConnected:
                 let wasSystemTransportKnown = systemTransportConnectedPeripheralIDs.contains(
@@ -7736,6 +7910,7 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
                 guard autoReconnectEnabled, !userInitiatedDisconnect,
                       savedPeripheralID() == targetID,
                       peripheral.identifier == targetID else { return }
+                boundBLEReconnectPolicy.didRediscoverTarget()
                 stopScan()
                 reconnectPeripheral = peripheral
                 standingConnectAllowed = true
@@ -7776,19 +7951,33 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
         }
     }
 
+    private func acceptsConnectionCallback(from peripheral: CBPeripheral, event: String) -> Bool {
+        let pairingTarget = userPairingTargetID
+            ?? (isProbingService ? connectedPeripheral?.identifier : nil)
+        let accepted = BLEConnectionTargetPolicy.acceptsCallback(
+            from: peripheral.identifier, pairingActive: isPairingSessionActive,
+            pairingTarget: pairingTarget,
+            boundTarget: homeSelectionTargetID ?? savedPeripheralID()
+        )
+        if !accepted {
+            connectLog("connection callback ignored: stale target", detail: "event=\(event) id=\(peripheral.identifier.uuidString) pairing=\(isPairingSessionActive) pairingTarget=\(pairingTarget?.uuidString ?? "none") saved=\(savedPeripheralID()?.uuidString ?? "none")")
+        }
+        return accepted
+    }
+
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
             guard central === centralManager else { return }
-            if let target = homeSelectionTargetID, target != peripheral.identifier {
-                central.cancelPeripheralConnection(peripheral)
-                return
-            }
             if isManualHardReconnectOldContext(central: central, peripheral: peripheral) {
                 connectLog(
                     "old central didConnect while releasing; cancel again",
                     detail: "id=\(peripheral.identifier.uuidString)",
                     direction: .received
                 )
+                central.cancelPeripheralConnection(peripheral)
+                return
+            }
+            guard acceptsConnectionCallback(from: peripheral, event: "didConnect") else {
                 central.cancelPeripheralConnection(peripheral)
                 return
             }
@@ -7872,7 +8061,6 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
     ) {
         Task { @MainActor in
             guard central === centralManager else { return }
-            if let target = homeSelectionTargetID, target != peripheral.identifier { return }
             if savedPeripheralID() == peripheral.identifier, peripheral.state == .disconnected {
                 boundBLEStopWaitingForRelease = false
             }
@@ -7883,6 +8071,7 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
             ) {
                 return
             }
+            guard acceptsConnectionCallback(from: peripheral, event: "didFailToConnect") else { return }
             if consumeAutomaticGATTRecoveryCancellation(for: peripheral, source: "didFailToConnect") {
                 return
             }
@@ -7960,7 +8149,6 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
         let callbackError = error as NSError?
         Task { @MainActor in
             guard central === centralManager else { return }
-            if let target = homeSelectionTargetID, target != peripheral.identifier { return }
             if savedPeripheralID() == peripheral.identifier, peripheral.state == .disconnected {
                 boundBLEStopWaitingForRelease = false
             }
@@ -7974,6 +8162,12 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
                 peripheral: peripheral,
                 source: "didDisconnect"
             ) {
+                return
+            }
+            guard acceptsConnectionCallback(from: peripheral, event: "didDisconnect") else { return }
+            if let ready = diagnosticReadyObservation, ready.id == peripheral.identifier,
+               ready.uptime > callbackUptime, peripheral.state == .connected, isReady {
+                connectLog("stale disconnect ignored: newer ready session", detail: "id=\(peripheral.identifier.uuidString) callbackUptime=\(callbackUptime) readyUptime=\(ready.uptime)")
                 return
             }
             systemTransportGracePeripheralIDs.remove(peripheral.identifier)
@@ -8345,6 +8539,10 @@ extension AstraA1BleManager: CBPeripheralDelegate {
                 let nsError = errorCopy.map { $0 as NSError }
                 DebugLogStore.logBLEEvent("Gen1 guide GATT callback", detail: "session=\(gen1GuideEventSessionID?.uuidString ?? "nil") source=\(peripheral.identifier) characteristic=\(uuid) currentPeripheral=\(connectedPeripheral === peripheral) currentCharacteristic=\(notifyCharacteristic === characteristic) bytes=\(dataCopy?.count ?? 0) valuePresent=\(dataCopy != nil) error=\(nsError.map { "\($0.domain)/\($0.code): \($0.localizedDescription)" } ?? "none"); payload_logged_after_control_frame_validation", capturedAt: capturedAt)
             }
+            if uuid == Self.gen1ControlUUID, errorCopy != nil || dataCopy == nil {
+                let nsError = errorCopy.map { $0 as NSError }
+                DebugLogStore.logBLEEvent("Gen1 control callback failed", detail: "target=\(peripheral.identifier) errorDomain=\(nsError?.domain ?? "none") errorCode=\(nsError?.code ?? 0) callbackDelaySeconds=\(ProcessInfo.processInfo.systemUptime - receivedUptime) valuePresent=\(dataCopy != nil); cached_payload_not_parsed", capturedAt: capturedAt)
+            }
             if uuid == Self.gen1ControlUUID, gen1APImportIdentity != nil {
                 let nsError = errorCopy.map { $0 as NSError }
                 DebugLogStore.logBLEEvent("Gen1 AP raw callback", detail: "source=\(peripheral.identifier) characteristic=\(uuid) currentPeripheral=\(connectedPeripheral === peripheral) currentCharacteristic=\(notifyCharacteristic === characteristic) bytes=\(dataCopy?.count ?? 0) error=\(nsError.map { "\($0.domain)/\($0.code)" } ?? "none") payload=<credentials-redacted>", capturedAt: capturedAt)
@@ -8381,7 +8579,7 @@ extension AstraA1BleManager: CBPeripheralDelegate {
                 }
                 guard errorCopy == nil, let data = dataCopy else { return }
                 if uuid == Self.gen1VoiceUUID { handleGen1VoiceData(data, receivedUptime: receivedUptime) }
-                else { handleGen1ControlData(data, capturedAt: capturedAt) }
+                else { handleGen1ControlData(data, capturedAt: capturedAt, receivedUptime: receivedUptime) }
                 return
             }
             if let errorCopy {

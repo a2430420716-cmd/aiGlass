@@ -12,6 +12,8 @@ enum PairingDestination: Hashable {
 final class PairingCoordinator: ObservableObject {
     @Published var path: [PairingDestination] = []
     @Published var showSearchingSheet = false
+    /// Recreate the navigation container after a completed bind, once its sheet is gone.
+    @Published private(set) var navigationResetID = UUID()
     @Published private(set) var pairingModel: GlassDeviceModel?
     @Published private(set) var selectedAPIModelName: String?
     @Published private(set) var selectedEqName: String?
@@ -41,6 +43,8 @@ final class PairingCoordinator: ObservableObject {
     private var deviceIdentityTimeout: DispatchWorkItem?
     private var pendingPairingFailureMessage: String?
     private var isUnpairRequestInProgress = false
+    private var isSearchingSheetPresented = false
+    private var pendingSuccessfulPairingReturn: Int?
 
     init() {
         astraA1BleManager.deviceCardPresenceProvider = { [weak self] in
@@ -301,8 +305,20 @@ final class PairingCoordinator: ObservableObject {
         restoreBoundDeviceConnection()
     }
 
+    func onSearchingSheetPresented() {
+        isSearchingSheetPresented = true
+        DebugLogStore.logConnect("pairing search sheet presented", detail: "pathDepth=\(path.count)")
+    }
+
     /// sheet 关闭时回调：连接成功则保留 BLE，否则停止扫描。
     func onSearchingSheetDismissed() {
+        isSearchingSheetPresented = false
+        DebugLogStore.logConnect("pairing search sheet dismissed", detail: "pathDepth=\(path.count) pendingSuccess=\(pendingSuccessfulPairingReturn != nil)")
+        if let token = pendingSuccessfulPairingReturn {
+            pendingSuccessfulPairingReturn = nil
+            finishSuccessfulPairingNavigation(attempt: token)
+            return
+        }
         // 用户点「配对」后的程序化关闭：BLE 流程继续，不能当成取消。
         if userConfirmedPairingDevice { return }
         // 等 sheet 完全退出再交给 HomeView 弹提示，避免 alert 被 sheet 遮住。
@@ -409,13 +425,23 @@ final class PairingCoordinator: ObservableObject {
     }
 
     func pop() {
-        guard !path.isEmpty else { return }
+        DebugLogStore.logConnect("pairing back tapped", detail: "pathDepth=\(path.count) sheetRequested=\(showSearchingSheet) sheetPresented=\(isSearchingSheetPresented)")
+        if path.isEmpty {
+            // UIKit can retain the completed pairing controller after its SwiftUI
+            // path was cleared. Recreate that stack; never disconnect the bound BLE.
+            cancelPairingAttempt()
+            showSearchingSheet = false
+            navigationResetID = UUID()
+            DebugLogStore.logConnect("pairing back repaired empty navigation path", detail: "ready=\(astraA1BleManager.isReady)")
+            return
+        }
         if userConfirmedPairingDevice || showSearchingSheet {
             cancelSearching()
         } else {
             cancelPairingAttempt()
         }
         DispatchQueue.main.async {
+            guard !self.path.isEmpty else { return }
             self.path.removeLast()
         }
     }
@@ -606,9 +632,7 @@ final class PairingCoordinator: ObservableObject {
 
             try? await Task.sleep(nanoseconds: 800_000_000)
             guard pairingAttempt.isCurrent(token) else { return }
-            userConfirmedPairingDevice = false
-            popToRoot()
-            checkClassicAudioConnectedAfterPairing()
+            returnHomeAfterSuccessfulPairing(attempt: token)
         } catch {
             guard pairingAttempt.isCurrent(token) else { return }
             cancelPairingAttempt()
@@ -628,6 +652,37 @@ final class PairingCoordinator: ObservableObject {
             pairingAlertMessage = bindStatusMessage
             objectWillChange.send()
         }
+    }
+
+    private func returnHomeAfterSuccessfulPairing(attempt token: Int) {
+        guard pairingAttempt.isCurrent(token) else { return }
+        // Popping while the search sheet is presented/dismissing can leave UIKit
+        // showing a destination whose SwiftUI path is already empty (iOS 26).
+        if showSearchingSheet || isSearchingSheetPresented {
+            pendingSuccessfulPairingReturn = token
+            DebugLogStore.logConnect("pairing success waiting for sheet dismissal", detail: "attempt=\(token) pathDepth=\(path.count)")
+            showSearchingSheet = false
+            return
+        }
+        finishSuccessfulPairingNavigation(attempt: token)
+    }
+
+    private func finishSuccessfulPairingNavigation(attempt token: Int) {
+        guard pairingAttempt.isCurrent(token) else { return }
+        if let serial = astraA1BleManager.deviceBluetoothIdentifier,
+           authSession?.homeDeviceCards.contains(where: {
+               !$0.isFindDevice && $0.serialNumber?.caseInsensitiveCompare(serial) == .orderedSame
+           }) == true {
+            authSession?.selectedHomeDeviceKey = serial
+        }
+        userConfirmedPairingDevice = false
+        popToRoot()
+        // A successful bind is a new home session. Rebuild its navigation stack
+        // so no old pairing controller survives with an empty path. BLE is owned
+        // by this coordinator and remains connected across the view replacement.
+        navigationResetID = UUID()
+        DebugLogStore.logConnect("pairing success returned home", detail: "attempt=\(token) pathDepth=\(path.count) ready=\(astraA1BleManager.isReady) navigationReset=\(navigationResetID)")
+        checkClassicAudioConnectedAfterPairing()
     }
 
     /// Match Android's 60-second device-info deadline after the user selects a device.
@@ -678,6 +733,7 @@ final class PairingCoordinator: ObservableObject {
     }
 
     private func cancelPairingAttempt(reason: String = #function, file: StaticString = #fileID, line: UInt = #line) {
+        pendingSuccessfulPairingReturn = nil
         if pairingAttempt.phase != .idle {
             DebugLogStore.logConnect("pairing attempt invalidated", detail: "source=\(reason) file=\(file) line=\(line) attempt=\(pairingAttempt.generation) phase=\(pairingAttempt.phase) target=\(pairingAttempt.peripheralID?.uuidString ?? "nil") ready=\(astraA1BleManager.isReady) correspondingCard=\(hasCorrespondingDeviceCard)")
         }

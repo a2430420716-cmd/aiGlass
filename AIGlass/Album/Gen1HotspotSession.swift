@@ -7,6 +7,8 @@ final class Gen1HotspotSession {
     let identity: Gen1APImportIdentity
     private let ble: AstraA1BleManager
     private var subscription: AnyCancellable?
+    private var availabilityObservation: AnyCancellable?
+    @Published private(set) var availability = Gen1HotspotAvailability.awaitingNetwork
     private var response: Result<Gen1HotspotCredentials, Error>?
     private var needsCleanup = false
     private var awaitingTransferShutdown = false
@@ -34,6 +36,17 @@ final class Gen1HotspotSession {
 
     private func openOnce(timeout: TimeInterval, requiresFreshStandby: Bool = false, reportSequenceBeforeClose: Int? = nil) async throws -> Gen1HotspotCredentials {
         try await requireStandbyBeforeOpen(requiresFresh: requiresFreshStandby, reportSequenceBeforeClose: reportSequenceBeforeClose)
+        availabilityObservation?.cancel()
+        availability = .awaitingNetwork
+        availabilityObservation = ble.gen1ControlSubject.sink { [weak self] frame in
+            guard let self, self.ble.isGen1MediaImportCurrent(self.identity),
+                  self.ble.deviceBluetoothIdentifier == self.identity.targetID.uuidString else { return }
+            var next = self.availability
+            next.receive(command: frame.command, payload: frame.payload)
+            guard next != self.availability else { return }
+            self.availability = next
+            DebugLogStore.logWiFi("一代：本轮热点收到主控关机状态", detail: "target=\(self.identity.targetID) availability=\(next.rawValue) source=0x73 requiresRestart=\(next.requiresRestart) historyRetainedBeforeManualJoin=true")
+        }
         response = nil
         subscription = ble.gen1ControlSubject.sink { [weak self] frame in
             guard let self, frame.command == Gen1Commands.openHotspot,

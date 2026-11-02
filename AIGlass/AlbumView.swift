@@ -344,7 +344,13 @@ struct AlbumView: View {
             Text(L10n.t("请手动连接眼镜 Wi-Fi", "Connect to glasses Wi-Fi manually"))
                 .font(AppTheme.notoSansSC(size: 16, weight: .medium))
             Text(L10n.t(
+                importManager.manualWifiHotspotMayBeOff
+                ? "眼镜已报告主控关机，本轮热点可能已关闭。请点击「重新开启热点」，等待热点重新开启后再连接。"
+                :
                 "连接尚未完成，App 暂不关闭热点。请在手机「设置 → Wi-Fi」中连接下方热点；如提示无法访问互联网，请保持连接。返回 App 后，检测到连接会自动继续导入；若未继续，请点击「已连接，重试」。找不到热点时可点击「重新开启热点」。请在 5 分钟内完成。",
+                importManager.manualWifiHotspotMayBeOff
+                ? "The glasses reported controller shutdown. This hotspot may be off. Tap Restart Hotspot, then connect after it starts again."
+                :
                 "Connection is not complete. The app has not closed the hotspot. Join the network below in Settings → Wi-Fi and stay connected even without internet. Return to the app; import will continue automatically when the connection is detected. If it does not, tap Connected, Retry. If the network is missing, tap Restart Hotspot. Complete within 5 minutes."
             ))
             if importManager.manualWifiHotspotMayBeOff {
@@ -368,6 +374,7 @@ struct AlbumView: View {
                 Button(L10n.t("已连接，重试", "Connected, Retry")) {
                     importManager.retryManualWifiJoin(id: request.id)
                 }
+                .disabled(importManager.manualWifiHotspotMayBeOff)
                 Button(L10n.t("取消导入", "Cancel Import")) {
                     importManager.cancelManualWifiJoin(id: request.id)
                 }

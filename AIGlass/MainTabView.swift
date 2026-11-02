@@ -150,6 +150,12 @@ struct MainTabView: View {
         .onChangeCompat(of: deviceFirmwareUpdateCoordinator.bluetoothUpdate) { _ in
             showGen1RecoveryPromptIfNeeded()
         }
+        .task(id: pairingCoordinator.navigationResetID) {
+            // Present recovery guidance only after the replacement home stack settles.
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            showGen1RecoveryPromptIfNeeded()
+        }
         .onChangeCompat(of: bluetoothOtaUpgradeManager.state) { newState in
             if case .completed = newState {
                 Task { await authSession.refreshUserInfo() }
@@ -241,6 +247,10 @@ struct MainTabView: View {
               ble.deviceBluetoothIdentifier == offer.serialNumber,
               let targetID = UUID(uuidString: offer.serialNumber),
               Gen1BluetoothOtaRecoveryStore().record(for: targetID) != nil,
+              pairingCoordinator.path.isEmpty,
+              !pairingCoordinator.showSearchingSheet,
+              !pairingCoordinator.userConfirmedPairingDevice,
+              !pairingCoordinator.isBindingDevice,
               promptedGen1RecoveryTarget != offer.serialNumber,
               gen1RecoverySheet == nil, !bluetoothOtaUpgradeManager.isUpgrading else { return }
         promptedGen1RecoveryTarget = offer.serialNumber

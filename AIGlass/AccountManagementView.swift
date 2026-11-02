@@ -258,21 +258,12 @@ struct AccountManagementView: View {
 
     private var isPendingDeviceConnected: Bool {
         guard let device = pendingUnbindDevice else { return false }
-        // 对齐 Android：云端 connection 非空时优先采用，`1` 才算连接。
-        if let cloudConnection = nonEmpty(device.connection) {
-            return cloudConnection == "1"
-        }
         let ble = pairingCoordinator.astraA1BleManager
-        guard ble.isReady else { return false }
-        let targetSerial = normalized(device.serialNumber)
-        let liveIDs = [ble.deviceBluetoothIdentifier, ble.savedPeripheralUUIDString]
-            .compactMap(normalized)
-        if let targetSerial, liveIDs.contains(targetSerial) { return true }
-        if let targetSN = normalized(device.hardwareSN),
-           normalized(ble.deviceSN) == targetSN {
-            return true
-        }
-        return false
+        // Cloud connection and a saved UUID can outlive power-off. Only a ready
+        // local transport matching this exact card can perform a factory reset.
+        return ble.isDeviceAvailable && ble.matchesCurrentDevice(
+            serialNumber: device.serialNumber, hardwareSN: device.hardwareSN
+        )
     }
 
     private func performPendingDeviceUnbind(force: Bool = false) {
@@ -289,6 +280,7 @@ struct AccountManagementView: View {
 
         isSigningOut = true
         isUnbindingDevice = true
+        DebugLogStore.logConnect("unbind: account deletion confirmed", detail: "target=\(serialNumber) forced=\(force) localTargetAvailable=\(isPendingDeviceConnected) cloudConnectionIgnored=true hasHardwareSN=\(!sn.isEmpty)")
         Task {
             do {
                 try await pairingCoordinator.unpairDevice(serialNumber: serialNumber, sn: sn, force: force)

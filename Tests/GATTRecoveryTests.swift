@@ -15,6 +15,8 @@ enum GATTRecoveryTests {
     }
 
     static func main() {
+        testConnectionTargetOwnership()
+        testCachedPeripheralRediscoveryAfterTimeout()
         testSlowDiscoveryDoesNotConsumeNotificationBudget()
         testStaleWatchdogsCannotTerminateCurrentConnection()
         testRetryNeedsFailureAndConsumesAuthorization()
@@ -23,6 +25,50 @@ enum GATTRecoveryTests {
         testBoundReconnectScanAndFailureCooldowns()
         testBoundReconnectStopsAfterThreeRetries()
         print("GATT recovery: \(assertionCount) assertions passed")
+    }
+
+    private static func testConnectionTargetOwnership() {
+        let a = UUID()
+        let b = UUID()
+        check(!BLEConnectionTargetPolicy.acceptsCallback(from: a, pairingActive: true,
+                pairingTarget: nil, boundTarget: a),
+              "Searching for B rejects A's delayed disconnect even while A remains saved")
+        check(!BLEConnectionTargetPolicy.acceptsCallback(from: a, pairingActive: true,
+                pairingTarget: b, boundTarget: a),
+              "Connecting B rejects callbacks from previously bound A")
+        check(BLEConnectionTargetPolicy.acceptsCallback(from: b, pairingActive: true,
+                pairingTarget: b, boundTarget: a),
+              "Explicit pairing B owns the connection before its binding is saved")
+        check(BLEConnectionTargetPolicy.acceptsCallback(from: b, pairingActive: false,
+                pairingTarget: nil, boundTarget: b),
+              "The selected bound target can connect and report genuine disconnects")
+        check(!BLEConnectionTargetPolicy.acceptsCallback(from: a, pairingActive: false,
+                pairingTarget: nil, boundTarget: b),
+              "An old device cannot overwrite a live B session after switching cards")
+        check(!BLEConnectionTargetPolicy.acceptsCallback(from: a, pairingActive: false,
+                pairingTarget: nil, boundTarget: nil),
+              "Logout or unbinding rejects late callbacks without an authorized target")
+    }
+
+    private static func testCachedPeripheralRediscoveryAfterTimeout() {
+        var policy = BoundBLEReconnectPolicy()
+        check(!policy.requiresRediscovery, "A fresh binding can initially reuse its cached peripheral")
+        policy.noteConnectionFailure(now: 20)
+        check(policy.requiresRediscovery, "A connect timeout requires fresh advertising evidence")
+        check(!policy.canRetry(now: 49), "Rediscovery still respects the automatic cooldown")
+        check(policy.claimScan(now: 50), "Timeout recovery can scan even if a stale cache still exists")
+        policy.didRediscoverTarget()
+        check(!policy.requiresRediscovery && policy.failedAttempts == 1,
+              "Rediscovery permits connecting without erasing the failure budget")
+        policy.noteConnectionFailure(now: 70)
+        policy.noteConnectionFailure(now: 100)
+        check(policy.isExhausted && !policy.claimScan(now: 200),
+              "Rediscovery never bypasses the three-attempt limit")
+        policy.beginUserRetry()
+        check(policy.requiresRediscovery && policy.claimScan(now: 101) && policy.failedAttempts == 0,
+              "An explicit retry can rediscover immediately after automatic attempts stop")
+        policy.reset()
+        check(!policy.requiresRediscovery, "A successful connection clears stale-cache recovery state")
     }
 
     private static func testBoundReconnectScanAndFailureCooldowns() {

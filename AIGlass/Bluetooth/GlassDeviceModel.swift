@@ -29,4 +29,12 @@ enum GlassDeviceModel: String, CaseIterable, Identifiable {
         case .astraA1, .unknown: "glass2"
         }
     }
+
+    var connectedImageName: String {
+        switch self {
+        case .luminaL1: "glasses_gen1_connected"
+        case .astraA1: "glasses_gen2_connected"
+        case .unknown: imageName
+        }
+    }
 }

@@ -10,6 +10,7 @@ xcrun swiftc -module-cache-path "$test_dir/cache" "$protocol" \
   Tests/Gen1ProtocolTests.swift -o "$test_dir/protocol"
 "$test_dir/protocol"
 bash Tests/run-gen1-control-diagnostics-tests.sh
+bash Tests/run-gen1-background-query-tests.sh
 bash Tests/run-gen1-guide-tests.sh
 bash Tests/run-gen1-guide-controller-tests.sh
 xcrun swiftc -module-cache-path "$test_dir/cache" "$protocol" \
@@ -33,6 +34,7 @@ xcrun swiftc -module-cache-path "$test_dir/cache" \
 
 bash Tests/run-gen1-ap-import-tests.sh
 bash Tests/run-gen1-hotspot-cleanup-tests.sh
+bash Tests/run-gen1-hotspot-availability-tests.sh
 bash Tests/run-gen1-wifi-gateway-tests.sh
 bash Tests/run-gen1-media-staging-tests.sh
 bash Tests/run-photo-capture-watermark-tests.sh

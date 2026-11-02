@@ -278,7 +278,14 @@ enum Gen1ProtocolTests {
         var invalidCRC = imageEnd(jpeg)
         invalidCRC[2] ^= 0xFF
         try check(assembler.append(invalidCRC) == .error(reason: "image CRC mismatch"), "bad image CRC rejected")
+        let crcDiagnostic = assembler.lastFailureDiagnostic ?? ""
+        try check(crcDiagnostic.contains("chunks=2/2") && crcDiagnostic.contains("endLength=8")
+                  && crcDiagnostic.contains("endCRC=") && crcDiagnostic.contains("calculatedCRC="),
+                  "CRC failure preserves integrity evidence before clearing the receive buffer")
+        try check(!crcDiagnostic.contains("jpeg=") && !crcDiagnostic.contains("payload="),
+                  "Image failure diagnostics exclude image contents")
         _ = assembler.append(start)
+        try check(assembler.lastFailureDiagnostic == nil, "New capture clears the previous failure evidence")
         _ = assembler.append(first)
         _ = assembler.append(second)
         var wrongLength = imageEnd(jpeg)

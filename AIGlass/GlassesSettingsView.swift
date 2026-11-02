@@ -28,7 +28,6 @@ struct GlassesSettingsView: View {
     @State private var showFactoryResetConfirmation = false
     @State private var showFactoryResetGuide = false
     @State private var showUnpairConfirmation = false
-    @State private var showConnectBeforeUnpair = false
     @State private var showForceUnpairConfirmation = false
     @State private var isUnpairing = false
     @State private var unpairErrorMessage: String?
@@ -224,6 +223,11 @@ struct GlassesSettingsView: View {
                 pendingListeningDurationSeconds = nil
             }
         }
+        .onChangeCompat(of: pairingCoordinator.astraA1BleManager.deviceRuntimeStatus) { status in
+            if isSettingsVisible, status == .standby {
+                queryDocumentedSettings()
+            }
+        }
         .onChangeCompat(of: pairingCoordinator.astraA1BleManager.deviceBluetoothIdentifier) { _ in
             voiceWakeUpState.reset()
             if isSettingsVisible { queryDocumentedSettings() }
@@ -348,21 +352,13 @@ struct GlassesSettingsView: View {
         .alert(unpairConfirmationTitle, isPresented: $showUnpairConfirmation) {
             Button(L10n.t("取消", "Cancel"), role: .cancel) {}
             Button(L10n.t("确认解绑", "Confirm unpair"), role: .destructive) {
-                checkDeviceConnectionBeforeUnpair()
+                performUnpair(force: false)
             }
         } message: {
             Text(L10n.t(
                 "解除配对后，眼镜端的所有数据将被清空且无法恢复，是否继续？",
                 "Unpairing will erase all data on the glasses permanently. Do you want to continue?"
             ))
-        }
-        .alert(L10n.t("解绑前，请先连接设备", "Connect the device before unbinding"), isPresented: $showConnectBeforeUnpair) {
-            Button(L10n.t("无法连接", "Cannot connect"), role: .cancel) {
-                showForceUnpairConfirmation = true
-            }
-            Button(L10n.t("去连接", "Connect")) {
-                dismiss()
-            }
         }
         .alert(forceUnpairTitle, isPresented: $showForceUnpairConfirmation) {
             Button(L10n.t("取消", "Cancel"), role: .cancel) {}
@@ -579,6 +575,12 @@ struct GlassesSettingsView: View {
     private func queryDocumentedSettings() {
         guard isGlassesConnected else { return }
         let ble = pairingCoordinator.astraA1BleManager
+        guard !ble.isVideoRecording, !ble.isVideoStopping, !ble.isTakingPhoto,
+              !ble.isAIRecording, !ble.isAIVisionTransferBusy,
+              !ble.isFirmwareUpgradeFlowBusy, ble.isDeviceRuntimeIdle else {
+            DebugLogStore.logBLEEvent("settings queries deferred: device busy", detail: "target=\(ble.deviceBluetoothIdentifier ?? "none") runtime=\(ble.deviceRuntimeStatus.name) recording=\(ble.isVideoRecording)")
+            return
+        }
         if ble.deviceCapabilities.videoResolution { _ = ble.queryVideoResolution() }
         if ble.deviceCapabilities.wearingDetection { _ = ble.queryWearDetection() }
         if ble.deviceCapabilities.aiImageRecognition { _ = ble.syncAIVisionLevel(AiVisionSettings.level) }
@@ -884,6 +886,13 @@ struct GlassesSettingsView: View {
                     voiceWakeUpRow
                     SettingsDivider()
                 }
+                NavigationLink {
+                    VoiceCommandsView()
+                } label: {
+                    SettingsNavigationLinkLabel(title: L10n.t("语音指令", "Voice Commands"))
+                }
+                .buttonStyle(.plain)
+                SettingsDivider()
                 if showsCapability(\.voiceWakeupSetting) {
                     SettingsNavigationRow(
                         title: L10n.t("连续对话时长", "Continuous conversation duration"),
@@ -975,7 +984,7 @@ struct GlassesSettingsView: View {
 
     private var unpairButton: some View {
         Button {
-            showUnpairConfirmation = true
+            checkDeviceConnectionBeforeUnpair()
         } label: {
             Group {
                 if isUnpairing {
@@ -1011,36 +1020,24 @@ struct GlassesSettingsView: View {
     }
 
     private func checkDeviceConnectionBeforeUnpair() {
-        guard targetSerialNumber != nil else {
+        guard let serial = targetSerialNumber, boundDevice != nil else {
             unpairErrorMessage = L10n.t("设备未绑定", "Device not bound")
             return
         }
         guard !isUnpairing else { return }
-
-        isUnpairing = true
-        Task {
-            await authSession.refreshUserInfo()
-            if let error = authSession.userInfoError {
-                isUnpairing = false
-                unpairErrorMessage = error
-                return
-            }
-            guard boundDevice != nil else {
-                isUnpairing = false
-                unpairErrorMessage = L10n.t("设备未绑定", "Device not bound")
-                return
-            }
-
-            isUnpairing = false
-            if isGlassesConnected {
-                performUnpair(force: false)
-            } else {
-                showConnectBeforeUnpair = true
-            }
+        // An offline device cannot acknowledge a reset. Use the current
+        // account's bound card and ask explicitly before server-only removal.
+        // A separate userinfo refresh must not block reaching this decision.
+        DebugLogStore.logConnect("unbind: settings preflight", detail: "target=\(serial) localTargetAvailable=\(isGlassesConnected) cloudConnectionIgnored=true userInfoRefreshRequired=false next=\(isGlassesConnected ? "reset_then_unbind" : "confirm_forced_unbind")")
+        if isGlassesConnected {
+            showUnpairConfirmation = true
+        } else {
+            showForceUnpairConfirmation = true
         }
     }
 
     private func performUnpair(force: Bool) {
+        guard !isUnpairing else { return }
         guard let serialNumber = targetSerialNumber else {
             unpairErrorMessage = L10n.t("未找到已绑定设备", "No bound device found")
             return
@@ -1063,6 +1060,7 @@ struct GlassesSettingsView: View {
         }
 
         isUnpairing = true
+        DebugLogStore.logConnect("unbind: settings confirmed", detail: "target=\(serialNumber) forced=\(force) hasHardwareSN=\(!sn.isEmpty) localTargetAvailable=\(isGlassesConnected)")
         Task {
             do {
                 try await pairingCoordinator.unpairDevice(serialNumber: serialNumber, sn: sn, force: force)
@@ -1070,6 +1068,7 @@ struct GlassesSettingsView: View {
                 showUnpairSuccess = true
             } catch {
                 isUnpairing = false
+                DebugLogStore.logConnect("unbind: settings failed", detail: "target=\(serialNumber) forced=\(force) error=\(error.localizedDescription)")
                 unpairErrorMessage = error.localizedDescription
             }
         }

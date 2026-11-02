@@ -67,7 +67,8 @@ struct DeviceCardData: Identifiable, Equatable {
         isConnected = false
     }
 
-    func withConnection(isConnected: Bool, batteryPercent: Int?, isCharging: Bool) -> DeviceCardData {
+    func withConnection(isConnected: Bool, batteryPercent: Int?, isCharging: Bool,
+                        connectedImageName: String? = nil) -> DeviceCardData {
         DeviceCardData(
             id: id,
             name: name,
@@ -76,7 +77,7 @@ struct DeviceCardData: Identifiable, Equatable {
             serialNumber: serialNumber,
             hardwareSN: hardwareSN,
             batteryPercent: isConnected ? batteryPercent : nil,
-            imageName: imageName,
+            imageName: isConnected ? (connectedImageName ?? imageName) : imageName,
             isFindDevice: isFindDevice,
             isCharging: isConnected ? isCharging : false,
             isConnected: isConnected
@@ -159,6 +160,7 @@ struct HomeView: View {
             }) ?? 0
         }
         nonmutating set {
+            guard canManageHomeConnection else { return }
             let cards = homeDeviceCards
             guard cards.indices.contains(newValue) else { return }
             let card = cards[newValue]
@@ -167,7 +169,11 @@ struct HomeView: View {
                 mediaActionAlertMessage = L10n.t("眼镜正在执行任务，请结束后再切换设备", "The glasses are busy. Finish the current task before switching devices.")
                 return
             }
-            authSession.selectedHomeDeviceKey = card.serialNumber ?? card.id
+            let key = card.serialNumber ?? card.id
+            if authSession.selectedHomeDeviceKey != key {
+                DebugLogStore.logConnect("home card user selection", detail: "previous=\(authSession.selectedHomeDeviceKey ?? "nil") selected=\(key) source=carouselGesture ready=\(ble.isReady)")
+                authSession.selectedHomeDeviceKey = key
+            }
         }
     }
     @ObservedObject private var systemVolume = SystemVolumeController.shared
@@ -226,6 +232,12 @@ struct HomeView: View {
                 return card.withDisplayName(name)
             }
             return card
+        }
+    }
+
+    private var homeBoundDeviceIdentities: [String] {
+        authSession.homeDeviceCards.filter { !$0.isFindDevice }.map {
+            "\($0.serialNumber ?? $0.id)|\($0.hardwareSN ?? "")"
         }
     }
 
@@ -308,6 +320,7 @@ struct HomeView: View {
                 }
             }
         }
+        .id(pairingCoordinator.navigationResetID)
         .environment(\.tabBarSuppressionCount, $tabBarSuppressionCount)
         .background(tabRouter.navigationBackdropColor.ignoresSafeArea())
         .compatibleNavigationContainerBackground(tabRouter.navigationBackdropColor)
@@ -324,6 +337,7 @@ struct HomeView: View {
                 onPair: { pairingCoordinator.pairWithDiscoveredDevice(id: $0) },
                 onCancel: { pairingCoordinator.cancelSearching() }
             )
+            .onAppear { pairingCoordinator.onSearchingSheetPresented() }
             .compatiblePresentationDragIndicator(.hidden)
             .compatiblePresentationCornerRadius(32)
             .compatiblePresentationBackground(AppTheme.cardBackground)
@@ -404,8 +418,8 @@ struct HomeView: View {
             if !active { tabRouter.endImmersiveCover() }
         }
         .onAppear {
-            synchronizeConnectedHomeCard(reason: "home-appear")
             homeIsVisible = true
+            synchronizeConnectedHomeCard(reason: "home-appear")
             systemVolume.refresh()
             systemVolume.beginPollingWhileVisible()
             Task { await reloadHomeDeviceState() }
@@ -419,9 +433,18 @@ struct HomeView: View {
             systemVolume.refresh()
         }
         .onChangeCompat(of: ble.isReady) { ready in
-            if ready, homeIsVisible {
+            if ready, canManageHomeConnection {
                 synchronizeConnectedHomeCard(reason: "ble-ready")
             }
+        }
+        .onChangeCompat(of: canManageHomeConnection) { active in
+            DebugLogStore.logConnect("home connection ownership changed", detail: "active=\(active) pathDepth=\(pairingCoordinator.path.count) pairingConfirmed=\(pairingCoordinator.userConfirmedPairingDevice) binding=\(pairingCoordinator.isBindingDevice) selected=\(authSession.selectedHomeDeviceKey ?? "nil")")
+            guard active else { return }
+            synchronizeConnectedHomeCard(reason: "home-root-resumed")
+            refreshBatteryFromBLEIfNeeded()
+        }
+        .onChangeCompat(of: ble.deviceSN) { _ in
+            if canManageHomeConnection { synchronizeConnectedHomeCard(reason: "device-identity-updated") }
         }
         .task(id: homeConnectionTarget) {
             // Do not connect to every card passed during a swipe.
@@ -433,14 +456,15 @@ struct HomeView: View {
         .onChangeCompat(of: scenePhase) { phase in
             if phase == .active {
                 systemVolume.refresh()
+                synchronizeConnectedHomeCard(reason: "app-active")
                 // 回前台时系统蓝牙可能已连上，主动接管 GATT（不必等切 Tab）。
                 refreshBatteryFromBLEIfNeeded()
             }
         }
-        .onChangeCompat(of: authSession.userInfo?.device.count ?? 0) { count in
+        .onChangeCompat(of: homeBoundDeviceIdentities) { identities in
             // 用户信息异步返回后，再尝试连接并读电量
-            if count > 0 {
-                if homeIsVisible { synchronizeConnectedHomeCard(reason: "bound-devices-loaded") }
+            if !identities.isEmpty {
+                if canManageHomeConnection { synchronizeConnectedHomeCard(reason: "bound-devices-loaded") }
                 connectSelectedHomeDevice(reason: "userInfoLoaded")
             }
         }
@@ -494,7 +518,7 @@ struct HomeView: View {
             .padding(.bottom, 24)
         }
         .refreshable {
-            await reloadHomeDeviceState()
+            await reloadHomeDeviceState(userInitiated: true)
         }
     }
 
@@ -649,8 +673,10 @@ struct HomeView: View {
         showSoundEffectSheet = true
     }
 
-    private func reloadHomeDeviceState() async {
+    private func reloadHomeDeviceState(userInitiated: Bool = false) async {
         synchronizeConnectedHomeCard(reason: "home-refresh")
+        // A slow/offline userinfo request must not block the user's BLE retry.
+        if userInitiated { retrySelectedHomeDevice(reason: "home-pull-refresh") }
         let selection = authSession.selectedHomeDeviceKey
         await authSession.refreshUserInfo()
         // A swipe during the HTTP request must keep its newly selected target.
@@ -660,6 +686,7 @@ struct HomeView: View {
     }
 
     private func synchronizeConnectedHomeCard(reason: String) {
+        guard canManageHomeConnection else { return }
         let cards = homeDeviceCards.filter { !$0.isFindDevice }
         let connected = ble.isReady ? cards.first(where: {
             ble.matchesCurrentDevice(serialNumber: $0.serialNumber, hardwareSN: $0.hardwareSN)
@@ -687,10 +714,22 @@ struct HomeView: View {
     }
 
     private var homeConnectionTarget: String? {
-        guard homeIsVisible else { return nil }
+        guard canManageHomeConnection else { return nil }
         let cards = homeDeviceCards
         guard cards.indices.contains(selectedDeviceIndex), !cards[selectedDeviceIndex].isFindDevice else { return nil }
         return cards[selectedDeviceIndex].serialNumber
+    }
+
+    private var canManageHomeConnection: Bool {
+        HomeDeviceSelection.canManageConnection(
+            homeIsVisible: homeIsVisible && tabRouter.selectedTab == .glasses,
+            pairingInProgress: !pairingCoordinator.path.isEmpty
+                || pairingCoordinator.showSearchingSheet || pairingCoordinator.isBindingDevice
+                || pairingCoordinator.userConfirmedPairingDevice,
+            hasPresentedPage: tabBarSuppressionCount > 0 || navigateToNewbieGuide
+                || navigateToOperationGuide || navigateToGlassesSettings
+                || navigateToAIRecording || navigateToAITranslation
+        )
     }
 
     private func connectSelectedHomeDevice(reason: String) {
@@ -706,35 +745,37 @@ struct HomeView: View {
         }
     }
 
-    /// 仅「系统已连接 + 自动软恢复耗尽」的卡片可点；其它未连接卡片不发起 GATT。
+    /// A user tap retries the exact bound card even without classic audio connectivity.
     private func reconnectBoundDevice(_ card: DeviceCardData) {
-        let ble = pairingCoordinator.astraA1BleManager
-        guard reconnectingDeviceID == nil, !ble.isReady else { return }
-        guard let hardRetryID = manualHardRetryPeripheralID(for: card) else { return }
+        guard canManageHomeConnection, reconnectingDeviceID == nil,
+              !card.isFindDevice,
+              let serial = card.serialNumber,
+              let id = UUID(uuidString: serial.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        if ble.savedPeripheralUUIDString?.caseInsensitiveCompare(id.uuidString) != .orderedSame,
+           isHomeDeviceSwitchBusy {
+            mediaActionAlertMessage = L10n.t("眼镜正在执行任务，请结束后再切换设备", "The glasses are busy. Finish the current task before switching devices.")
+            return
+        }
+        authSession.selectedHomeDeviceKey = serial
         reconnectFailure = nil
-        let started = ble.hardReconnectAfterUserTap(peripheralID: hardRetryID)
-        if started, ble.isConnectionInProgress {
+        let started = ble.retryBoundHomeDevice(peripheralID: id, reason: "home-card-tap")
+        if started, ble.isConnectionInProgress || ble.connectionState == .scanning {
             reconnectingDeviceID = card.id
             scheduleReconnectTimeout(for: card.id)
-        } else if started, !ble.isReady {
-            showHardReconnectFailureGuidance()
         }
     }
 
-    private func manualHardRetryPeripheralID(for card: DeviceCardData) -> UUID? {
-        guard let raw = ble.manualHardReconnectPeripheralUUIDString,
-              let requiredID = UUID(uuidString: raw) else { return nil }
-        if let serial = card.serialNumber?.trimmingCharacters(in: .whitespacesAndNewlines),
-           UUID(uuidString: serial) == requiredID {
-            return requiredID
-        }
-        let realCards = homeDeviceCards.filter { !$0.isFindDevice }
-        return realCards.count == 1 && ble.savedPeripheralUUIDString == raw ? requiredID : nil
+    private func retrySelectedHomeDevice(reason: String) {
+        guard let serial = homeConnectionTarget,
+              let id = UUID(uuidString: serial.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        if ble.savedPeripheralUUIDString?.caseInsensitiveCompare(id.uuidString) != .orderedSame,
+           isHomeDeviceSwitchBusy { return }
+        _ = ble.retryBoundHomeDevice(peripheralID: id, reason: reason)
     }
 
     /// 兜底超时：BLE 侧扫描/连接超时通常先到，这里防止状态卡住转圈不停。
     private func scheduleReconnectTimeout(for cardID: String) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 40) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 90) {
             guard reconnectingDeviceID == cardID else { return }
             let ble = pairingCoordinator.astraA1BleManager
             guard !ble.isReady else { return }
@@ -1036,6 +1077,7 @@ private struct DeviceCarouselSection: View {
     @ObservedObject var ble: AstraA1BleManager
     let cards: [DeviceCardData]
     @Binding var selectedDeviceIndex: Int
+    @State private var scrollSelection = HomeCarouselSelection()
     @Binding var showsTabBar: Bool
     @Binding var reconnectingDeviceID: String?
     @Binding var reconnectFailure: DeviceReconnectFailure?
@@ -1048,16 +1090,16 @@ private struct DeviceCarouselSection: View {
     /// 扫描阶段为「正在搜索设备」，进入 GATT 流程后为「正在连接」。
     private func reconnectPhase(for device: DeviceCardData) -> DeviceReconnectPhase {
         guard !device.isConnected else { return .none }
-        if isManualHardRetryTarget(device) {
-            return .hardRetryRequired
-        }
-        if reconnectingDeviceID == device.id {
+        if isConnecting(device) || reconnectingDeviceID == device.id {
             switch ble.connectionState {
             case .connecting, .discoveringServices, .enablingNotifications:
                 return .connecting
             default:
                 return .searching
             }
+        }
+        if isManualHardRetryTarget(device) {
+            return .hardRetryRequired
         }
         guard let failure = reconnectFailure, failure.deviceID == device.id else { return .none }
         return failure.isNotFound ? .notFound : .failed
@@ -1073,7 +1115,8 @@ private struct DeviceCarouselSection: View {
 
     /// 多眼镜场景只在当前 GATT 目标卡片显示连接中，避免所有未连接卡片一起变更文案。
     private func isConnecting(_ device: DeviceCardData) -> Bool {
-        guard ble.isConnectionInProgress, !device.isFindDevice, !device.isConnected else {
+        guard ble.isConnectionInProgress || ble.isBoundConnectionSearchInProgress,
+              !device.isFindDevice, !device.isConnected else {
             return false
         }
         let realCards = cards.filter { !$0.isFindDevice }
@@ -1084,10 +1127,17 @@ private struct DeviceCarouselSection: View {
         cards.map { card in
             guard !card.isFindDevice else { return card }
             let connected = ble.isDeviceAvailable && matchesLiveBLEDevice(card)
+            let model: GlassDeviceModel
+            switch ble.deviceGeneration {
+            case .gen1G5K61: model = .luminaL1
+            case .gen2: model = .astraA1
+            case .unknown: model = GlassDeviceModel(modelName: card.modelName ?? "")
+            }
             return card.withConnection(
                 isConnected: connected,
                 batteryPercent: connected ? ble.deviceBatteryPercent : nil,
-                isCharging: connected ? ble.deviceIsCharging : false
+                isCharging: connected ? ble.deviceIsCharging : false,
+                connectedImageName: model.connectedImageName
             )
         }
     }
@@ -1167,7 +1217,9 @@ private struct DeviceCarouselSection: View {
                 .padding(.horizontal, HomeLayout.horizontalMargin)
             }
             .compatibleScrollTargetBehaviorViewAligned()
-            .simultaneousGesture(DragGesture().onEnded { value in
+            .simultaneousGesture(DragGesture().onChanged { _ in
+                scrollSelection.beginUserScroll()
+            }.onEnded { value in
                 if #available(iOS 17.0, *) { return }
                 guard !devices.isEmpty else { return }
                 // iOS 15/16 lack scrollPosition; settle on the selected card explicitly.
@@ -1177,21 +1229,27 @@ private struct DeviceCarouselSection: View {
                 proxy.scrollTo(selectedDeviceIndex, anchor: .center)
             })
             .compatibleScrollPosition(id: Binding(
-                get: { selectedDeviceIndex },
+                get: { scrollSelection.index },
                 set: { newValue in
-                    if let newValue {
-                        selectedDeviceIndex = newValue
+                    if let index = scrollSelection.receiveVisibleIndex(newValue) {
+                        selectedDeviceIndex = index
+                        if selectedDeviceIndex != index {
+                            scrollSelection.synchronize(to: selectedDeviceIndex)
+                        }
                     }
                 }
             ))
             .frame(height: HomeLayout.deviceCardHeight)
             .onAppear {
+                scrollSelection.synchronize(to: selectedDeviceIndex)
                 proxy.scrollTo(selectedDeviceIndex, anchor: .center)
             }
             .onChangeCompat(of: selectedDeviceIndex) { index in
+                if scrollSelection.index != index { scrollSelection.synchronize(to: index) }
                 proxy.scrollTo(index, anchor: .center)
             }
             .onChangeCompat(of: cards.map(\.id)) { _ in
+                scrollSelection.synchronize(to: selectedDeviceIndex)
                 proxy.scrollTo(selectedDeviceIndex, anchor: .center)
             }
         }
@@ -1225,7 +1283,7 @@ enum DeviceReconnectPhase {
     }
 
     var allowsCardRetry: Bool {
-        self == .hardRetryRequired
+        self == .none || self == .notFound || self == .failed || self == .hardRetryRequired
     }
 
     var statusText: String? {
@@ -1266,14 +1324,14 @@ private struct DeviceCardView: View {
                 ZStack {
                     cardContent
 
-                    // 失败态整卡只负责硬重连，避免和名称/设置按钮形成嵌套 Button。
-                    if reconnectPhase.allowsCardRetry {
+                    // Keep the connected card's settings/name actions available.
+                    if !device.isConnected, !isConnecting, reconnectPhase.allowsCardRetry {
                         Button(action: onReconnectTap) {
                             Color.clear
                                 .contentShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius))
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(reconnectPhase.statusText ?? "")
+                        .accessibilityLabel(L10n.t("重新连接眼镜", "Reconnect glasses"))
                     }
                 }
             }

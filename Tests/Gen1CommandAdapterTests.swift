@@ -31,7 +31,7 @@ struct Gen1CommandAdapterTests {
         for (type, command): (UInt8, UInt8) in [(1, 0x63), (2, 0x64), (3, 0x36), (4, 0x45), (5, 0x14), (6, 0x15), (7, 0x05)] {
             mapped("getdevinfo", Array("type0".utf8) + [1, 0, type], command, [])
         }
-        mapped("hasnewfile", [], 0x33, [])
+        mapped("hasnewfile", [], 0x33, [0, 0])
         mapped("getdevstat", [], 0x72, [])
         mapped("takephoto0", [], 0x60, [])
         mapped("startvideo", [], 0x61, [])

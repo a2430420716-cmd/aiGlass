@@ -5,6 +5,7 @@ enum DeviceWifiError: LocalizedError {
     case userDenied
     case joinFailed(String)
     case unreachable
+    case hotspotStopped
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ enum DeviceWifiError: LocalizedError {
             return L10n.t("连接眼镜 Wi-Fi 失败：\(detail)", "Failed to join glasses Wi-Fi: \(detail)")
         case .unreachable:
             return L10n.t("未能连接眼镜热点，请确认眼镜热点已开启", "Could not connect to glasses Wi-Fi. Confirm the glasses hotspot is enabled")
+        case .hotspotStopped:
+            return L10n.t("眼镜已报告主控关机，请重新开启热点后连接", "The glasses reported controller shutdown. Restart the hotspot before connecting")
         }
     }
 }
@@ -132,9 +135,11 @@ enum DeviceWifiManager {
         ssid: String,
         password: String,
         diagnosticID: String,
-        deviceEvidence: (@MainActor () -> String)? = nil
+        deviceEvidence: (@MainActor () -> String)? = nil,
+        validateSession: (@MainActor () throws -> Void)? = nil
     ) async throws -> String {
         try Task.checkCancellation()
+        try validateSession?()
         guard !ssid.isEmpty, ssid.utf8.count <= 32 else {
             throw DeviceWifiError.joinFailed(L10n.t("眼镜热点名称无效，请重新开启热点后重试", "Invalid glasses hotspot name. Restart the hotspot and try again"))
         }
@@ -169,17 +174,20 @@ enum DeviceWifiManager {
             do {
                 try await applyConfiguration(ssid: ssid, password: password, diagnostics: diagnostics,
                                              includePasswordInDiagnostics: false, joinOnce: false, timeout: 45,
-                                             retainConfigurationUntilSessionCleanup: true)
+                                             retainConfigurationUntilSessionCleanup: true,
+                                             validateSession: validateSession)
             } catch {
                 try Task.checkCancellation()
+                try validateSession?()
                 // Some iOS joins report failure while DHCP is still completing.
                 // Verify the LAN before reporting an application failure.
                 diagnostics.log("系统加入回调报错，仍检查眼镜网段", detail: "error=\(error.localizedDescription) applicationFailureNotPublished=true")
             }
-            guard try await waitForGen1ClientIPv4(diagnostics: diagnostics) else {
+            guard try await waitForGen1ClientIPv4(diagnostics: diagnostics, validateSession: validateSession) else {
                 throw DeviceWifiError.unreachable
             }
             try Task.checkCancellation()
+            try validateSession?()
             diagnostics.log("一代热点配置已应用，连接固定文件服务", detail: "ssid=\(ssid.debugDescription)"
                 + "\nserviceEndpoint=192.168.4.1:8556 TCPVerified=false glassesLANIPv4Confirmed=true"
                 + "\nnextStage=WiFiOnlyTCPMediaTransport ssidReadRequired=false gatewayReadRequired=false", direction: .received)
@@ -198,11 +206,15 @@ enum DeviceWifiManager {
 
     /// Allow iOS to finish switching networks and acquiring DHCP even when its
     /// apply callback arrives early. Never repeat apply or probe TCP on another LAN.
-    private static func waitForGen1ClientIPv4(diagnostics: WifiDiagnosticSession) async throws -> Bool {
+    private static func waitForGen1ClientIPv4(
+        diagnostics: WifiDiagnosticSession,
+        validateSession: (@MainActor () throws -> Void)? = nil
+    ) async throws -> Bool {
         let deadline = ProcessInfo.processInfo.systemUptime + 30
         diagnostics.log("等待手机切换至眼镜网段", detail: "connectionGrace=30s pollInterval=250ms repeatApply=false TCPAttempted=false")
         repeat {
             try Task.checkCancellation()
+            try validateSession?()
             let interfaces = WifiDiagnosticSession.captureInterfaces()
             diagnostics.recordSnapshot(phase: "gen1-lan-before-tcp", interfaces: interfaces)
             if WifiConnectionDiagnostics.isGen1ClientIPv4(interfaces.selectedIPv4) {
@@ -231,8 +243,10 @@ enum DeviceWifiManager {
         includePasswordInDiagnostics: Bool = true,
         joinOnce: Bool = true,
         timeout: TimeInterval? = nil,
-        retainConfigurationUntilSessionCleanup: Bool = false
+        retainConfigurationUntilSessionCleanup: Bool = false,
+        validateSession: (@MainActor () throws -> Void)? = nil
     ) async throws {
+        try validateSession?()
         let started = ProcessInfo.processInfo.systemUptime
         let attemptID = UUID()
         configurationAttempts[ssid] = attemptID
@@ -249,7 +263,24 @@ enum DeviceWifiManager {
                 result.resolve(.failure(DeviceWifiError.joinFailed(L10n.t("系统加入热点请求超时", "System hotspot join request timed out"))))
             }
         }
-        defer { timeoutTask?.cancel() }
+        // iOS apply is not cancellable. Stop only our wait when the owning
+        // device session shuts down; the late callback keeps its existing guard.
+        let validationTask = validateSession.map { validate in
+            Task { @MainActor in
+                while !Task.isCancelled && !result.isResolved {
+                    do {
+                        try validate()
+                        try await Task.sleep(nanoseconds: 250_000_000)
+                    } catch {
+                        guard !Task.isCancelled else { return }
+                        diagnostics.log("设备会话已结束，提前停止等待系统加入热点", detail: "error=\(error.localizedDescription) systemApplyCancellationSupported=false removeConfiguration=false")
+                        result.resolve(.failure(error))
+                        return
+                    }
+                }
+            }
+        }
+        defer { timeoutTask?.cancel(); validationTask?.cancel() }
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

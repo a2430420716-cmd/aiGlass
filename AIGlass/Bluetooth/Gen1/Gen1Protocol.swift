@@ -586,6 +586,18 @@ final class Gen1ImageAssembler {
     private var endCrc: UInt16?
     private var endLength: Int?
     private let lock = NSRecursiveLock()
+    private(set) var lastFailureDiagnostic: String?
+
+    /// Counts and integrity metadata only. Never include JPEG bytes in exported logs.
+    var diagnosticSummary: String {
+        lock.lock(); defer { lock.unlock() }
+        let missing = Array((0..<expectedChunks).lazy.filter { self.chunks[$0] == nil }.prefix(16))
+        let crc = endCrc.map { String(format: "0x%04X", $0) } ?? "none"
+        return "receiving=\(receiving) chunks=\(chunks.count)/\(expectedChunks) bytes=\(receivedByteCount) "
+            + "nextExpected=\(lastContiguousSequence + 1) missingCount=\(max(0, expectedChunks - chunks.count)) missingPrefix=\(missing) "
+            + "retransmitRound=\(retransmitRound) endStatus=\(endStatus.map(String.init) ?? "none") "
+            + "endLength=\(endLength.map(String.init) ?? "none") endCRC=\(crc)"
+    }
 
     func append(_ payload: Data) -> Gen1ImageEvent? {
         lock.lock(); defer { lock.unlock() }
@@ -618,6 +630,7 @@ final class Gen1ImageAssembler {
         endStatus = nil
         endCrc = nil
         endLength = nil
+        lastFailureDiagnostic = nil
     }
 
     private func handleStart(_ bytes: [UInt8]) -> Gen1ImageEvent {
@@ -699,7 +712,10 @@ final class Gen1ImageAssembler {
         var jpeg = Data(capacity: receivedByteCount)
         for sequence in 0..<expectedChunks { if let chunk = chunks[sequence] { jpeg.append(chunk) } }
         guard length == jpeg.count else { return fail("image length mismatch: expected=\(length) actual=\(jpeg.count)") }
-        guard Gen1ControlCodec.crc16Modbus(jpeg) == crc else { return fail("image CRC mismatch") }
+        let calculatedCRC = Gen1ControlCodec.crc16Modbus(jpeg)
+        guard calculatedCRC == crc else {
+            return fail("image CRC mismatch", detail: "calculatedCRC=\(String(format: "0x%04X", calculatedCRC))")
+        }
         guard jpeg.count >= 4, jpeg.prefix(2) == Data([0xFF, 0xD8]), jpeg.suffix(2) == Data([0xFF, 0xD9]) else {
             return fail("invalid JPEG markers")
         }
@@ -707,8 +723,10 @@ final class Gen1ImageAssembler {
         return .completed(jpeg: jpeg)
     }
 
-    private func fail(_ reason: String) -> Gen1ImageEvent {
+    private func fail(_ reason: String, detail: String = "") -> Gen1ImageEvent {
+        let diagnostic = "reason=\(reason) \(diagnosticSummary) \(detail)"
         reset()
+        lastFailureDiagnostic = diagnostic
         return .error(reason: reason)
     }
 }

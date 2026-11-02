@@ -232,7 +232,7 @@ final class MediaImportManager: ObservableObject {
     private var restartGen1ImportAfterCleanup = false
 
     func retryManualWifiJoin(id: UUID) {
-        guard manualWifiJoin?.id == id else { return }
+        guard manualWifiJoin?.id == id, !manualWifiHotspotMayBeOff else { return }
         manualWifiRetryID = id
     }
 
@@ -249,26 +249,28 @@ final class MediaImportManager: ObservableObject {
 
     private func waitForManualWifiJoin(_ credentials: Gen1HotspotCredentials,
                                        ble: AstraA1BleManager,
+                                       hotspot: Gen1HotspotSession,
                                        requireLANRejoin: Bool = false,
                                        diagnostics: ImportDiagnosticContext) async throws {
         let request = ManualGlassesWifiJoin(ssid: credentials.ssid, password: credentials.password)
         manualWifiRetryID = nil
         manualWifiRestartID = nil
-        manualWifiHotspotMayBeOff = false
+        manualWifiHotspotMayBeOff = hotspot.availability.requiresRestart
         manualWifiJoin = request
-        diagnostics.log("一代：等待用户手动连接热点", detail: "ssid=\(credentials.ssid) timeout=300s appSentCloseHotspot=false deviceAPAvailability=unverified retryKind=TCPOnly noApply=true noOpenHotspot=true")
+        diagnostics.log("一代：等待用户手动连接热点", detail: "ssid=\(credentials.ssid) timeout=300s appSentCloseHotspot=false deviceAPAvailability=\(hotspot.availability.rawValue) requiresRestart=\(hotspot.availability.requiresRestart) historyIncludesSystemJoin=true retryKind=TCPOnly noApply=true noOpenHotspot=true")
         defer {
             manualWifiJoin = nil
             manualWifiRetryID = nil
             manualWifiRestartID = nil
             manualWifiHotspotMayBeOff = false
         }
-        // Observe each report: SHUTTING_DOWN can be immediately followed by STANDBY.
-        // Polling only the latest status would miss that transition.
-        let statusObservation = ble.$deviceRuntimeStatus.dropFirst().sink { [weak self] status in
-            guard status == .shuttingDown, let self, !self.manualWifiHotspotMayBeOff else { return }
+        // Replay this open's history as well as new reports. A fast 4 -> 0
+        // during system join must not be lost before the manual card appears.
+        let statusObservation = hotspot.$availability.sink { [weak self] availability in
+            guard availability.requiresRestart, let self else { return }
             self.manualWifiHotspotMayBeOff = true
-            diagnostics.log("一代：手动连接期间设备主动报告收尾", detail: "appSentCloseHotspot=false deviceStatus=SHUTTING_DOWN APAvailability=unverified action=offerExplicitRestart")
+            self.manualWifiRetryID = nil
+            diagnostics.log("一代：手动连接提示使用本轮关机记录", detail: "appSentCloseHotspot=false availability=\(availability.rawValue) action=offerExplicitRestart TCPRetryAllowed=false")
         }
         defer { statusObservation.cancel() }
         // After a TCP failure, an unchanged LAN address must not trigger an
@@ -277,17 +279,18 @@ final class MediaImportManager: ObservableObject {
         let deadline = ProcessInfo.processInfo.systemUptime + 300
         while ProcessInfo.processInfo.systemUptime < deadline {
             try Task.checkCancellation()
+            guard ble.isGen1MediaImportCurrent(hotspot.identity) else { throw Gen1APImportError.targetChanged }
             if manualWifiRestartID == request.id {
                 diagnostics.log("一代：用户请求重新开启热点，先清理旧会话", detail: "restartReason=networkNotFound cleanupRequired=true")
                 throw ManualWifiJoinExit.restartHotspot
             }
-            if manualWifiRetryID == request.id {
+            if manualWifiRetryID == request.id, !hotspot.availability.requiresRestart {
                 diagnostics.log("一代：用户确认已连接，直接重试 TCP", detail: "retryKind=TCPOnly endpoint=192.168.4.1:8556")
                 return
             }
             let hasClientIPv4 = DeviceWifiManager.gen1HasClientIPv4
             if !hasClientIPv4 { observedOutsideLAN = true }
-            if hasClientIPv4 && (!requireLANRejoin || observedOutsideLAN) {
+            if hasClientIPv4 && !hotspot.availability.requiresRestart && (!requireLANRejoin || observedOutsideLAN) {
                 diagnostics.log("一代：手动连接等待期间检测到眼镜网段，自动继续导入", detail: "targetLAN=192.168.4.0/24 retryKind=TCPOnly endpoint=192.168.4.1:8556 noApply=true noOpenHotspot=true requireLANRejoin=\(requireLANRejoin)")
                 return
             }
@@ -897,13 +900,17 @@ final class MediaImportManager: ObservableObject {
             do {
                 _ = try await DeviceWifiManager.connectGen1(
                     ssid: credentials.ssid, password: credentials.password,
-                    diagnosticID: diagnostics.id, deviceEvidence: { diagnostics.deviceEvidence }
+                    diagnosticID: diagnostics.id, deviceEvidence: { diagnostics.deviceEvidence },
+                    validateSession: {
+                        try checkTarget()
+                        guard !hotspot.availability.requiresRestart else { throw DeviceWifiError.hotspotStopped }
+                    }
                 )
             } catch {
                 try checkTarget()
                 if case DeviceWifiError.userDenied = error { throw error }
-                diagnostics.log("一代：自动加入失败，保留热点供手动连接", detail: "error=\(error.localizedDescription)")
-                try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
+                diagnostics.log("一代：自动加入未完成，转手动连接或重新开启热点", detail: "error=\(error.localizedDescription) availability=\(hotspot.availability.rawValue) requiresRestart=\(hotspot.availability.requiresRestart)")
+                try await waitForManualWifiJoin(credentials, ble: ble, hotspot: hotspot, diagnostics: diagnostics)
             }
             endpoint = "tcp://192.168.4.1:8556"
             // One bounded recovery budget across connection, list and file transfer.
@@ -916,8 +923,8 @@ final class MediaImportManager: ObservableObject {
                 var current = initial
                 while true {
                     try checkTarget()
-                    while !DeviceWifiManager.gen1HasClientIPv4 {
-                        try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
+                    while !DeviceWifiManager.gen1HasClientIPv4 || hotspot.availability.requiresRestart {
+                        try await waitForManualWifiJoin(credentials, ble: ble, hotspot: hotspot, diagnostics: diagnostics)
                         try checkTarget()
                     }
                     do {
@@ -937,9 +944,9 @@ final class MediaImportManager: ObservableObject {
                             }
                             throw error
                         }
-                        while !DeviceWifiManager.gen1HasClientIPv4 {
-                            diagnostics.log("一代：传输中离开眼镜网段，等待手动连接", detail: "keptHotspot=true noApply=true noOpenHotspot=true")
-                            try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
+                        while !DeviceWifiManager.gen1HasClientIPv4 || hotspot.availability.requiresRestart {
+                            diagnostics.log("一代：传输网络不可用，等待手动连接或重开热点", detail: "availability=\(hotspot.availability.rawValue) noApply=true noOpenHotspot=true")
+                            try await waitForManualWifiJoin(credentials, ble: ble, hotspot: hotspot, diagnostics: diagnostics)
                         }
                         let delays: [UInt64] = [500_000_000, 1_000_000_000, 2_000_000_000]
                         let delay = delays[pathRetryCount]
@@ -949,8 +956,8 @@ final class MediaImportManager: ObservableObject {
                         diagnostics.log("一代：仍在眼镜网段，重试 TCP", detail: "retryIndex=\(pathRetryCount) maxRetries=3 selectedIPv4=\(interfaces.selectedIPv4 ?? "none") tunnelInterfaces=\(tunnelInterfaces) tunnelDoesNotProveVPN=true delayNs=\(delay) keptHotspot=true localNetworkDenied=\(denied) noApply=true noOpenHotspot=true error=\(Self.formatErrorDetail(error))")
                         try await Task.sleep(nanoseconds: delay)
                         try checkTarget()
-                        while !DeviceWifiManager.gen1HasClientIPv4 {
-                            try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
+                        while !DeviceWifiManager.gen1HasClientIPv4 || hotspot.availability.requiresRestart {
+                            try await waitForManualWifiJoin(credentials, ble: ble, hotspot: hotspot, diagnostics: diagnostics)
                         }
                         current = Gen1MediaTCPClient(host: "192.168.4.1")
                         client = current
@@ -960,9 +967,9 @@ final class MediaImportManager: ObservableObject {
             var connectedTransport: Gen1MediaTCPClient?
             while connectedTransport == nil {
                 try checkTarget()
-                guard DeviceWifiManager.gen1HasClientIPv4 else {
-                    diagnostics.log("一代：IP 不在眼镜网段，直接提示手动连接", detail: "targetLAN=192.168.4.0/24 TCPAttempted=false")
-                    try await waitForManualWifiJoin(credentials, ble: ble, diagnostics: diagnostics)
+                guard DeviceWifiManager.gen1HasClientIPv4, !hotspot.availability.requiresRestart else {
+                    diagnostics.log("一代：热点连接条件不满足，提示手动连接或重开热点", detail: "targetLAN=192.168.4.0/24 availability=\(hotspot.availability.rawValue) TCPAttempted=false")
+                    try await waitForManualWifiJoin(credentials, ble: ble, hotspot: hotspot, diagnostics: diagnostics)
                     continue
                 }
                 let transport = Gen1MediaTCPClient(host: "192.168.4.1")
@@ -1003,7 +1010,7 @@ final class MediaImportManager: ObservableObject {
                     try checkTarget()
                     if pathRetryCount >= 3 { throw error }
                     diagnostics.log("一代：TCP 未连通，保留热点供手动连接", detail: "error=\(error.localizedDescription); fileListRequested=false")
-                    try await waitForManualWifiJoin(credentials, ble: ble, requireLANRejoin: true, diagnostics: diagnostics)
+                    try await waitForManualWifiJoin(credentials, ble: ble, hotspot: hotspot, requireLANRejoin: true, diagnostics: diagnostics)
                 }
             }
             guard let transport = connectedTransport else { throw DeviceWifiError.unreachable }

@@ -91,28 +91,31 @@ struct SimultaneousTranslationView: View {
     }
 
     private var navigationBar: some View {
-        ZStack {
+        HStack(spacing: 8) {
+            Button {
+                controller.handleBackRequest {
+                    controller.stop()
+                    dismiss()
+                }
+            } label: {
+                Image("android_nav_back")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 22, height: 22)
+                    .frame(width: 44, height: 44, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(L10n.t("返回", "Back"))
+
             Text(L10n.t("同声传译", "Simultaneous Interpretation"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
+                .frame(maxWidth: .infinity, minHeight: 44)
 
             HStack(spacing: 4) {
-                Button {
-                    controller.handleBackRequest {
-                        controller.stop()
-                        dismiss()
-                    }
-                } label: {
-                    Image("android_nav_back")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 22, height: 22)
-                        .frame(width: 44, height: 44, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
                 Button {
                     controller.toggleGlassesSound()
                 } label: {
@@ -137,6 +140,7 @@ struct SimultaneousTranslationView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(L10n.t("同声传译记录", "Interpretation History"))
             }
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)

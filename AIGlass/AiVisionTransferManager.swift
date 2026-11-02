@@ -85,6 +85,9 @@ final class AiVisionTransferManager: ObservableObject {
         }
         let sent = ble.sendCommand(AstraA1BleProtocol.buildAIVisionCaptureCommand(level: level))
         print("\(logTag) startCapture level=\(level) sent=\(sent)")
+        if ble.deviceGeneration == .gen1G5K61 {
+            logGen1Vision("capture-request", detail: "level=\(level) command=0x70 sent=\(sent)")
+        }
         if !sent {
             fail(L10n.t("发送识图命令失败", "Failed to send recognize command"))
             return false
@@ -114,6 +117,16 @@ final class AiVisionTransferManager: ObservableObject {
             if command == "gen1busy0" {
                 fail(L10n.t("眼镜正忙，请稍后重试", "Glasses are busy. Try again later."))
             } else if command == "gen1image0" {
+                let bytes = Array(packet.prefix(8))
+                if bytes.first != 2 {
+                    var metadata = "packetType=\(bytes.first.map(String.init) ?? "none") payloadBytes=\(packet.count)"
+                    if bytes.first == 1, bytes.count >= 4 {
+                        metadata += " status=\(bytes[1]) declaredChunks=\(Int(bytes[2]) << 8 | Int(bytes[3]))"
+                    } else if bytes.first == 3, bytes.count >= 8 {
+                        metadata += " status=\(bytes[1]) declaredCRC=\(Int(bytes[2]) << 8 | Int(bytes[3])) declaredLength=\(Int(bytes[4]) << 24 | Int(bytes[5]) << 16 | Int(bytes[6]) << 8 | Int(bytes[7]))"
+                    }
+                    logGen1Vision("control-packet", detail: metadata)
+                }
                 handleGen1ImageEvent(gen1Assembler.append(packet))
             }
             return
@@ -146,6 +159,12 @@ final class AiVisionTransferManager: ObservableObject {
         finishImage(reason: "device-standby")
     }
 
+    private func logGen1Vision(_ event: String, detail: String = "") {
+        DebugLogStore.logBLEEvent("Gen1 vision \(event)", detail:
+            "session=\(receiveGeneration) target=\(ble?.deviceBluetoothIdentifier ?? "none") active=\(isSessionActive) "
+            + "\(gen1Assembler.diagnosticSummary) \(detail); imagePayload=omitted")
+    }
+
     private func handleGen1ImageEvent(_ event: Gen1ImageEvent?) {
         guard isSessionActive, let event else { return }
         guard ble?.isDeviceAvailable == true else {
@@ -154,6 +173,7 @@ final class AiVisionTransferManager: ObservableObject {
         }
         switch event {
         case .started(let expected):
+            logGen1Vision("started", detail: "expectedChunks=\(expected)")
             gen1RetransmitTask?.cancel()
             gen1RetransmitTask = nil
             gen1AwaitingRetransmission = false
@@ -163,6 +183,9 @@ final class AiVisionTransferManager: ObservableObject {
             scheduleGen1Timeout(seconds: 10)
         case .progress(let received, let expected, _, let ack, let next):
             let advanced = received > gen1ReceivedChunks
+            if ack || (advanced && (received == 1 || received % 8 == 0 || received == expected)) {
+                logGen1Vision("progress", detail: "ackRequired=\(ack) nextExpected=\(next)")
+            }
             gen1ReceivedChunks = received
             phase = .receiving(received: received, total: expected)
             onProgress?(received, expected)
@@ -172,11 +195,13 @@ final class AiVisionTransferManager: ObservableObject {
                     fail(L10n.t("图片确认发送失败，请重试", "Failed to acknowledge image data. Try again."))
                     return
                 }
+                logGen1Vision("window-ack-sent", detail: "nextExpected=\(next); submitted_to_BLE_is_not_device_ack")
             }
             if gen1RetransmitTask == nil, advanced || gen1Timeout == nil {
                 scheduleGen1Timeout(seconds: gen1AwaitingRetransmission ? 3 : 10)
             }
-        case .needRetransmit(let missing, _, let expected, let received, _):
+        case .needRetransmit(let missing, let round, let expected, let received, _):
+            logGen1Vision("retransmit-needed", detail: "round=\(round) missingCount=\(missing.count) missingPrefix=\(Array(missing.prefix(16)))")
             phase = .receiving(received: received, total: expected)
             gen1ReceivedChunks = received
             gen1AwaitingRetransmission = true
@@ -196,6 +221,7 @@ final class AiVisionTransferManager: ObservableObject {
                         self.fail(L10n.t("图片重传请求失败，请重试", "Image retransmission request failed. Try again."))
                         return
                     }
+                    self.logGen1Vision("retransmit-request-sent", detail: "sequences=\(batch)")
                     try? await Task.sleep(nanoseconds: 150_000_000)
                 }
                 guard !Task.isCancelled, let self, self.isSessionActive, self.receiveGeneration == session else { return }
@@ -203,6 +229,7 @@ final class AiVisionTransferManager: ObservableObject {
                 self.scheduleGen1Timeout(seconds: 3)
             }
         case .completed(let jpeg):
+            logGen1Vision("validated", detail: "jpegBytes=\(jpeg.count) checks=length,CRC,JPEG_markers result=passed")
             // DATA-only retransmission can complete before another progress event.
             // Send the cumulative final ACK even in that case so the device can close its window.
             if let ack = try? Gen1Payloads.imageChunkAck(gen1ExpectedChunks) {
@@ -225,6 +252,7 @@ final class AiVisionTransferManager: ObservableObject {
             ble?.setAIVisionTransferBusy(false)
             onImageReceived?(correctedJPEG)
         case .error(let reason):
+            logGen1Vision("validation-failed", detail: gen1Assembler.lastFailureDiagnostic ?? "reason=\(reason)")
             print("\(logTag) first-generation image failed: \(reason)")
             fail(L10n.t("图片数据校验失败，请重试", "Image data validation failed. Try again."))
         }
@@ -238,6 +266,7 @@ final class AiVisionTransferManager: ObservableObject {
             guard let self, self.isSessionActive, self.receiveGeneration == session,
                   self.gen1TimeoutGeneration == timer else { return }
             self.gen1Timeout = nil
+            self.logGen1Vision("receive-timeout", detail: "timeoutSeconds=\(seconds) awaitingRetransmission=\(self.gen1AwaitingRetransmission)")
             if let retry = self.gen1Assembler.requestRetransmission() {
                 self.handleGen1ImageEvent(retry)
             } else {

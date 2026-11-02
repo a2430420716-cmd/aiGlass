@@ -1,10 +1,20 @@
 import Foundation
 
+/// An old glasses' queued callbacks cannot change the newly selected session.
+enum BLEConnectionTargetPolicy {
+    static func acceptsCallback(from peripheralID: UUID, pairingActive: Bool,
+                                pairingTarget: UUID?, boundTarget: UUID?) -> Bool {
+        let target = pairingActive ? pairingTarget : boundTarget
+        return target == peripheralID
+    }
+}
+
 /// Rate limits missing-cache scans and actual connection failures separately.
 /// Polling and foreground refreshes must not postpone either deadline.
 struct BoundBLEReconnectPolicy {
     static let maxAttempts = 3
     private(set) var failedAttempts = 0
+    private(set) var requiresRediscovery = false
     private var retryAvailableAt: TimeInterval = 0
     private var scanAvailableAt: TimeInterval = 0
 
@@ -29,11 +39,22 @@ struct BoundBLEReconnectPolicy {
 
     mutating func noteConnectionFailure(now: TimeInterval) {
         if !isExhausted { failedAttempts += 1 }
+        requiresRediscovery = true
         retryAvailableAt = max(retryAvailableAt, now + 30)
+    }
+
+    mutating func beginUserRetry() {
+        reset()
+        requiresRediscovery = true
+    }
+
+    mutating func didRediscoverTarget() {
+        requiresRediscovery = false
     }
 
     mutating func reset() {
         failedAttempts = 0
+        requiresRediscovery = false
         retryAvailableAt = 0
         scanAvailableAt = 0
     }

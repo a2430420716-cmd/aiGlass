@@ -55,6 +55,31 @@ enum DeviceUnpairAndIdentityTests {
               "Removing a selected device falls back to a remaining binding")
         check(HomeDeviceSelection.keyOnReturn(selected: "glasses-A", connected: "glasses-A", bound: []) == nil,
               "Empty bindings cannot preserve an old account's device selection")
+
+        check(!HomeDeviceSelection.canManageConnection(homeIsVisible: true, pairingInProgress: true, hasPresentedPage: false),
+              "BLE ready during pairing must not switch back to a previously bound device")
+        check(!HomeDeviceSelection.canManageConnection(homeIsVisible: true, pairingInProgress: false, hasPresentedPage: true),
+              "A home container behind a settings or translation page must not select a connection")
+        check(!HomeDeviceSelection.canManageConnection(homeIsVisible: false, pairingInProgress: false, hasPresentedPage: false),
+              "Another tab must not reconnect the home card")
+        check(HomeDeviceSelection.canManageConnection(homeIsVisible: true, pairingInProgress: false, hasPresentedPage: false),
+              "Returning to the home root resumes selection of the current bound device")
+
+        var carousel = HomeCarouselSelection()
+        carousel.synchronize(to: 1)
+        check(carousel.receiveVisibleIndex(0) == nil && carousel.index == 1,
+              "An initial layout callback for A cannot replace connected B")
+        carousel.beginUserScroll()
+        check(carousel.receiveVisibleIndex(0) == 0 && carousel.index == 0,
+              "A real swipe to A still changes the reconnection target")
+        check(carousel.receiveVisibleIndex(nil) == nil,
+              "Transient missing scroll positions do not select another device")
+        carousel.synchronize(to: 1)
+        check(carousel.receiveVisibleIndex(0) == nil && carousel.index == 1,
+              "Returning from another page resets the old drag session and retains connected B")
+        carousel.synchronize(to: 2)
+        check(carousel.receiveVisibleIndex(0) == nil && carousel.index == 2,
+              "Server list reordering cannot reset an explicit selected device to the first card")
         print("Device reset/identity: \(assertions) assertions passed")
     }
 }
