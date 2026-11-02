@@ -1,7 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
-  <!-- Source: main/res/drawable/ic_upgrade_warning.xml; original Android VectorDrawable geometry, colors and dimensions. -->
-  <path d="M8,1.2 L14.8,13.8 L1.2,13.8 Z" fill="none" stroke="#FF2D55" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M8,5.2 L8,9.2" fill="none" stroke="#FF2D55" stroke-width="1.4" stroke-linecap="round" />
-  <path d="M8,11.4 m-0.8,0 a0.8,0.8 0,1 0,1.6 0 a0.8,0.8 0,1 0,-1.6 0" fill="#FF2D55" />
-</svg>
