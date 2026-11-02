@@ -111,30 +111,25 @@ private struct SoundEffectOptionView: View {
                             ? AnyShapeStyle(
                                 LinearGradient(
                                     colors: [
-                                        Color(red: 0.965, green: 0.796, blue: 0.851),
-                                        Color(red: 0.690, green: 0.831, blue: 0.988),
-                                        Color(red: 0.769, green: 0.906, blue: 0.898)
+                                        Color(red: 246 / 255, green: 203 / 255, blue: 217 / 255),
+                                        Color(red: 196 / 255, green: 231 / 255, blue: 229 / 255)
                                     ],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
                                 )
                             )
-                            : AnyShapeStyle(Color(red: 0.90, green: 0.90, blue: 0.90)),
+                            : AnyShapeStyle(Color(red: 229 / 255, green: 229 / 255, blue: 229 / 255)),
                         lineWidth: isSelected ? 3 : 1
                     )
             }
             .overlay(alignment: .topTrailing) {
                 if isSelected {
-                    ZStack {
-                        Circle()
-                            .fill(AppTheme.accent)
-                            .frame(width: 24, height: 24)
-
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                    .offset(x: 8, y: -8)
+                    Image("android_sound_check_red")
+                        .resizable()
+                        .renderingMode(.original)
+                        .scaledToFit()
+                        .frame(width: 24, height: 24)
+                        .offset(x: 8, y: -8)
                 }
             }
         }

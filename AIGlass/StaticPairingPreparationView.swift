@@ -98,7 +98,6 @@ struct StaticPairingPreparationView: View {
             Text(description)
                 .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                 .foregroundStyle(AppTheme.primaryText)
-                .lineSpacing(4)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

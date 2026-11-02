@@ -7,9 +7,6 @@ struct GlassesFirmwareUpgradeView: View {
     @EnvironmentObject private var otaManager: BluetoothOtaUpgradeManager
 
     @ObservedObject private var ble: AstraA1BleManager
-    @State private var showsLatestVersionMessage = false
-    @State private var versionStatusMessage = ""
-    @State private var latestVersionMessageTask: Task<Void, Never>?
 
     init(ble: AstraA1BleManager) {
         _ble = ObservedObject(wrappedValue: ble)
@@ -20,7 +17,7 @@ struct GlassesFirmwareUpgradeView: View {
             navigationBar
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 72) {
+                VStack(spacing: 24) {
                     upgradeIcon
                     versionCard
                     if ble.deviceVersionQueryFailed, !ble.isQueryingDeviceVersionsAndStorage {
@@ -28,33 +25,16 @@ struct GlassesFirmwareUpgradeView: View {
                     }
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 56)
+                .padding(.top, 32)
                 .padding(.bottom, 32)
             }
         }
         .background(AppTheme.background.ignoresSafeArea())
-        .overlay {
-            if showsLatestVersionMessage {
-                Text(versionStatusMessage)
-                    .font(AppTheme.notoSansSC(size: 15, weight: .regular))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 14)
-                    .background(Color(red: 0.20, green: 0.20, blue: 0.20))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .allowsHitTesting(false)
-            }
-        }
         .navigationBarHidden(true)
         .suppressTabBarOnAppear()
         .onAppear {
             ble.ensureConnected(reason: "firmwareUpgrade")
             refreshVersionsFromBLE()
-        }
-        .onDisappear {
-            latestVersionMessageTask?.cancel()
-            latestVersionMessageTask = nil
-            showsLatestVersionMessage = false
         }
         .onChangeCompat(of: ble.isDeviceAvailable) { available in
             if available { refreshVersionsFromBLE() }
@@ -101,15 +81,19 @@ struct GlassesFirmwareUpgradeView: View {
         Image("android_upgrade")
             .resizable()
             .scaledToFit()
-            .frame(width: 136, height: 136)
+            .frame(width: 120, height: 120)
         .frame(maxWidth: .infinity)
     }
 
     private var versionCard: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 0) {
             bluetoothVersionRow
+            Divider().overlay(Color(red: 0.94, green: 0.94, blue: 0.94))
             firmwareVersionRow
         }
+        .padding(.horizontal, 16)
+        .background(AppTheme.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     private var versionQueryFailure: some View {
@@ -141,15 +125,11 @@ struct GlassesFirmwareUpgradeView: View {
             .buttonStyle(.plain)
             .disabled(!ble.isDeviceAvailable || ble.deviceVersionQueryFailed)
         } else {
-            Button { showVersionStatus(for: .bluetooth) } label: {
-                versionRowLabel(
-                    title: L10n.t("蓝牙版本", "Bluetooth Version"),
-                    version: displayVersion(ble.deviceVersion2800),
-                    hasUpdate: false
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(!ble.isDeviceAvailable || ble.deviceVersionQueryFailed || ble.isQueryingDeviceVersionsAndStorage)
+            versionRowLabel(
+                title: L10n.t("蓝牙版本", "Bluetooth Version"),
+                version: displayVersion(ble.deviceVersion2800),
+                hasUpdate: false
+            )
         }
     }
 
@@ -168,15 +148,11 @@ struct GlassesFirmwareUpgradeView: View {
             .buttonStyle(.plain)
             .disabled(!ble.isDeviceAvailable || ble.deviceVersionQueryFailed)
         } else {
-            Button { showVersionStatus(for: .firmware) } label: {
-                versionRowLabel(
-                    title: L10n.t("固件版本", "Firmware Version"),
-                    version: displayVersion(ble.deviceVersion6350),
-                    hasUpdate: false
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(!ble.isDeviceAvailable || ble.deviceVersionQueryFailed || ble.isQueryingDeviceVersionsAndStorage)
+            versionRowLabel(
+                title: L10n.t("固件版本", "Firmware Version"),
+                version: displayVersion(ble.deviceVersion6350),
+                hasUpdate: false
+            )
         }
     }
 
@@ -206,35 +182,7 @@ struct GlassesFirmwareUpgradeView: View {
                     .foregroundStyle(AppTheme.secondaryText)
             }
         }
-        .padding(.horizontal, 16)
         .padding(.vertical, 18)
-        .background(AppTheme.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-    }
-
-    private func showVersionStatus(for kind: OtaUpgradeKind) {
-        let entries = kind == .bluetooth
-            ? authSession.userInfo?.bluetoothBySerialNumber
-            : authSession.userInfo?.firmwareBySerialNumber
-        let currentVersion = kind == .bluetooth ? ble.deviceVersion2800 : ble.deviceVersion6350
-        let keys = [ble.deviceSN, ble.deviceBluetoothIdentifier].compactMap { $0?.lowercased() }
-        let server = entries?.first { key, _ in keys.contains(key.lowercased()) }?.value
-        let normalize: (String) -> String = { value in
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return trimmed.hasPrefix("v") ? String(trimmed.dropFirst()) : trimmed
-        }
-        if let currentVersion, let server, normalize(currentVersion) == normalize(server.version) {
-            versionStatusMessage = L10n.t("当前已是最新版本", "Already up to date")
-        } else {
-            versionStatusMessage = L10n.t("暂无可用升级", "No update available")
-        }
-        latestVersionMessageTask?.cancel()
-        showsLatestVersionMessage = true
-        latestVersionMessageTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard !Task.isCancelled else { return }
-            showsLatestVersionMessage = false
-        }
     }
 
     private func displayVersion(_ raw: String?) -> String {

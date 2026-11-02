@@ -236,12 +236,10 @@ struct MainTabView: View {
         .padding(.top, 8)
         .padding(.bottom, 6)
         .background(
-            RoundedRectangle(cornerRadius: 32, style: .continuous)
-                .fill(AppTheme.cardBackground)
+            AppTheme.cardBackground
                 .shadow(color: AppTheme.cardShadow, radius: 8, y: -2)
+                .ignoresSafeArea(edges: .bottom)
         )
-        .padding(.horizontal, 8)
-        .padding(.bottom, 4)
     }
 }
 

@@ -67,9 +67,10 @@ struct ConversationTranslationView: View {
                     controller.stop()
                     dismiss()
                 } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(AppTheme.primaryText)
+                    Image("android_nav_back")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 22, height: 22)
                         .frame(width: 44, height: 44, alignment: .leading)
                 }
                 .buttonStyle(.plain)
@@ -152,9 +153,10 @@ struct ConversationTranslationView: View {
                     Text(TranslationLanguage.fromDisplayName(language).displayName)
                         .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                         .foregroundStyle(AppTheme.primaryText)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(AppTheme.secondaryText)
+                    Image("android_translation_dropdown")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 8, height: 7)
                 }
             }
             .frame(maxWidth: .infinity, alignment: frameAlignment)
@@ -233,12 +235,12 @@ struct ConversationTranslationView: View {
         HStack {
             recordButton(
                 title: controller.glassesActive ? L10n.t("停止录音", "Stop Recording") : L10n.t("眼镜录音", "Glasses Record"),
-                idleImage: "conversation_glasses_record",
+                idleImage: "android_conversation_glasses_record",
                 activeImages: [
-                    "conversation_glasses_recording_frame1",
-                    "conversation_glasses_recording_frame2",
-                    "conversation_glasses_recording",
-                    "conversation_glasses_recording_frame2"
+                    "android_conversation_recording_1",
+                    "android_conversation_recording_2",
+                    "android_conversation_recording_3",
+                    "android_conversation_recording_4"
                 ],
                 isActive: controller.glassesActive,
                 isDisabled: controller.phoneActive,
@@ -249,12 +251,12 @@ struct ConversationTranslationView: View {
 
             recordButton(
                 title: controller.phoneActive ? L10n.t("停止录音", "Stop Recording") : L10n.t("手机录音", "Phone Record"),
-                idleImage: "conversation_phone_record",
+                idleImage: "android_conversation_phone_record",
                 activeImages: [
-                    "conversation_phone_recording_frame1",
-                    "conversation_phone_recording_frame2",
-                    "conversation_phone_recording",
-                    "conversation_phone_recording_frame2"
+                    "android_conversation_recording_1",
+                    "android_conversation_recording_2",
+                    "android_conversation_recording_3",
+                    "android_conversation_recording_4"
                 ],
                 isActive: controller.phoneActive,
                 isDisabled: controller.glassesActive,
@@ -309,7 +311,8 @@ private struct RecordingFrameAnimation: View {
             .task {
                 frameIndex = 0
                 while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    // Match main/res/drawable/anim_translation_recording.xml.
+                    try? await Task.sleep(nanoseconds: 180_000_000)
                     guard !Task.isCancelled else { return }
                     frameIndex = (frameIndex + 1) % imageNames.count
                 }

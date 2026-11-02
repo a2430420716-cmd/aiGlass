@@ -703,7 +703,7 @@ struct NewbieGuideView: View {
                 }
 
                 Text(actionType)
-                    .font(AppTheme.notoSansSC(size: 32, weight: .bold))
+                    .font(AppTheme.notoSansSC(size: 30, weight: .bold))
                     .foregroundStyle(.black)
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
@@ -711,7 +711,6 @@ struct NewbieGuideView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 18)
             .padding(.vertical, 24)
-            .frame(minHeight: 163, alignment: .topLeading)
             .background(Color(red: 0.82, green: 0.92, blue: 1.0))
             .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
 

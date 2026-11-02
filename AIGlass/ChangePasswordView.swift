@@ -224,7 +224,7 @@ struct ChangePasswordView: View {
                             .frame(minWidth: 88)
                     } else {
                         Text(countdown > 0
-                             ? L10n.t("重新发送（\(countdown)s）", "Resend (\(countdown)s)")
+                             ? L10n.t("重新发送（\(countdown)S）", "Resend (\(countdown)S)")
                              : L10n.t("发送验证码", "Send Code"))
                             .font(AppTheme.notoSansSC(size: 15, weight: .medium))
                             .foregroundStyle(

@@ -119,7 +119,7 @@ struct FeedbackFormView: View {
                 ZStack {
                     Color.black.opacity(0.28).ignoresSafeArea()
 
-                    VStack(spacing: 28) {
+                    VStack(spacing: 30) {
                         ZStack {
                             Circle()
                                 .fill(Color(red: 0.19, green: 0.78, blue: 0.42))
@@ -130,11 +130,11 @@ struct FeedbackFormView: View {
                         }
 
                         Text(L10n.t("反馈完成", "Feedback Complete"))
-                            .font(AppTheme.notoSansSC(size: 20, weight: .regular))
+                            .font(AppTheme.notoSansSC(size: 24, weight: .bold))
                             .foregroundStyle(AppTheme.primaryText)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 36)
+                    .frame(height: 330)
                     .background(AppTheme.cardBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                     .padding(.horizontal, 28)

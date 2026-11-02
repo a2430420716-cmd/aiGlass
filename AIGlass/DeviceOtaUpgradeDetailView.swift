@@ -81,20 +81,19 @@ struct DeviceOtaUpgradeDetailView: View {
 
             if showsSuccess {
                 resultView(
-                    imageName: "ota_upgrade_success",
+                    imageName: "android_ota_success",
                     title: L10n.t("升级成功", "Update Successful"),
                     subtitle: L10n.t("快去体验新版本吧！", "Enjoy the new version!")
                 )
             } else if let unconfirmedMessage {
                 resultView(
-                    imageName: "questionmark.circle",
+                    imageName: nil,
                     title: L10n.t("升级结果待确认", "Update Awaiting Confirmation"),
-                    subtitle: unconfirmedMessage,
-                    isSystemImage: true
+                    subtitle: unconfirmedMessage
                 )
             } else if let failureMessage {
                 resultView(
-                    imageName: "ota_upgrade_failure",
+                    imageName: "android_ota_failure",
                     title: L10n.t("升级失败", "Update Failed"),
                     subtitle: L10n.t("很抱歉，本次更新未能成功。", "Sorry, this update was unsuccessful."),
                     detail: failureMessage
@@ -168,9 +167,10 @@ struct DeviceOtaUpgradeDetailView: View {
                 Button {
                     dismissPage()
                 } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(AppTheme.primaryText)
+                    Image("android_settings_back")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 21, height: 21)
                         .frame(width: 44, height: 44, alignment: .leading)
                 }
                 .disabled(isUpgradingForThisPage)
@@ -266,9 +266,10 @@ struct DeviceOtaUpgradeDetailView: View {
                 .frame(maxWidth: .infinity)
 
             HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.red)
+                Image("android_ota_warning")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 16, height: 16)
                 Text(L10n.t("更新过程中眼镜系统功能不可使用", "Glasses features are unavailable during the update"))
                     .font(AppTheme.notoSansSC(size: 13, weight: .regular))
                     .foregroundStyle(AppTheme.primaryText)
@@ -354,15 +355,16 @@ struct DeviceOtaUpgradeDetailView: View {
         }
     }
 
-    private func resultView(imageName: String, title: String, subtitle: String, isSystemImage: Bool = false, detail: String? = nil) -> some View {
+    private func resultView(imageName: String?, title: String, subtitle: String, detail: String? = nil) -> some View {
         GeometryReader { geometry in
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 0) {
-                    (isSystemImage ? Image(systemName: imageName) : Image(imageName))
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 136, height: 136)
-                        .foregroundStyle(AppTheme.secondaryText)
+                    if let imageName {
+                        Image(imageName)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 136, height: 136)
+                    }
 
                     Text(title)
                         .font(AppTheme.notoSansSC(size: 18, weight: .bold))

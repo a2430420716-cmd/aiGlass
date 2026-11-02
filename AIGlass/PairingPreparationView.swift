@@ -181,11 +181,9 @@ struct PairingPreparationView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("MOCO AI眼镜配对准备", "MOCO AI Glasses Pairing Prep"))
+            Text(L10n.t("眼镜配对准备", "Glasses Pairing Preparation"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 44)
 
             HStack {
                 Button {
@@ -241,7 +239,6 @@ struct PairingPreparationView: View {
             Text(item.type)
                 .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                 .foregroundStyle(AppTheme.primaryText)
-                .lineSpacing(4)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

@@ -35,7 +35,6 @@ struct AIRecordingListView: View {
     @State private var activeDialog: RecordingDialog?
     @State private var editingTitle = ""
     @State private var alertMessage: String?
-    @State private var importErrorMessage: String?
     @State private var toastMessage: String?
     @State private var audioPlayer: AVAudioPlayer?
     @State private var playbackTimer: Timer?
@@ -126,13 +125,6 @@ struct AIRecordingListView: View {
                 )
             }
         }
-        .overlay {
-            if let importErrorMessage {
-                AIRecordingImportFailureNotice(message: importErrorMessage) {
-                    self.importErrorMessage = nil
-                }
-            }
-        }
         .overlay(alignment: .bottom) {
             if let toastMessage {
                 Text(toastMessage)
@@ -211,7 +203,7 @@ struct AIRecordingListView: View {
                     recordingImport.resetStatus()
                 }
             case .failed(let message):
-                importErrorMessage = message
+                alertMessage = message
             default:
                 break
             }
@@ -384,8 +376,10 @@ struct AIRecordingListView: View {
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            AIRecordingEmptyFolderIcon()
-                .frame(width: 80, height: 68)
+            Image("android_ai_record_empty")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 100, height: 80)
 
             Text(L10n.t(
                 "暂无音频文件\n双指单击触控板，开始录音",
@@ -402,9 +396,10 @@ struct AIRecordingListView: View {
     private var importCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                AIRecordingImportFileIcon()
-                    .stroke(Color(red: 0.20, green: 0.20, blue: 0.20), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
-                    .frame(width: 26, height: 26)
+                Image("android_ai_record_import")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 28, height: 28)
 
                 Text(importCardText)
                     .font(AppTheme.notoSansSC(size: 16, weight: .bold))
@@ -438,8 +433,8 @@ struct AIRecordingListView: View {
         if recordingImport.isImporting {
             return recordingImport.statusText
         }
-        if case .failed = recordingImport.state {
-            return L10n.t("导入失败，请重试", "Import failed. Try again.")
+        if case .failed(let message) = recordingImport.state {
+            return message
         }
         if case .completed(let imported, _) = recordingImport.state {
             return L10n.t("已导入 \(imported) 项", "Imported \(imported) item(s)")
@@ -996,67 +991,6 @@ private struct RecordingProgressSlider: View {
     }
 }
 
-/// Native vector counterpart of Android's recording import document icon.
-private struct AIRecordingImportFileIcon: Shape {
-    func path(in rect: CGRect) -> Path {
-        let scale = min(rect.width, rect.height) / 24
-        return Path { path in
-            path.move(to: CGPoint(x: 5 * scale, y: 2 * scale))
-            path.addLine(to: CGPoint(x: 14 * scale, y: 2 * scale))
-            path.addLine(to: CGPoint(x: 20 * scale, y: 8 * scale))
-            path.addLine(to: CGPoint(x: 20 * scale, y: 22 * scale))
-            path.addLine(to: CGPoint(x: 5 * scale, y: 22 * scale))
-            path.closeSubpath()
-            path.move(to: CGPoint(x: 14 * scale, y: 2 * scale))
-            path.addLine(to: CGPoint(x: 14 * scale, y: 8 * scale))
-            path.addLine(to: CGPoint(x: 20 * scale, y: 8 * scale))
-            for (x, height) in [(8.0, 3.0), (10.0, 6.0), (12.0, 9.0), (14.0, 6.0), (16.0, 3.0)] {
-                path.move(to: CGPoint(x: x * scale, y: (15 - height / 2) * scale))
-                path.addLine(to: CGPoint(x: x * scale, y: (15 + height / 2) * scale))
-            }
-        }
-    }
-}
-
-private struct AIRecordingImportFailureNotice: View {
-    let message: String
-    let onDismiss: () -> Void
-
-    var body: some View {
-        ZStack(alignment: .bottom) {
-            Color.black.opacity(0.25)
-                .ignoresSafeArea()
-                .onTapGesture(perform: onDismiss)
-
-            VStack(alignment: .leading, spacing: 16) {
-                Text(L10n.t("导入失败", "Import Failed"))
-                    .font(AppTheme.notoSansSC(size: 18, weight: .medium))
-                    .foregroundStyle(AppTheme.primaryText)
-                Text(message)
-                    .font(AppTheme.notoSansSC(size: 15, weight: .regular))
-                    .foregroundStyle(AppTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button(action: onDismiss) {
-                    Text(L10n.t("确定", "OK"))
-                        .font(AppTheme.notoSansSC(size: 17, weight: .regular))
-                        .foregroundStyle(AppTheme.primaryText)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 48)
-                        .background(Color(red: 0.82, green: 0.82, blue: 0.82))
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(24)
-            .background(AppTheme.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
-            .padding(.horizontal, 12)
-            .padding(.bottom, 12)
-        }
-        .transition(.opacity)
-    }
-}
-
 private struct AIRecordingEmptyFolderIcon: View {
     var body: some View {
         GeometryReader { geometry in
@@ -1065,14 +999,10 @@ private struct AIRecordingEmptyFolderIcon: View {
 
             ZStack {
                 AIRecordingFolderBackShape()
-                    .fill(Color(red: 0.87, green: 0.87, blue: 0.87))
+                    .fill(Color(red: 0.62, green: 0.62, blue: 0.62))
 
                 AIRecordingFolderFrontShape()
-                    .fill(Color(red: 0.87, green: 0.87, blue: 0.87))
-                    .overlay {
-                        AIRecordingFolderFrontShape()
-                            .stroke(AppTheme.background, lineWidth: 3)
-                    }
+                    .fill(Color(red: 0.62, green: 0.62, blue: 0.62))
 
                 HStack(alignment: .center, spacing: width * 0.045) {
                     waveformBar(width: width * 0.015, height: height * 0.22)
@@ -1089,7 +1019,7 @@ private struct AIRecordingEmptyFolderIcon: View {
 
     private func waveformBar(width: CGFloat, height: CGFloat) -> some View {
         Capsule()
-            .fill(Color.white.opacity(0.85))
+            .fill(Color.black)
             .frame(width: width, height: height)
     }
 }

@@ -103,9 +103,10 @@ struct SimultaneousTranslationView: View {
                         dismiss()
                     }
                 } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(AppTheme.primaryText)
+                    Image("android_nav_back")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 22, height: 22)
                         .frame(width: 44, height: 44, alignment: .leading)
                 }
                 .buttonStyle(.plain)
@@ -201,10 +202,10 @@ struct SimultaneousTranslationView: View {
                     Text(TranslationLanguage.fromDisplayName(language).displayName)
                         .font(AppTheme.notoSansSC(size: 17, weight: .medium))
                         .foregroundStyle(AppTheme.primaryText)
-                    Image(systemName: "triangle.fill")
-                        .font(.system(size: 6))
-                        .foregroundStyle(AppTheme.secondaryText)
-                        .rotationEffect(.degrees(180))
+                    Image("android_translation_dropdown")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 8, height: 7)
                 }
             }
             .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
@@ -252,23 +253,14 @@ struct SimultaneousTranslationView: View {
                         controller.toggleRecording()
                     } label: {
                         ZStack {
-                            Circle()
-                                .fill(controller.isRecording
-                                      ? Color(red: 0.25, green: 0.55, blue: 1.0)
-                                      : Color.clear)
-                                .frame(width: 76, height: 76)
-
-                            Image("translation_record_button")
+                            Image("android_translation_record_background")
                                 .resizable()
                                 .scaledToFit()
                                 .frame(width: 76, height: 76)
-                                .opacity(controller.isRecording ? 0.0 : 1)
-
-                            if controller.isRecording {
-                                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                    .fill(Color.white)
-                                    .frame(width: 22, height: 22)
-                            }
+                            Image(controller.isRecording ? "android_translation_record_stop" : "android_translation_record_mic")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 36, height: 36)
                         }
                     }
                     .buttonStyle(.plain)

@@ -254,10 +254,8 @@ struct OperationGuideView: View {
     }
 
     private func localizedTitle(_ zh: String, en: String) -> String {
-        let text = isLangZh || en.isEmpty ? zh : en
-        return text
-            .replacingOccurrences(of: "功能键", with: "拍摄按钮")
-            .replacingOccurrences(of: "function key", with: "capture button", options: .caseInsensitive)
+        if isLangZh { return zh }
+        return en.isEmpty ? zh : en
     }
 
     /// 服务端旧数据仍可能返回「功能键」；只做展示映射，接口数据不改写。
@@ -267,7 +265,7 @@ struct OperationGuideView: View {
         }
         if !isLangZh,
            (guide.enTitle.localizedCaseInsensitiveContains("function") || guide.title.contains("功能键")) {
-            return "Capture Button"
+            return "Camera Button"
         }
         return localizedTitle(guide.title, en: guide.enTitle)
     }

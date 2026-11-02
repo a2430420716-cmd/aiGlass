@@ -112,9 +112,8 @@ struct DeviceSelectionView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
+        .padding(.vertical, 14)
         .padding(.horizontal, 20)
-        .frame(minHeight: 184)
         .background(AppTheme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius, style: .continuous))
         .shadow(color: AppTheme.cardShadow, radius: 10, y: 4)

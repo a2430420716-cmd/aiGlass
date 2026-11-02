@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">
+  <!-- Source: main/res/drawable/ic_account_signout_warning.xml; original Android VectorDrawable geometry, colors and dimensions. -->
+  <path d="M36,2A34,34 0,1 0,36 70A34,34 0,1 0,36 2M36,8A28,28 0,1 1,36 64A28,28 0,1 1,36 8" fill="#FF0000" />
+  <path d="M32,17L40,17L39,43L33,43Z" fill="#FF0000" />
+  <path d="M36,48A5,5 0,1 0,36 58A5,5 0,1 0,36 48" fill="#FF0000" />
+</svg>

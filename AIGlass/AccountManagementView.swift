@@ -366,9 +366,9 @@ private struct AccountSignOutConfirmView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 32) {
                     HStack(alignment: .top, spacing: 14) {
-                        Image(systemName: "exclamationmark.circle")
-                            .font(.system(size: 28, weight: .regular))
-                            .foregroundStyle(warningColor)
+                        Image("android_account_signout_warning")
+                            .resizable()
+                            .scaledToFit()
                             .frame(width: 32, height: 32)
 
                         Text(L10n.t(
@@ -423,9 +423,10 @@ private struct AccountSignOutConfirmView: View {
 
             HStack {
                 Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(AppTheme.primaryText)
+                    Image("android_settings_back")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 21, height: 21)
                         .frame(width: 44, height: 44, alignment: .leading)
                 }
                 Spacer()
