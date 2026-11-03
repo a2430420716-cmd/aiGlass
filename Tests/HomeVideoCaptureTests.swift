@@ -20,6 +20,7 @@ enum HomeVideoCaptureTests {
     }
 
     static func main() {
+        testUnconfirmedStartDuringCall()
         // Actual October 9 firmware reply: STOP_VIDEO / undocumented result 6 / recording.
         let rejected = response([3, 6, 2])!
         check(rejected.action == .stopVideo, "preserve action for undocumented rejection")
@@ -98,5 +99,47 @@ enum HomeVideoCaptureTests {
         _ = state.receive(.videoRecording, at: 11.5)
         check(state.stopDelayRemaining(at: 11.5) == 0, "later periodic status does not block stop again")
         print("Home video capture: \(assertions) assertions passed")
+    }
+
+    static func testUnconfirmedStartDuringCall() {
+        var state = HomeVideoCaptureState()
+        // November 3 trace: START at 17:40:14.926 received no START reply and no
+        // recording status; the old UI nevertheless offered STOP at 17:40:21.799.
+        state.startSent(at: 14.926)
+        check(state.isStartPending && !state.hasConfirmedRecording && !state.isStopPending,
+              "A queued start is pending confirmation, never an active recording")
+        check(!state.receive(.unknown, at: 18.926) && state.isStartPending,
+              "A status query without a valid device reply cannot confirm recording")
+        check(!state.receive(.standby, at: 19) && state.isStartPending,
+              "An earlier standby query cannot confirm success or prematurely discard START")
+        check(state.expireUnconfirmedStart(), "Eight-second start timeout releases a silently rejected request")
+        check(!state.isStartPending && !state.hasConfirmedRecording && !state.isStopPending && state.startedAt == nil,
+              "Timeout restores the start button without inventing STOP or completion")
+        check(!state.receive(.shuttingDown, at: 41.070), "Later unrelated device state is not capture success")
+        check(!state.receive(.standby, at: 44.061), "Later standby must not complete a rejected start")
+
+        state.startSent(at: 50)
+        check(!state.receive(.voiceRecording, at: 50.1) && !state.isStartPending,
+              "A busy device report clears an unconfirmed start")
+        check(!state.receive(.standby, at: 51), "Busy then standby does not fabricate a recording")
+
+        state.startSent(at: 60)
+        check(!state.receive(.videoRecording, at: 67.9), "A late valid confirmation starts a real recording")
+        check(!state.isStartPending && state.hasConfirmedRecording,
+              "Only device recording evidence unlocks the stop action")
+        check(!state.expireUnconfirmedStart() && state.hasConfirmedRecording,
+              "A stale start timeout cannot clear a confirmed recording")
+        check(state.receive(.standby, at: 80), "Confirmed recording still completes normally")
+
+        state.startSent(at: 90)
+        state.reset()
+        check(!state.isStartPending && !state.expireUnconfirmedStart(), "Disconnect invalidates the pending request")
+        check(!state.receive(.standby, at: 91), "Reconnection cannot complete the prior start request")
+
+        state.startSent(at: 100)
+        check(state.expireUnconfirmedStart(), "Unconfirmed start can expire before a very late device reply")
+        check(!state.receive(.videoRecording, at: 110) && state.hasConfirmedRecording,
+              "Late genuine recording evidence is still accepted without automatically resending START")
+        check(state.receive(.standby, at: 120), "A late confirmed recording can complete once")
     }
 }

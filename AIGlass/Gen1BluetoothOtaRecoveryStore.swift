@@ -29,7 +29,8 @@ struct Gen1BluetoothOtaRecoveryStore {
         defaults.set(records, forKey: key)
     }
 
-    /// Called only for a terminal SDK success/reboot result, never for 100% alone.
+    /// Called after terminal SDK success or a fresh matching post-reboot version,
+    /// never for a transfer percentage or the loader's reboot alone.
     func clearAfterSuccess(targetID: UUID) {
         var records = defaults.dictionary(forKey: key) ?? [:]
         records.removeValue(forKey: targetID.uuidString)

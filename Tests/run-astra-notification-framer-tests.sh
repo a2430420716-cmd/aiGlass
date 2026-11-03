@@ -8,5 +8,6 @@ trap 'rm -rf "$test_dir"' EXIT
 xcrun swiftc -module-cache-path "$test_dir/cache" \
   AIGlass/Bluetooth/AstraA1/AstraA1BleProtocol.swift \
   AIGlass/Bluetooth/AstraA1/AstraNotificationFramer.swift \
+  AIGlass/BatteryIcon.swift \
   Tests/AstraNotificationFramerTests.swift -o "$test_dir/notification-framer"
 "$test_dir/notification-framer"

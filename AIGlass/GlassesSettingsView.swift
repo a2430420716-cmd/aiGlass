@@ -575,7 +575,7 @@ struct GlassesSettingsView: View {
     private func queryDocumentedSettings() {
         guard isGlassesConnected else { return }
         let ble = pairingCoordinator.astraA1BleManager
-        guard !ble.isVideoRecording, !ble.isVideoStopping, !ble.isTakingPhoto,
+        guard !ble.isVideoStarting, !ble.isVideoRecording, !ble.isVideoStopping, !ble.isTakingPhoto,
               !ble.isAIRecording, !ble.isAIVisionTransferBusy,
               !ble.isFirmwareUpgradeFlowBusy, ble.isDeviceRuntimeIdle else {
             DebugLogStore.logBLEEvent("settings queries deferred: device busy", detail: "target=\(ble.deviceBluetoothIdentifier ?? "none") runtime=\(ble.deviceRuntimeStatus.name) recording=\(ble.isVideoRecording)")

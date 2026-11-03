@@ -871,6 +871,16 @@ enum AstraA1BleProtocol {
         return max(0, min(100, Int(data[12])))
     }
 
+    /// chargestat：10 字节命令头 + LE16 长度 1 + 单字节状态。
+    /// 与安卓一致：0=未接充电器，非 0=已接充电器（兼容协议列出的状态 2）。
+    static func parseChargingStateNotify(_ data: Data) -> (state: UInt8, isCharging: Bool)? {
+        let bytes = Array(data)
+        guard bytes.count == 13,
+              bytes.prefix(10).elementsEqual("chargestat".utf8),
+              bytes[10] == 1, bytes[11] == 0 else { return nil }
+        return (bytes[12], bytes[12] != 0)
+    }
+
     /// 解析电量字符串，并尽量识别充电状态。
     /// 支持：纯数字 `"13"`；`"13,1"` / `"13|1"` / `"13/1"`（末位 1=充电）；
     /// 以及 value 原始字节在数字后多 1 字节且为 `0x01` 表示充电。

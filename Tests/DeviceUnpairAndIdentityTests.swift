@@ -65,21 +65,58 @@ enum DeviceUnpairAndIdentityTests {
         check(HomeDeviceSelection.canManageConnection(homeIsVisible: true, pairingInProgress: false, hasPresentedPage: false),
               "Returning to the home root resumes selection of the current bound device")
 
+        let cardOrder = bound + ["glasses-C", "find-device"]
+        let offlineOrder = HomeDeviceSelection.connectedFirst(cardOrder) { _ in false }
+        check(offlineOrder == cardOrder,
+              "All disconnected glasses retain their original order and the find-device card stays last")
+        let connectedOrder = HomeDeviceSelection.connectedFirst(cardOrder) { $0 == "glasses-B" }
+        check(connectedOrder == ["glasses-B", "glasses-A", "glasses-C", "find-device"],
+              "Connecting B promotes it to page one while preserving every other card's relative order")
+        check(cardOrder == ["glasses-A", "glasses-B", "glasses-C", "find-device"],
+              "Live sorting must not mutate the underlying bound-device order")
+        check(HomeDeviceSelection.connectedFirst(connectedOrder) { $0 == "glasses-B" } == connectedOrder,
+              "Repeated BLE updates leave the connected-first order unchanged")
+        check(HomeDeviceSelection.connectedFirst(cardOrder) { $0 == "unbound" } == cardOrder,
+              "An unbound peripheral cannot reorder the home cards")
+        check(HomeDeviceSelection.connectedFirst([String]()) { _ in true }.isEmpty,
+              "Empty bindings have no connected card to promote")
+        let selectedKey = HomeDeviceSelection.keyOnReturn(selected: "glasses-B", connected: "glasses-B", bound: bound)
+        check(connectedOrder.firstIndex(where: { $0 == selectedKey }) == 0,
+              "The selected B keeps its identity and moves to page one after connection")
+        check(offlineOrder.firstIndex(where: { $0 == selectedKey }) == 1,
+              "After disconnect, B stays selected when the original order returns")
+
         var carousel = HomeCarouselSelection()
-        carousel.synchronize(to: 1)
-        check(carousel.receiveVisibleIndex(0) == nil && carousel.index == 1,
+        carousel.synchronize(to: 1, cardOrder: cardOrder)
+        check(carousel.receiveVisibleIndex(0, cardOrder: cardOrder) == nil && carousel.index == 1,
               "An initial layout callback for A cannot replace connected B")
         carousel.beginUserScroll()
-        check(carousel.receiveVisibleIndex(0) == 0 && carousel.index == 0,
+        check(carousel.receiveVisibleIndex(0, cardOrder: cardOrder) == 0 && carousel.index == 0,
               "A real swipe to A still changes the reconnection target")
-        check(carousel.receiveVisibleIndex(nil) == nil,
+        check(carousel.receiveVisibleIndex(nil, cardOrder: cardOrder) == nil,
               "Transient missing scroll positions do not select another device")
-        carousel.synchronize(to: 1)
-        check(carousel.receiveVisibleIndex(0) == nil && carousel.index == 1,
+        carousel.synchronize(to: 1, cardOrder: cardOrder)
+        check(carousel.receiveVisibleIndex(0, cardOrder: cardOrder) == nil && carousel.index == 1,
               "Returning from another page resets the old drag session and retains connected B")
-        carousel.synchronize(to: 2)
-        check(carousel.receiveVisibleIndex(0) == nil && carousel.index == 2,
+        carousel.synchronize(to: 2, cardOrder: cardOrder)
+        check(carousel.receiveVisibleIndex(0, cardOrder: cardOrder) == nil && carousel.index == 2,
               "Server list reordering cannot reset an explicit selected device to the first card")
+
+        carousel.synchronize(to: 1, cardOrder: cardOrder)
+        carousel.beginUserScroll()
+        check(carousel.receiveVisibleIndex(1, cardOrder: connectedOrder) == nil,
+              "Promoting connected B rejects old scroll positions before the reorder observer runs")
+        carousel.synchronize(to: 0, cardOrder: connectedOrder)
+        check(carousel.receiveVisibleIndex(1, cardOrder: connectedOrder) == nil && carousel.index == 0,
+              "A reorder layout callback must not switch from connected B to disconnected A")
+        carousel.beginUserScroll()
+        check(carousel.receiveVisibleIndex(1, cardOrder: connectedOrder) == 1,
+              "After reordering, an explicit swipe can still select A")
+        check(carousel.receiveVisibleIndex(-1, cardOrder: connectedOrder) == nil
+              && carousel.receiveVisibleIndex(connectedOrder.count, cardOrder: connectedOrder) == nil,
+              "Out-of-range layout callbacks cannot change the device selection")
+        check(carousel.receiveVisibleIndex(1, cardOrder: offlineOrder) == nil,
+              "Disconnecting B also rejects callbacks when the original card order returns")
         print("Device reset/identity: \(assertions) assertions passed")
     }
 }

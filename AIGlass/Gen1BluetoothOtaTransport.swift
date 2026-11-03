@@ -23,13 +23,13 @@ final class Gen1BluetoothOtaTransport: NSObject {
     private var targetIdentifier: UUID?
     private var reconnectMAC: String?
     private var reconnectRequested = false
-    private var didStartImage = false
+    private var sessionState = Gen1BluetoothOtaSessionState()
     private var continuation: CheckedContinuation<Void, Error>?
     private var watchdog: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var cancelGraceTask: Task<Void, Never>?
     private var finishingResult: Result<Void, Error>?
-    private var onProgress: ((Int) -> Void)?
+    private var onPhaseChanged: ((Gen1BluetoothOtaSessionState.Phase) -> Void)?
     private var log: (String) -> Void = { _ in }
     private var lastLoggedResult: JL_OTAResult?
     private var lastLoggedPercent: Int?
@@ -45,15 +45,17 @@ final class Gen1BluetoothOtaTransport: NSObject {
     func upgrade(data: Data, peripheralIdentifier: UUID,
                  recoveryRecord: Gen1BluetoothOtaRecoveryStore.Record,
                  log: @escaping (String) -> Void,
-                 onProgress: @escaping (Int) -> Void) async throws {
+                 onPhaseChanged: @escaping (Gen1BluetoothOtaSessionState.Phase) -> Void) async throws {
         guard continuation == nil, !data.isEmpty else {
             throw TransportError.message("Invalid or already active first-generation Bluetooth update")
         }
         firmware = data
         targetIdentifier = peripheralIdentifier
+        reconnectMAC = nil
+        reconnectRequested = false
         self.recoveryRecord = recoveryRecord
         self.log = log
-        self.onProgress = onProgress
+        self.onPhaseChanged = onPhaseChanged
         lastLoggedResult = nil
         lastLoggedPercent = nil
         log("RCSP transport started firmwareBytes=\(data.count)")
@@ -61,7 +63,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
         authentication.delegate = self
         sdk.resetOTAManager()
         sdk.bleOnly = true
-        didStartImage = false
+        sessionState = Gen1BluetoothOtaSessionState()
         finishingResult = nil
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -76,6 +78,10 @@ final class Gen1BluetoothOtaTransport: NSObject {
 
     private func connectTarget() {
         guard continuation != nil, finishingResult == nil else { return }
+        if let peripheral, peripheral.state != .disconnected {
+            if peripheral.state == .disconnecting, reconnectRequested { queueReconnectAttempt() }
+            return
+        }
         if reconnectMAC == nil, let targetIdentifier,
            let device = central.retrievePeripherals(withIdentifiers: [targetIdentifier]).first {
             peripheral = device
@@ -101,7 +107,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
         guard continuation != nil, finishingResult == nil else { return }
         finishingResult = result
         switch result {
-        case .success: log("RCSP finished terminalSuccess=true; version still requires confirmation")
+        case .success: log("RCSP transfer finished; version still requires confirmation")
         case .failure(let error): log("RCSP finished terminalSuccess=false error=\(error.localizedDescription)")
         }
         connectionEpoch = UUID()
@@ -147,7 +153,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
         authenticated = false
         firmware = Data()
         recoveryRecord = nil
-        onProgress = nil
+        onPhaseChanged = nil
         log("RCSP transport released")
         log = { _ in }
         continuation.resume(with: result)
@@ -177,12 +183,15 @@ final class Gen1BluetoothOtaTransport: NSObject {
 
     private func scheduleReconnect(mac: String? = nil) {
         guard continuation != nil, finishingResult == nil else { return }
+        // The SDK can report UUID reconnect before its MAC reconnect result.
+        // Keep the more specific address without restarting the reconnect budget.
+        if let mac, !mac.isEmpty { reconnectMAC = mac }
+        guard sessionState.requestReconnect() else { return }
+        onPhaseChanged?(sessionState.phase)
         log("RCSP SDK requested reconnect byMAC=\(mac != nil)")
-        reconnectMAC = mac
-        if mac == nil, let identifier = UUID(uuidString: sdk.mBLE_UUID) { targetIdentifier = identifier }
+        if reconnectMAC == nil, let identifier = UUID(uuidString: sdk.mBLE_UUID) { targetIdentifier = identifier }
         reconnectRequested = true
         connectionEpoch = UUID()
-        didStartImage = false
         authenticated = false
         pendingWrites.removeAll()
         writeInFlight = false
@@ -191,11 +200,17 @@ final class Gen1BluetoothOtaTransport: NSObject {
         activeService = nil
         if let peripheral { central.cancelPeripheralConnection(peripheral) }
         armTimeout(seconds: 90, message: "一代蓝牙升级重连超时，请重新连接眼镜后检查版本")
+        queueReconnectAttempt()
+    }
+
+    private func queueReconnectAttempt() {
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard !Task.isCancelled else { return }
-            self?.connectTarget()
+            guard !Task.isCancelled, let self, self.reconnectRequested,
+                  self.continuation != nil, self.finishingResult == nil else { return }
+            self.reconnectTask = nil
+            self.connectTarget()
         }
     }
 
@@ -242,7 +257,8 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBCentralManagerDelegate {
         self.peripheral = peripheral
         connectionEpoch = UUID()
         targetIdentifier = peripheral.identifier
-        reconnectRequested = false
+        reconnectTask?.cancel()
+        reconnectTask = nil
         peripheral.delegate = self
         peripheral.discoverServices([CBUUID(string: "AE00")])
     }
@@ -250,6 +266,7 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         guard isActivePeripheral(peripheral) else { return }
         log("RCSP connect failed error=\(error?.localizedDescription ?? "none")")
+        if reconnectRequested { queueReconnectAttempt(); return }
         finish(.failure(error ?? TransportError.message("一代蓝牙升级服务连接失败")))
     }
 
@@ -265,11 +282,10 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBCentralManagerDelegate {
         pendingWrites.removeAll()
         writeInFlight = false
         sdk.noteEntityDisconnected()
+        if reconnectRequested { queueReconnectAttempt(); return }
         // Allow an already queued SDK reconnect/reboot result to arrive. Never restart
         // an interrupted transfer solely because the radio disconnected.
-        if !reconnectRequested {
-            armTimeout(seconds: 8, message: "一代蓝牙升级连接中断，请重新连接眼镜后检查版本")
-        }
+        armTimeout(seconds: 8, message: "一代蓝牙升级连接中断，请重新连接眼镜后检查版本")
     }
 }
 
@@ -310,7 +326,6 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBPeripheralDelegate {
         }
         sdk.mBLE_UUID = peripheral.identifier.uuidString
         sdk.mBLE_NAME = peripheral.name ?? ""
-        sdk.noteEntityConnected()
         authenticated = false
         authentication.hashResetPair()
         let epoch = connectionEpoch
@@ -324,6 +339,7 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBPeripheralDelegate {
                 }
                 self.authenticated = true
                 self.log("RCSP authenticated; querying device features")
+                self.sdk.noteEntityConnected()
                 self.sdk.cmdTargetFeature()
             }
         }
@@ -365,10 +381,12 @@ extension Gen1BluetoothOtaTransport: JLHashHandlerDelegate, JL_OTAManagerDelegat
     }
 
     private func startImageWhenReady() {
-        guard continuation != nil, finishingResult == nil, !didStartImage, authenticated,
-              peripheral?.state == .connected, writeCharacteristic != nil else { return }
-        didStartImage = true
-        log("RCSP start image bytes=\(firmware.count)")
+        guard continuation != nil, finishingResult == nil, authenticated,
+              peripheral?.state == .connected, writeCharacteristic != nil,
+              let command = sessionState.imageCommandAfterFeature() else { return }
+        reconnectRequested = false
+        onPhaseChanged?(sessionState.phase)
+        log("RCSP image command=\(command) bytes=\(firmware.count) phase=\(sessionState.phase)")
         // Persist before the SDK can write firmware, including an app termination
         // before its first progress callback. Connection/authentication failures
         // before this point neither create nor erase recovery evidence.
@@ -377,7 +395,14 @@ extension Gen1BluetoothOtaTransport: JLHashHandlerDelegate, JL_OTAManagerDelegat
             log("RCSP recovery marker persisted before submitting image")
         }
         armTimeout(seconds: 180, message: "一代蓝牙固件传输超时")
-        sdk.cmdOTAData(firmware)
+        switch command {
+        case .start:
+            sdk.cmdOTAData(firmware)
+        case .resume:
+            // Keep the submitted image and SDK state across the loader reconnect.
+            // The device now requests firmware blocks; do not restart the loader.
+            sdk.cmdOtaDataIIResult(nil)
+        }
     }
 
     nonisolated func otaCancel() {
@@ -400,24 +425,42 @@ extension Gen1BluetoothOtaTransport: JLHashHandlerDelegate, JL_OTAManagerDelegat
             lastLoggedPercent = percent
         }
         switch result {
-        case .success, .reboot:
-            // Both are terminal events in the vendor's full OTA sample. The caller
-            // reconnects the normal service and verifies the fresh firmware version.
+        case .success:
+            guard sessionState.receiveSuccess() else {
+                log("RCSP early success ignored; second-stage firmware transfer not confirmed")
+                return
+            }
+            onPhaseChanged?(sessionState.phase)
             if let recoveryRecord {
                 Gen1BluetoothOtaRecoveryStore().clearAfterSuccess(targetID: recoveryRecord.targetID)
                 log("RCSP terminal success; recovery marker cleared")
             }
-            onProgress?(100)
-            finish(.success(()))
+            finish(.success(Void()))
+        case .reboot:
+            // A loader reboot is the boundary between transfers, not OTA success.
+            // After the entire second transfer, verify the post-reboot version.
+            if sessionState.canVerifyAfterReboot {
+                log("RCSP reboot after firmware transfer; retaining recovery marker until version confirmation")
+                finish(.success(Void()))
+            } else {
+                scheduleReconnect()
+            }
         case .upgrading:
-            guard let percent else { return }
-            onProgress?(percent)
+            guard !reconnectRequested, authenticated, let percent else { return }
+            sessionState.receiveFirmwareProgress(percent)
+            onPhaseChanged?(sessionState.phase)
             armTimeout(seconds: 180, message: "一代蓝牙升级进度超时，请重新连接眼镜后检查版本")
         case .reconnect, .reconnectUpdateSource:
             scheduleReconnect()
         case .reconnectWithMacAddr:
             scheduleReconnect(mac: sdk.bleAddr)
-        case .preparing, .prepared:
+        case .preparing:
+            guard !reconnectRequested, authenticated else { return }
+            if let percent { sessionState.receiveLoaderProgress(percent) }
+            onPhaseChanged?(sessionState.phase)
+            armTimeout(seconds: 180, message: "一代蓝牙升级设备响应超时")
+        case .prepared:
+            guard !reconnectRequested, authenticated else { return }
             armTimeout(seconds: 180, message: "一代蓝牙升级设备响应超时")
         case .disconnect:
             if !reconnectRequested {

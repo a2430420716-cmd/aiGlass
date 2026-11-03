@@ -76,6 +76,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 首页拍照/录像按钮状态（由全局状态跳变驱动）。
     @Published private(set) var isTakingPhoto = false
     @Published private(set) var photoCompleted = false
+    @Published private(set) var isVideoStarting = false
     @Published private(set) var isVideoRecording = false
     @Published private(set) var isVideoStopping = false
     @Published private(set) var videoCompleted = false
@@ -2115,8 +2116,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 固件在忙（传输/录音）时会回 0，直接覆盖会让首页反复跳 0%。
     private func applyBatteryPercent(_ percent: Int, isCharging: Bool, source: String) {
         let clamped = max(0, min(100, percent))
+        // 二代充电状态只认 chargestat；batt0 / batteryntf / BAS 电量刷新均不覆盖。
+        let charging = deviceGeneration == .gen2 ? deviceIsCharging : isCharging
         if clamped == 0, let last = lastKnownBatteryPercent, last > 0 {
-            deviceIsCharging = isCharging
+            deviceIsCharging = charging
             print("\(logTag) battery \(source)=0 ignored, keep last=\(last)%")
             return
         }
@@ -2125,9 +2128,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             lastKnownBatteryPeripheralID = connectedPeripheral?.identifier
         }
         deviceBattery = "\(clamped)"
-        deviceIsCharging = isCharging
+        deviceIsCharging = charging
         isBatteryLevelKnown = true
-        print("\(logTag) battery updated source=\(source) level=\(clamped)% charging=\(isCharging)")
+        print("\(logTag) battery updated source=\(source) level=\(clamped)% charging=\(charging)")
     }
 
     /// 连上后周期性主动查询电量（安卓 startBatteryPolling 等价实现）。
@@ -3429,6 +3432,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     func toggleVideoRecordingFromHome() {
+        guard !isVideoStarting else { return }
         if deviceRuntimeStatus == .videoRecording || isVideoRecording {
             stopVideoRecordingFromHome()
         } else {
@@ -3441,7 +3445,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             mediaActionAlertMessage = lowBatteryMediaMessage
             return
         }
-        guard ensureMediaActionAllowed(busy: isVideoStopping || videoCompleted) else { return }
+        guard ensureMediaActionAllowed(busy: isVideoStarting || isVideoStopping || videoCompleted) else { return }
         guard isDeviceRuntimeIdle else {
             mediaActionAlertMessage = deviceRuntimeStatus.busyMessage
             return
@@ -3459,13 +3463,16 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             mediaActionAlertMessage = L10n.t("发送开始录像命令失败，请重试", "Failed to start video. Try again.")
             return
         }
-        // 对齐 Android：写命令成功后立即切成“结束录像”，后续回包可纠正真实状态。
-        isVideoRecording = true
+        // A queued START can be silently rejected during a call. Wait for actual
+        // recording evidence before showing Stop Video or a started message.
+        isVideoStarting = true
+        isVideoRecording = false
         isVideoStopping = false
         // Recording duration is configured on the glasses. Only the device's
         // recording -> standby reports complete this capture; no timed STOP.
         homeVideoCapture.startSent(at: ProcessInfo.processInfo.systemUptime)
-        mediaActionToastMessage = L10n.t("眼镜开始录像，请从相册中导入", "Recording started. Import it from Album.")
+        scheduleHomeVideoStartConfirmation()
+        mediaActionToastMessage = L10n.t("已发送录像指令，等待眼镜确认", "Video command sent. Waiting for glasses confirmation.")
         logVideoCapture("start-sent", detail: "durationOwner=device automaticStopCommand=false minimumManualStopDuration=3s")
     }
 
@@ -3564,12 +3571,20 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if isTakingPhoto {
             logPhotoCapture("device-status", detail: "previous=\(previous.name) current=\(current.name)")
         }
+        let wasVideoStarting = isVideoStarting
         let videoFinished = homeVideoCapture.receive(
             current, at: ProcessInfo.processInfo.systemUptime, allowsCompletion: allowsVideoCompletion
         )
+        isVideoStarting = homeVideoCapture.isStartPending
+        if !isVideoStarting { cancelHomeVideoStartConfirmation() }
         isVideoRecording = current == .videoRecording
-            || (current == .unknown && homeVideoCapture.startedAt != nil)
+            || (current == .unknown && homeVideoCapture.hasConfirmedRecording)
         isVideoStopping = homeVideoCapture.isStopPending
+        if wasVideoStarting, current == .videoRecording {
+            mediaActionToastMessage = L10n.t("眼镜开始录像，请从相册中导入", "Recording started. Import it from Album.")
+        } else if wasVideoStarting, !isVideoStarting, !isVideoRecording {
+            mediaActionToastMessage = current.busyMessage
+        }
         if current == .videoRecording || previous == .videoRecording || videoFinished {
             logVideoCapture("device-status", detail: "previous=\(previous.name) current=\(current.name) completionAllowed=\(allowsVideoCompletion)")
         }
@@ -3619,6 +3634,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         let startRejected = response.action == .startVideo && response.result != .accepted
         if startRejected, response.currentStatus != .videoRecording {
             homeVideoCapture.reset()
+            isVideoStarting = false
+            cancelHomeVideoStartConfirmation()
             cancelMediaCompletionFallback()
         }
         let stopRejected = response.action == .stopVideo && response.result != .accepted
@@ -3712,6 +3729,42 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
     }
 
+    private var homeVideoStartConfirmationWorkItem: DispatchWorkItem?
+    private var homeVideoStartConfirmationID: UUID?
+
+    private func scheduleHomeVideoStartConfirmation(didQueryStatus: Bool = false) {
+        cancelHomeVideoStartConfirmation()
+        let requestID = UUID()
+        homeVideoStartConfirmationID = requestID
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.homeVideoStartConfirmationID == requestID,
+                  self.isReady, self.isVideoStarting else { return }
+            if !didQueryStatus {
+                self.logVideoCapture("start-awaiting-status", detail: "elapsed=4s action=query_status recordingConfirmed=false")
+                self.forceQueryDeviceStatus(reason: "video-start-awaiting-confirmation")
+                self.scheduleHomeVideoStartConfirmation(didQueryStatus: true)
+                return
+            }
+            guard self.homeVideoCapture.expireUnconfirmedStart() else { return }
+            self.isVideoStarting = false
+            self.cancelHomeVideoStartConfirmation()
+            self.logVideoCapture("start-unconfirmed", detail: "elapsed=8s recordingConfirmed=false noAutomaticStop=true noAutomaticResend=true")
+            self.mediaActionAlertMessage = L10n.t(
+                "未确认眼镜开始录像，请检查是否正在通话或设备正忙，稍后重试。",
+                "Glasses have not confirmed recording started. Check for an ongoing call or a busy device, then try again."
+            )
+            self.scheduleDeferredRoutineRetry(after: 0.6)
+        }
+        homeVideoStartConfirmationWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
+    }
+
+    private func cancelHomeVideoStartConfirmation() {
+        homeVideoStartConfirmationWorkItem?.cancel()
+        homeVideoStartConfirmationWorkItem = nil
+        homeVideoStartConfirmationID = nil
+    }
+
     private var mediaCompletionFallbackWorkItem: DispatchWorkItem?
 
     /// Query missing completion evidence once; a timeout unlocks retry without
@@ -3760,7 +3813,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         homePhotoNewFileQueryWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.isReady else { return }
-            guard !self.isVideoRecording, !self.isVideoStopping,
+            guard !self.isVideoStarting, !self.isVideoRecording, !self.isVideoStopping,
                   self.deviceRuntimeStatus != .videoRecording else {
                 self.logVideoCapture("skip-file-query", detail: "reason=recording")
                 return
@@ -3774,7 +3827,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func logVideoCapture(_ event: String, detail: String = "") {
         DebugLogStore.logBLEEvent("Video capture \(event)", detail:
-            "target=\(deviceBluetoothIdentifier ?? "none") generation=\(deviceGeneration) gattState=\(connectStateDescription(connectionState)) peripheralState=\(connectedPeripheral.map { peripheralStateDescription($0.state) } ?? "none") runtime=\(deviceRuntimeStatus.name) recording=\(isVideoRecording) stopping=\(isVideoStopping) completed=\(videoCompleted) \(detail)")
+            "target=\(deviceBluetoothIdentifier ?? "none") generation=\(deviceGeneration) gattState=\(connectStateDescription(connectionState)) peripheralState=\(connectedPeripheral.map { peripheralStateDescription($0.state) } ?? "none") runtime=\(deviceRuntimeStatus.name) starting=\(isVideoStarting) recording=\(isVideoRecording) stopping=\(isVideoStopping) completed=\(videoCompleted) \(detail)")
     }
 
     private func forceQueryDeviceStatus(reason: String) {
@@ -3936,6 +3989,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func resetHomeMediaCaptureState() {
         homeVideoCapture.reset()
+        cancelHomeVideoStartConfirmation()
         homePhotoAttemptID = nil
         homePhotoObservedTaking = false
         homePhotoBaselineCount = 0
@@ -3946,6 +4000,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         homePhotoNewFileQueryWorkItem = nil
         isTakingPhoto = false
         photoCompleted = false
+        isVideoStarting = false
         isVideoRecording = false
         isVideoStopping = false
         videoCompleted = false
@@ -4637,7 +4692,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             return true
         }
         guard !isFirmwareUpgradeFlowBusy, gen1OTAPeripheralID == nil,
-              !isAIVisionTransferBusy, !isVideoRecording, !isVideoStopping,
+              !isAIVisionTransferBusy, !isVideoStarting, !isVideoRecording, !isVideoStopping,
               !isTakingPhoto, !isAIRecording,
               deviceRuntimeStatus == .standby || deviceRuntimeStatus == .unknown else { return false }
         if let oldID = savedPeripheralID() {
@@ -6069,6 +6124,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func markDeviceRuntimeStatusUnknown(reason: String) {
+        homeVideoCapture.expireUnconfirmedStart()
+        isVideoStarting = false
+        cancelHomeVideoStartConfirmation()
         isTakingPhoto = false
         isVideoStopping = false
         applyDeviceRuntimeStatus(.unknown, source: reason)
@@ -7046,6 +7104,19 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         DebugLogStore.logBLEReceived(data)
         print("\(logTag) notify command=\(command)")
 
+        // 二代连接启用通知后即上报一次，插拔充电器时继续上报。
+        // 独立更新 Published 状态，让首页在电量百分比不变时也立即切换充电图标。
+        if command == "chargestat" {
+            guard deviceGeneration == .gen2 else { return }
+            if let response = AstraA1BleProtocol.parseChargingStateNotify(data) {
+                deviceIsCharging = response.isCharging
+                print("\(logTag) chargestat state=\(response.state) charging=\(response.isCharging)")
+            } else {
+                print("\(logTag) chargestat parse failed bytes=\(data.count)")
+            }
+            return
+        }
+
         // 眼镜连上后首包电量走 getdevinfo batt0，之后约每 2 分钟主动上报 batteryntf。
         if command == "batteryntf" {
             if let level = AstraA1BleProtocol.parseBatteryNotify(data) {
@@ -7431,7 +7502,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 deviceBattery = result.value
                 isBatteryLevelKnown = true
             }
-            print("\(logTag) battery percent=\(battery.percent.map(String.init) ?? "nil") charging=\(battery.isCharging) raw=\(result.value)")
+            print("\(logTag) battery percent=\(battery.percent.map(String.init) ?? "nil") charging=\(deviceIsCharging) raw=\(result.value)")
         default:
             break
         }
@@ -8608,7 +8679,8 @@ extension AstraA1BleManager: CBPeripheralDelegate {
             print("\(logTag) didUpdateValue char=\(uuid)")
 
             // 标准电池服务电量（0x2A19）：连接后几乎立刻可读，先展示；
-            // 随后 getdevinfo batt0 会覆盖（含充电态解析）。读到 0 视为固件尚未采样，忽略。
+            // 随后 getdevinfo batt0 会覆盖电量。二代充电态由 chargestat 独立维护。
+            // 读到 0 视为固件尚未采样，忽略。
             if uuid == AstraA1BleProtocol.batteryLevelCharacteristicUUID {
                 if let raw = data.first {
                     let percent = max(0, min(100, Int(raw)))
@@ -8622,8 +8694,9 @@ extension AstraA1BleManager: CBPeripheralDelegate {
                 return
             }
 
-            // 标准电池状态（0x2BED）：解析充电状态
+            // 标准电池状态（0x2BED）：二代使用 chargestat，避免另一个来源覆盖插拔通知。
             if uuid == AstraA1BleProtocol.batteryLevelStatusCharacteristicUUID {
+                guard deviceGeneration != .gen2 else { return }
                 if let charging = AstraA1BleProtocol.parseCharging(fromLevelStatus: data) {
                     deviceIsCharging = charging
                     print("\(logTag) battery level status charging=\(charging)")

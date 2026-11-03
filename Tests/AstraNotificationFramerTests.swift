@@ -37,6 +37,8 @@ enum AstraNotificationFramerTests {
 
     static func main() {
         testCompleteConcatenation()
+        testChargingStateAndIcon()
+        testChargingStateFramingAndMalformedPackets()
         testTruncationAndFullReadAreIndependent()
         testLegacyFallback()
         testLegacyCloseWifiAcknowledgement()
@@ -45,6 +47,54 @@ enum AstraNotificationFramerTests {
         testInvalidHeadersAndLengths()
         testBinaryPayloadAndNoCrossSessionState()
         print("Astra notification framing: \(assertionCount) assertions passed")
+    }
+
+    private static func testChargingStateAndIcon() {
+        // Exact frames from the charging notification protocol document.
+        let unplugged = Data([0x63, 0x68, 0x61, 0x72, 0x67, 0x65, 0x73, 0x74, 0x61, 0x74, 0x01, 0x00, 0x00])
+        let plugged = Data([0x63, 0x68, 0x61, 0x72, 0x67, 0x65, 0x73, 0x74, 0x61, 0x74, 0x01, 0x00, 0x01])
+        check(AstraA1BleProtocol.parseChargingStateNotify(unplugged)?.isCharging == false, "Unplugging clears charging")
+        check(AstraA1BleProtocol.parseChargingStateNotify(plugged)?.isCharging == true, "Plugging in starts charging")
+        for state: UInt8 in [0, 1, 2, 255] {
+            let frame = packet("chargestat", [state])
+            let response = AstraA1BleProtocol.parseChargingStateNotify(frame)
+            check(response?.state == state, "Keep the raw state for diagnostics")
+            check(response?.isCharging == (state != 0), "Match Android's nonzero charging state handling")
+            let sliced = (Data([0xFF]) + frame).dropFirst()
+            check(AstraA1BleProtocol.parseChargingStateNotify(sliced)?.state == state, "Charging parser supports Data slices")
+        }
+        // Percentage stays constant while the charger is inserted and removed.
+        // All existing battery levels must switch to their corresponding bolt asset.
+        for (percent, level) in [(0, 0), (15, 0), (16, 1), (40, 1), (41, 2), (60, 2),
+                                 (61, 3), (80, 3), (81, 4), (90, 4), (91, 5), (99, 5), (100, 6)] {
+            for frame in [unplugged, plugged, unplugged] {
+                let charging = AstraA1BleProtocol.parseChargingStateNotify(frame)!.isCharging
+                let expected = charging ? "Battery_charg\(level)" : "Battery\(level)"
+                check(BatteryIcon.assetName(for: percent, isCharging: charging) == expected,
+                      "Charger changes select the correct icon without a new percentage")
+            }
+        }
+    }
+
+    private static func testChargingStateFramingAndMalformedPackets() {
+        let plugged = packet("chargestat", [1])
+        let battery = packet("batteryntf", [70])
+        let unplugged = packet("chargestat", [0])
+        let frames = [plugged, battery, unplugged]
+        check(AstraNotificationFramer.frames(in: frames.reduce(Data(), +)) == frames, "Charging and battery reports retain wire order")
+        let incomplete = declared(packet("getdevinfo", [0x31]), length: 200)
+        check(AstraNotificationFramer.frames(in: incomplete + plugged) == [incomplete, plugged], "A truncated info response cannot hide chargestat")
+        check(AstraNotificationFramer.frames(in: Data([0xFF, 0xFF]) + plugged) == [plugged], "Resynchronize to a complete charging notification")
+        let binary = packet("imgrecdata", Array(plugged))
+        check(AstraNotificationFramer.frames(in: binary + unplugged) == [binary, unplugged], "Charging header bytes inside binary payload are not notifications")
+        for count in 0..<plugged.count {
+            check(AstraA1BleProtocol.parseChargingStateNotify(Data(plugged.prefix(count))) == nil, "Incomplete charging packets cannot change the icon")
+        }
+        for invalid in [packet("batteryntf", [1]), packet("chargestat"),
+                        packet("chargestat", [1, 0]), declared(plugged, length: 0),
+                        declared(plugged, length: 256), plugged + Data([0])] {
+            check(AstraA1BleProtocol.parseChargingStateNotify(invalid) == nil, "Reject wrong commands, lengths, and trailing bytes")
+        }
     }
 
     private static func testCompleteConcatenation() {

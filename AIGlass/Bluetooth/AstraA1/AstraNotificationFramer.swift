@@ -15,7 +15,7 @@ enum AstraNotificationFramer {
     private static let knownCommands: Set<String> = [
         "getdevinfo", "hasnewfile", "toopenwifi", "getworkpat", "getalgoinf",
         "dllupdrsp0", "dllprogres", "deletefile", "closewifi", "closewifi0",
-        "wificonfig", "otaprogres", "otaprogre", "batteryntf", "devstatus0",
+        "wificonfig", "otaprogres", "otaprogre", "batteryntf", "chargestat", "devstatus0",
         "actionrsp0", "guideevt00", "eqmodersp0", "vidresrsp0", "weardetrsp",
         "testresult", "takephoto0", "startvideo", "stopvideo0", "imgrecdata",
         "imgrecrsp0", "aivoicests", "aivoicedat", "aivoicetur", "aivsilrsp0",

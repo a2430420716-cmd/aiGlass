@@ -20,8 +20,13 @@ Aligned with `glasses(3).zip`: Android `Gen1OtaFailureStore`,
 - Keep existing bound-device, generation, idle/import exclusion and battery
   gates (Gen1 at least 80%). Only the fresh-version-read requirement is waived.
 - Submit through the existing AE00/AE01/AE02 Jieli RCSP transport, with normal
-  BLE reconnect suspended. Clear recovery evidence only on SDK terminal
-  success/reboot; 100% transfer alone does not clear it. Normal-service fresh
+  BLE reconnect suspended. Keep the firmware and SDK state through the loader's
+  reconnect. After authentication and feature discovery, continue with
+  `cmdOtaDataIIResult` so the device can pull firmware in the second stage.
+  Neither loader completion nor its reboot completes OTA. The UI shows both
+  stages and the intervening reconnect separately.
+- Clear recovery evidence only on SDK terminal success or a fresh matching
+  version after the second transfer's reboot; 100% alone does not clear it. Normal-service fresh
   version verification still decides whether the UI confirms success or shows
   an unconfirmed result. This intentionally differs from Android's optimistic
   success on cancellation after a complete transfer.
@@ -29,7 +34,8 @@ Aligned with `glasses(3).zip`: Android `Gen1OtaFailureStore`,
   and marker clearance. Record no new Wi-Fi credentials or authorization tokens.
 
 Validation: persistence/device-isolation tests in
-`Tests/Gen1BluetoothOtaRecoveryTests.swift`, included in
+`Tests/Gen1BluetoothOtaRecoveryTests.swift` and two-stage transition tests in
+`Tests/Gen1BluetoothOtaSessionStateTests.swift`, included in
 `Tests/run-gen1-tests.sh`. Windows source validation cannot replace an Xcode
 build or hardware checks. Verify interruption during transfer, app restart,
 failed authentication during recovery, two-device switching, missing version

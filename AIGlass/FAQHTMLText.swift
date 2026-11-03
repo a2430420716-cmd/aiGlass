@@ -58,10 +58,11 @@ enum FAQHTMLText {
 
     private static func normalizeHTML(_ html: String) -> String {
         var result = html
+        let origin = BackendRouting.rootURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let replacements = [
-            ("src=\"/upload/", "src=\"https://glasses.kaimou.net/upload/"),
-            ("src='/upload/", "src='https://glasses.kaimou.net/upload/"),
-            ("src=\"/Upload/", "src=\"https://glasses.kaimou.net/upload/"),
+            ("src=\"/upload/", "src=\"\(origin)/upload/"),
+            ("src='/upload/", "src='\(origin)/upload/"),
+            ("src=\"/Upload/", "src=\"\(origin)/upload/"),
             ("src=\"//", "src=\"https://")
         ]
         for (from, to) in replacements {

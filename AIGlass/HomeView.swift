@@ -217,10 +217,10 @@ struct HomeView: View {
         SoundEffectMode(rawValue: ble.soundEffectMode) ?? .standard
     }
 
-    /// 读取本地自定义名；revision 仅用于保存后立即触发 SwiftUI 重算。
+    /// 已连接设备置顶，其余保持绑定顺序；revision 让自定义名保存后立即刷新。
     private var homeDeviceCards: [DeviceCardData] {
         _ = deviceNameRevision
-        return authSession.homeDeviceCards.map { card in
+        let cards = authSession.homeDeviceCards.map { card in
             guard !card.isFindDevice else { return card }
             if let customName = DeviceDisplayNameStore.displayName(for: card) {
                 return card.withDisplayName(customName)
@@ -232,6 +232,10 @@ struct HomeView: View {
                 return card.withDisplayName(name)
             }
             return card
+        }
+        return HomeDeviceSelection.connectedFirst(cards) { card in
+            !card.isFindDevice && ble.isDeviceAvailable
+                && ble.matchesCurrentDevice(serialNumber: card.serialNumber, hardwareSN: card.hardwareSN)
         }
     }
 
@@ -531,6 +535,7 @@ struct HomeView: View {
     private var videoButtonTitle: String {
         if ble.videoCompleted { return L10n.t("录制完成", "Recording done") }
         if ble.isVideoStopping { return L10n.t("停止中...", "Stopping...") }
+        if ble.isVideoStarting { return L10n.t("等待确认...", "Awaiting confirmation...") }
         if ble.deviceRuntimeStatus == .videoRecording || ble.isVideoRecording {
             return L10n.t("结束录像", "Stop Video")
         }
@@ -911,7 +916,7 @@ struct HomeView: View {
                         )
                     }
                     .buttonStyle(.plain)
-                    .disabled(!ble.isDeviceAvailable || ble.isVideoStopping || ble.videoCompleted)
+                    .disabled(!ble.isDeviceAvailable || ble.isVideoStarting || ble.isVideoStopping || ble.videoCompleted)
                     .opacity(ble.isDeviceAvailable ? 1 : 0.45)
                 }
             }
@@ -1225,31 +1230,35 @@ private struct DeviceCarouselSection: View {
                 // iOS 15/16 lack scrollPosition; settle on the selected card explicitly.
                 let stride = HomeLayout.deviceCardWidth + 12
                 let offset = Int((-value.predictedEndTranslation.width / stride).rounded())
-                selectedDeviceIndex = min(max(selectedDeviceIndex + offset, 0), devices.count - 1)
+                let index = min(max(selectedDeviceIndex + offset, 0), devices.count - 1)
+                guard scrollSelection.receiveVisibleIndex(index, cardOrder: cards.map(\.id)) != nil else { return }
+                selectedDeviceIndex = index
                 proxy.scrollTo(selectedDeviceIndex, anchor: .center)
             })
             .compatibleScrollPosition(id: Binding(
                 get: { scrollSelection.index },
                 set: { newValue in
-                    if let index = scrollSelection.receiveVisibleIndex(newValue) {
+                    if let index = scrollSelection.receiveVisibleIndex(newValue, cardOrder: cards.map(\.id)) {
                         selectedDeviceIndex = index
                         if selectedDeviceIndex != index {
-                            scrollSelection.synchronize(to: selectedDeviceIndex)
+                            scrollSelection.synchronize(to: selectedDeviceIndex, cardOrder: cards.map(\.id))
                         }
                     }
                 }
             ))
             .frame(height: HomeLayout.deviceCardHeight)
             .onAppear {
-                scrollSelection.synchronize(to: selectedDeviceIndex)
+                scrollSelection.synchronize(to: selectedDeviceIndex, cardOrder: cards.map(\.id))
                 proxy.scrollTo(selectedDeviceIndex, anchor: .center)
             }
             .onChangeCompat(of: selectedDeviceIndex) { index in
-                if scrollSelection.index != index { scrollSelection.synchronize(to: index) }
+                if scrollSelection.index != index {
+                    scrollSelection.synchronize(to: index, cardOrder: cards.map(\.id))
+                }
                 proxy.scrollTo(index, anchor: .center)
             }
             .onChangeCompat(of: cards.map(\.id)) { _ in
-                scrollSelection.synchronize(to: selectedDeviceIndex)
+                scrollSelection.synchronize(to: selectedDeviceIndex, cardOrder: cards.map(\.id))
                 proxy.scrollTo(selectedDeviceIndex, anchor: .center)
             }
         }

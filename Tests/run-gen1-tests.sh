@@ -27,6 +27,7 @@ xcrun swiftc -module-cache-path "$test_dir/cache" \
 "$test_dir/firmware"
 bash Tests/run-gen1-firmware-session-tests.sh
 bash Tests/run-gen1-ota-version-tests.sh
+bash Tests/run-gen1-bluetooth-ota-tests.sh
 xcrun swiftc -module-cache-path "$test_dir/cache" \
   AIGlass/Gen1BluetoothOtaRecoveryStore.swift Tests/Gen1BluetoothOtaRecoveryTests.swift \
   -o "$test_dir/bluetooth-ota-recovery"

@@ -97,7 +97,7 @@ struct AIChatView: View {
     }
 
     private var emptyHint: some View {
-        Text(L10n.t("点击下方「语音提问」，对眼镜说话；也可在首页开始智能图像识别", "Tap Voice Ask below to speak to the glasses, or start image recognition from Home"))
+        Text(L10n.t("对眼镜说话；也可在首页开始智能图像识别", "Speak to the glasses, or start image recognition from Home"))
             .font(AppTheme.notoSansSC(size: 14, weight: .regular))
             .foregroundStyle(AppTheme.secondaryText)
             .multilineTextAlignment(.center)
@@ -121,41 +121,11 @@ struct AIChatView: View {
                     )
             }
 
-            Button {
-                _ = voiceChat.toggleManualSession()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: voiceConversationActive ? "stop.circle.fill" : "mic.circle.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                    Text(voiceChat.actionButtonTitle)
-                        .font(AppTheme.notoSansSC(size: 16, weight: .semibold))
-                }
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(
-                    voiceConversationActive
-                        ? AppTheme.accent
-                        : Color.black.opacity(voiceChat.isActionEnabled ? 0.88 : 0.35)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .disabled(!voiceChat.isActionEnabled)
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 12)
         .background(Color.white.opacity(0.92))
-    }
-
-    private var voiceConversationActive: Bool {
-        switch voiceChat.phase {
-        case .waiting, .listening, .processing, .speaking:
-            return true
-        case .idle, .failed:
-            return false
-        }
     }
 
     private var header: some View {

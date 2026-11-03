@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import Network
 import UniformTypeIdentifiers
+import ImageIO
 
 struct SharePayload: Identifiable {
     let id = UUID()
@@ -19,17 +20,25 @@ struct SystemShareSheet: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIActivityViewController {
         let diagnostics = SystemShareDiagnostics(items: urls, source: "album")
         context.coordinator.diagnostics = diagnostics
-        // URL-only activity items can be accepted as generic documents by chat
-        // extensions (including a single-file Open In activity for a batch).
-        // Advertise photos as native images and videos as their movie types.
         let sources = urls.enumerated().map {
             MediaShareItemSource(url: $0.element, index: $0.offset, diagnostics: diagnostics)
         }
         context.coordinator.sources = sources
-        let controller = UIActivityViewController(
-            activityItems: sources,
-            applicationActivities: nil
-        )
+        let imageProviders = sources.compactMap { $0.makeImageItemProvider() }
+        let controller: UIActivityViewController
+        if !sources.isEmpty, imageProviders.count == sources.count {
+            // Use concrete encoded-image providers, rather than UIKit choosing a
+            // generic UIImage representation for every third-party extension.
+            let configuration = UIActivityItemsConfiguration(itemProviders: imageProviders)
+            configuration.previewProvider = { index, _, _ in
+                guard sources.indices.contains(index) else { return nil }
+                return sources[index].makePreviewItemProvider()
+            }
+            controller = UIActivityViewController(activityItemsConfiguration: configuration)
+            diagnostics.recordImageProviders(imageProviders)
+        } else {
+            controller = UIActivityViewController(activityItems: sources, applicationActivities: nil)
+        }
         let coordinator = context.coordinator
         controller.completionWithItemsHandler = { activityType, completed, returnedItems, error in
             Task { @MainActor in
@@ -73,26 +82,52 @@ final class MediaShareItemSource: NSObject, UIActivityItemSource {
     private let index: Int
     private let diagnostics: SystemShareDiagnostics
     private let type: UTType
-    private var isImage: Bool { type.conforms(to: .image) }
+    private let imagePlaceholder: UIImage?
 
     init(url: URL, index: Int, diagnostics: SystemShareDiagnostics) {
         self.url = url
         self.index = index
         self.diagnostics = diagnostics
-        self.type = UTType(filenameExtension: url.pathExtension) ?? .data
+        let type = UTType(filenameExtension: url.pathExtension) ?? .data
+        self.type = type
+        self.imagePlaceholder = type.conforms(to: .image) ? Self.makeImagePlaceholder(url: url) : nil
         super.init()
+        if type.conforms(to: .image) {
+            diagnostics.recordImagePlaceholder(index: index, image: imagePlaceholder)
+        }
     }
 
     func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-        // Let UIKit choose UIImage's concrete supported representations instead
-        // of declaring a file URL (or labeling PNG bytes as JPEG).
-        if isImage { return UIImage() }
+        // Activity discovery happens before itemForActivityType. An empty UIImage
+        // has no encodable image representation for services such as Messages.
+        if let imagePlaceholder { return imagePlaceholder }
         return url
+    }
+
+    func makeImageItemProvider() -> NSItemProvider? {
+        guard imagePlaceholder != nil else { return nil }
+        let diagnostics = diagnostics
+        let index = index
+        let provider = AlbumShareImageProvider.make(url: url) { representation, type, readable in
+            Task { @MainActor in
+                diagnostics.recordImageProviderLoad(index: index, representation: representation,
+                                                    type: type, readable: readable)
+            }
+        }
+        provider?.preferredPresentationStyle = .inline
+        return provider
+    }
+
+    func makePreviewItemProvider() -> NSItemProvider? {
+        guard let imagePlaceholder else { return nil }
+        // This bounded image is only a preview. Full-size image requests use the
+        // separate provider above, so thumbnails cannot replace the shared photo.
+        return NSItemProvider(object: imagePlaceholder)
     }
 
     func activityViewController(_ activityViewController: UIActivityViewController,
                                 itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
-        if isImage {
+        if imagePlaceholder != nil {
             // Lazy load per item, without caching a second full-resolution batch.
             let image = UIImage(contentsOfFile: url.path)
             diagnostics.recordRepresentation(index: index, activityType: activityType,
@@ -103,6 +138,20 @@ final class MediaShareItemSource: NSObject, UIActivityItemSource {
         diagnostics.recordRepresentation(index: index, activityType: activityType,
             representation: "typedFileURL", type: type.identifier, readable: readable)
         return readable ? url : nil
+    }
+
+    private static func makeImagePlaceholder(url: URL) -> UIImage? {
+        // Keep only a bounded preview for discovery, not a full-resolution batch.
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else { return nil }
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 320,
+            kCGImageSourceShouldCacheImmediately: true
+        ] as CFDictionary
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else { return nil }
+        return UIImage(cgImage: thumbnail)
     }
 
 }
@@ -180,6 +229,26 @@ final class SystemShareDiagnostics {
     func recordRepresentation(index: Int, activityType: UIActivity.ActivityType?,
                               representation: String, type: String, readable: Bool) {
         record("媒体交付", detail: "itemIndex=\(index) activityType=\(activityType?.rawValue ?? "preview") representation=\(representation) type=\(type) readable=\(readable)")
+    }
+
+    func recordImageProviders(_ providers: [NSItemProvider]) {
+        let types = providers.enumerated().map { index, provider in
+            "item[\(index)] types=\(provider.registeredTypeIdentifiers.joined(separator: ","))"
+        }.joined(separator: "\n")
+        record("图片提供器", detail: "configuration=encodedImageProviders itemCount=\(providers.count)\n\(types)")
+    }
+
+    func recordImageProviderLoad(index: Int, representation: String, type: String, readable: Bool) {
+        record("图片表示加载", detail: "itemIndex=\(index) activityType=notExposedByItemProvider"
+            + " representation=\(representation) type=\(type) readableInApp=\(readable)"
+            + " evidenceLimit=provider_load_does_not_confirm_recipient_delivery")
+    }
+
+    func recordImagePlaceholder(index: Int, image: UIImage?) {
+        record("图片占位", detail: "itemIndex=\(index) decoded=\(image != nil)"
+            + " representation=\(image != nil ? "UIImage" : "fileURLFallback")"
+            + " pixelWidth=\(image?.cgImage?.width ?? 0) pixelHeight=\(image?.cgImage?.height ?? 0)"
+            + " fullResolutionDelivery=on_activity_request")
     }
 
     private func stopMonitoring() {

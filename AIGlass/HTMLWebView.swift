@@ -22,7 +22,7 @@ struct HTMLWebView: UIViewRepresentable {
 
     let html: String
     var textStyle: TextStyle = .standard
-    var baseURL: URL? = URL(string: "https://glasses.kaimou.net/")
+    var baseURL: URL? = BackendRouting.rootURL
     var onLoadResult: ((Bool) -> Void)?
 
     func makeCoordinator() -> Coordinator {
@@ -40,7 +40,7 @@ struct HTMLWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        let processed = Self.normalizeHTML(html)
+        let processed = Self.normalizeHTML(html, baseURL: baseURL)
         let wrapped = """
         <!DOCTYPE html>
         <html>
@@ -91,12 +91,13 @@ struct HTMLWebView: UIViewRepresentable {
     }
 
     /// 把相对路径图片转成绝对地址，避免 WebView 加载失败。
-    private static func normalizeHTML(_ html: String) -> String {
+    private static func normalizeHTML(_ html: String, baseURL: URL?) -> String {
         var result = html
+        let origin = (baseURL ?? BackendRouting.rootURL).absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let replacements = [
-            ("src=\"/upload/", "src=\"https://glasses.kaimou.net/upload/"),
-            ("src='/upload/", "src='https://glasses.kaimou.net/upload/"),
-            ("src=\"/Upload/", "src=\"https://glasses.kaimou.net/upload/"),
+            ("src=\"/upload/", "src=\"\(origin)/upload/"),
+            ("src='/upload/", "src='\(origin)/upload/"),
+            ("src=\"/Upload/", "src=\"\(origin)/upload/"),
             ("src=\"//", "src=\"https://")
         ]
         for (from, to) in replacements {

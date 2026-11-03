@@ -176,6 +176,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
     @Published private(set) var isVerifyingGen2Result = false
     @Published private(set) var isWaitingForDeviceRestart = false
     @Published private var gen1FirmwarePhase: Gen1FirmwareUpdateSession.Phase?
+    @Published private var gen1BluetoothPhase: Gen1BluetoothOtaSessionState.Phase?
 
     private let logTag = "[DeviceOTA]"
     private let bluetoothOtaLogTag = "[bluetooth_ota]"
@@ -211,6 +212,18 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         if isVerifyingGen1Version {
             return L10n.t("正在等待眼镜重连并核对版本...", "Waiting for glasses to reconnect and verifying the version...")
         }
+        if state.isActive, let gen1BluetoothPhase {
+            switch gen1BluetoothPhase {
+            case .transferringLoader(let percent):
+                return L10n.t("步骤 1/2：正在向眼镜推送升级文件 \(percent)%", "Step 1/2: Sending update files to glasses \(percent)%")
+            case .reconnecting:
+                return L10n.t("步骤 1/2 已完成，正在等待眼镜回连...", "Step 1/2 complete. Waiting for glasses to reconnect...")
+            case .transferringFirmware(let percent):
+                return L10n.t("步骤 2/2：眼镜正在拉取固件 \(percent)%", "Step 2/2: Glasses are downloading firmware \(percent)%")
+            case .awaitingResult, .completed:
+                return L10n.t("正在等待眼镜确认升级结果...", "Waiting for glasses to confirm the update...")
+            }
+        }
         return state.statusText(kind: activeKind)
     }
 
@@ -226,6 +239,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             }
         }
         if isVerifyingGen1Version { return 95 }
+        if state.isActive, let gen1BluetoothPhase { return gen1BluetoothPhase.overallProgress }
         switch state {
         case .downloadingFirmware(let percent): return max(0, min(20, percent / 5))
         case .uploadingFirmware(let percent): return 20 + max(0, min(70, percent * 70 / 100))
@@ -273,6 +287,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         isGen1Upgrade = ble.deviceGeneration == .gen1G5K61
         isVerifyingGen1Version = false
         gen1FirmwarePhase = nil
+        gen1BluetoothPhase = nil
         guard ble.isDeviceAvailable, let startingIdentifier = ble.deviceBluetoothIdentifier else {
             state = .failed(L10n.t("请先连接已绑定的眼镜设备", "Please connect your bound glasses first"))
             return
@@ -303,6 +318,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         activeKind = nil
         activeTargetVersion = nil
         isVerifyingGen1Version = false
+        gen1BluetoothPhase = nil
     }
 
     private func runUpgrade(
@@ -894,8 +910,13 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                         downloadURL: serverInfo.downloadURL, content: serverInfo.content
                     )
                     try await transport.upgrade(data: prepared.data, peripheralIdentifier: peripheralIdentifier,
-                                                recoveryRecord: recoveryRecord, log: log) { percent in
-                        self.state = .uploadingFirmware(percent: percent)
+                                                recoveryRecord: recoveryRecord, log: log) { phase in
+                        self.gen1BluetoothPhase = phase
+                        switch phase {
+                        case .transferringLoader(let percent): self.state = .uploadingFirmware(percent: percent)
+                        case .transferringFirmware(let percent): self.state = .upgrading(percent: percent)
+                        case .reconnecting, .awaitingResult, .completed: break
+                        }
                     }
                 } catch {
                     ble.resumeNormalConnectionAfterGen1OTA()
@@ -907,6 +928,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 // A 100% transfer or bootloader disconnect alone is not success.
                 try await verifyGen1Version(command: 0x14, targetVersion: serverInfo.version,
                                             targetIdentifier: targetIdentifier, ble: ble, log: log)
+                Gen1BluetoothOtaRecoveryStore().clearAfterSuccess(targetID: peripheralIdentifier)
                 state = .completed
                 log("completed: fresh device version matched target")
             }

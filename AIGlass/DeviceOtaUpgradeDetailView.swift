@@ -320,7 +320,7 @@ struct DeviceOtaUpgradeDetailView: View {
             Text(L10n.t("为眼镜连接 Wi-Fi", "Connect Glasses to Wi-Fi"))
                 .font(AppTheme.notoSansSC(size: 15, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
-            Text(L10n.t("请输入可上网的 2.4 GHz Wi-Fi 名称与密码。开放网络可不填密码。", "Enter the name and password of a 2.4 GHz Wi-Fi network with internet access. Leave the password empty for an open network."))
+            Text(L10n.t("请输入可上网的 2.4 GHz Wi-Fi 名称与密码，密码为必填项。", "Enter the name and password of a 2.4 GHz Wi-Fi network with internet access. A password is required."))
                 .font(AppTheme.notoSansSC(size: 13, weight: .regular))
                 .foregroundStyle(AppTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -431,6 +431,10 @@ struct DeviceOtaUpgradeDetailView: View {
         if needsGen1Wifi {
             do {
                 _ = try Gen1FirmwareUpdateProtocol.wifiPayload(ssid: gen1WifiSSID, password: gen1WifiPassword)
+                guard !gen1WifiPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    batteryAlertMessage = L10n.t("请输入 Wi-Fi 密码", "Please enter the Wi-Fi password")
+                    return
+                }
                 gen1Wifi = Gen1FirmwareWifiCredentials(ssid: gen1WifiSSID, password: gen1WifiPassword)
             } catch {
                 batteryAlertMessage = error.localizedDescription

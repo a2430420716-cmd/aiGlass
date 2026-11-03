@@ -43,6 +43,7 @@ jobs:
         timeout-minutes: 5
         run: |
           bash Tests/run-gatt-recovery-tests.sh
+          bash Tests/run-astra-notification-framer-tests.sh
           bash Tests/run-gen2-ota-recovery-tests.sh
       - name: 验证一代热点收尾和导入
         timeout-minutes: 5
@@ -61,14 +62,22 @@ jobs:
       - name: 验证一代蓝牙升级恢复记录
         timeout-minutes: 5
         run: |
+          bash Tests/run-gen1-bluetooth-ota-tests.sh
+          bash Tests/run-gen1-ota-version-tests.sh
           xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-recovery-cache" AIGlass/Gen1BluetoothOtaRecoveryStore.swift Tests/Gen1BluetoothOtaRecoveryTests.swift -o "$RUNNER_TEMP/gen1-recovery-tests"
           "$RUNNER_TEMP/gen1-recovery-tests"
+      - name: 验证正式接口路由
+        timeout-minutes: 5
+        run: bash Tests/run-backend-routing-tests.sh
       - name: 验证水印与 TCP 传输
         timeout-minutes: 5
         run: |
           bash Tests/run-photo-capture-watermark-tests.sh
           bash Tests/run-gen1-media-tcp-tests.sh
           bash Tests/run-wifi-diagnostics-tests.sh
+      - name: 验证相册图片分享表示
+        timeout-minutes: 5
+        run: bash Tests/run-album-share-image-provider-tests.sh
       - name: 验证翻译录音与播放
         timeout-minutes: 5
         run: |
@@ -93,7 +102,7 @@ jobs:
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
-          name: AIGlass-1.1.6-169-${{ inputs.export_method }}
+          name: AIGlass-1.1.6-170-${{ inputs.export_method }}
           path: build/ipa/*.ipa
           if-no-files-found: error
           retention-days: 7
