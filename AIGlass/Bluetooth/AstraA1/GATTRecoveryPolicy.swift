@@ -45,7 +45,8 @@ struct BoundBLEReconnectPolicy {
 
     mutating func beginUserRetry() {
         reset()
-        requiresRediscovery = true
+        // A bound device may not advertise while its Classic audio link is active.
+        // An explicit retry may reuse its UUID; scanning is only a missing-cache fallback.
     }
 
     mutating func didRediscoverTarget() {
@@ -77,6 +78,22 @@ struct GATTWatchdogToken: Equatable {
 struct GATTWatchdogPolicy {
     private(set) var active: GATTWatchdogToken?
     private var generation: UInt64 = 0
+
+    /// A queued native reconnect is waiting for reachability, not doing GATT work.
+    /// Once transport is observed, claiming it and all later phases stay bounded.
+    mutating func armBoundReconnect(
+        peripheralID: UUID,
+        phase: GATTRecoveryPhase,
+        hasTransportEvidence: Bool,
+        now: TimeInterval,
+        timeout: TimeInterval
+    ) -> GATTWatchdogToken? {
+        guard phase != .connecting || hasTransportEvidence else {
+            cancel()
+            return nil
+        }
+        return arm(peripheralID: peripheralID, phase: phase, now: now, timeout: timeout)
+    }
 
     @discardableResult
     mutating func arm(

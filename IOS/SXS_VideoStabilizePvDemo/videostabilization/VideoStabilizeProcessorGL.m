@@ -122,7 +122,7 @@ _Static_assert(BT709 == 0 && BT709_FULLRANGE == 1, "PixSmart profile color const
         rotationAngle = 180; // 旋转180°
     }
     
-    if (_totalFrames < 15) {
+    if (_totalFrames < 30) {
         [self _notifyFailure:@"Insufficient video frames"];
         return;
     }

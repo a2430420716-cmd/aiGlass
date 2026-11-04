@@ -17,6 +17,9 @@ enum GATTRecoveryTests {
     static func main() {
         testConnectionTargetOwnership()
         testCachedPeripheralRediscoveryAfterTimeout()
+        testStandbyReconnectKeepsNativeRequestPastTwentySeconds()
+        testReachableBoundTransportStillHasGATTTimeouts()
+        testExplicitRetryCanUseCachedDeviceWithoutAdvertising()
         testSlowDiscoveryDoesNotConsumeNotificationBudget()
         testStaleWatchdogsCannotTerminateCurrentConnection()
         testRetryNeedsFailureAndConsumesAuthorization()
@@ -54,7 +57,7 @@ enum GATTRecoveryTests {
         var policy = BoundBLEReconnectPolicy()
         check(!policy.requiresRediscovery, "A fresh binding can initially reuse its cached peripheral")
         policy.noteConnectionFailure(now: 20)
-        check(policy.requiresRediscovery, "A connect timeout requires fresh advertising evidence")
+        check(policy.requiresRediscovery, "A real connection failure requires fresh advertising evidence for automatic retries")
         check(!policy.canRetry(now: 49), "Rediscovery still respects the automatic cooldown")
         check(policy.claimScan(now: 50), "Timeout recovery can scan even if a stale cache still exists")
         policy.didRediscoverTarget()
@@ -65,10 +68,85 @@ enum GATTRecoveryTests {
         check(policy.isExhausted && !policy.claimScan(now: 200),
               "Rediscovery never bypasses the three-attempt limit")
         policy.beginUserRetry()
-        check(policy.requiresRediscovery && policy.claimScan(now: 101) && policy.failedAttempts == 0,
-              "An explicit retry can rediscover immediately after automatic attempts stop")
+        check(!policy.requiresRediscovery && policy.canRetry(now: 101) && policy.failedAttempts == 0,
+              "An explicit retry may reconnect the cached UUID without requiring advertisements")
+        check(policy.claimScan(now: 101), "An explicit retry can still scan immediately if the cache is missing")
         policy.reset()
         check(!policy.requiresRediscovery, "A successful connection clears stale-cache recovery state")
+    }
+
+    private static func testStandbyReconnectKeepsNativeRequestPastTwentySeconds() {
+        let id = UUID(uuidString: "0CDEAF69-D394-EB62-362E-321CB97750B0")!
+        var watchdog = GATTWatchdogPolicy()
+        // Nov 4 trace: A2DP is active, retrieveConnectedPeripherals is empty, and
+        // there is no didConnect. The native request is still waiting for BLE.
+        for second in [0.0, 1.5, 12, 19.99, 20, 21.145, 30, 60, 180] {
+            let token = watchdog.armBoundReconnect(
+                peripheralID: id, phase: .connecting, hasTransportEvidence: false,
+                now: second, timeout: 20
+            )
+            check(token == nil && watchdog.active == nil,
+                  "A cached UUID or A2DP route must not arm a GATT failure deadline")
+        }
+        let claim = watchdog.armBoundReconnect(
+            peripheralID: id, phase: .connecting, hasTransportEvidence: true,
+            now: 185, timeout: 20
+        )!
+        check(claim.deadline == 205, "A late BLE connection receives a fresh GATT claim budget")
+        check(!watchdog.accepts(claim, peripheralID: id, phase: .connecting, now: 200),
+              "The earlier standby wait cannot shorten the claim deadline")
+        watchdog.cancel()
+        check(!watchdog.accepts(claim, peripheralID: id, phase: .connecting, now: 210),
+              "Disconnect, unbinding or switching devices revokes the claim timer")
+    }
+
+    private static func testReachableBoundTransportStillHasGATTTimeouts() {
+        let id = UUID()
+        var watchdog = GATTWatchdogPolicy()
+        let claim = watchdog.armBoundReconnect(
+            peripheralID: id, phase: .connecting, hasTransportEvidence: true,
+            now: 0, timeout: 20
+        )!
+        check(watchdog.accepts(claim, peripheralID: id, phase: .connecting, now: 20),
+              "Confirmed BLE transport that cannot complete a claim must still time out")
+        let discovery = watchdog.armBoundReconnect(
+            peripheralID: id, phase: .discoveringServices, hasTransportEvidence: false,
+            now: 12, timeout: 15
+        )!
+        check(discovery.deadline == 27,
+              "Service discovery remains bounded independently of later system query results")
+        let notifications = watchdog.armBoundReconnect(
+            peripheralID: id, phase: .enablingNotifications, hasTransportEvidence: false,
+            now: 25, timeout: 15
+        )!
+        check(!watchdog.accepts(discovery, peripheralID: id, phase: .enablingNotifications, now: 27),
+              "Discovery's old deadline cannot interrupt notification subscription")
+        check(watchdog.accepts(notifications, peripheralID: id, phase: .enablingNotifications, now: 40),
+              "Notification subscription retains its full timeout protection")
+        // A newly selected, unreachable bound device must not inherit an old timer.
+        let other = UUID()
+        check(watchdog.armBoundReconnect(peripheralID: other, phase: .connecting,
+                  hasTransportEvidence: false, now: 26, timeout: 20) == nil,
+              "A different offline target starts by waiting for reachability")
+        check(!watchdog.accepts(notifications, peripheralID: id, phase: .enablingNotifications, now: 40),
+              "An old device's watchdog cannot act after the target changes")
+    }
+
+    private static func testExplicitRetryCanUseCachedDeviceWithoutAdvertising() {
+        var policy = BoundBLEReconnectPolicy()
+        policy.noteConnectionFailure(now: 20)
+        check(policy.requiresRediscovery && !policy.canRetry(now: 21),
+              "Real automatic failure keeps rediscovery and cooldown protections")
+        // Nov 4 trace: pull-to-refresh at 36s and card taps later kept scanning
+        // without issuing connect. User retries must be able to reuse the bound UUID.
+        policy.beginUserRetry()
+        check(policy.canRetry(now: 36) && !policy.requiresRediscovery,
+              "Manual retry need not wait for advertisements from sleeping glasses")
+        check(policy.failedAttempts == 0, "A deliberate retry reopens the automatic budget")
+        policy.noteConnectionFailure(now: 56)
+        check(policy.requiresRediscovery && !policy.canRetry(now: 85),
+              "An actual failure after manual retry restores normal automatic protections")
+        check(policy.canRetry(now: 86), "Automatic retry still respects its original cooldown deadline")
     }
 
     private static func testBoundReconnectScanAndFailureCooldowns() {

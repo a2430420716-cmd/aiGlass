@@ -404,7 +404,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var standingConnectPeripheralID: UUID?
     /// 系统传输层已连接、App GATT 却卡在 connecting 时的重建次数。
     private var standingConnectRecoveryCount = 0
-    /// 是否允许自动挂常驻 connect。还必须通过系统连接门禁；仅有本地缓存绝不发 connect。
+    /// 是否允许为已绑定 UUID 挂常驻 connect；缓存不代表 BLE 已连接。
     private var standingConnectAllowed = false
     /// 配对弹窗扫描时按设备名过滤，值为所选 model_name（如 G5T71）。
     private var pairingModelNameFilter: String?
@@ -934,8 +934,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
     }
 
-    /// 发起 iOS connect；App 看门狗限制单次等待，失败总共最多尝试三次。
-    /// 请求挂起期间 UI 显示「正在连接...」；失败、冷却或用户主动断开后才显示「未连接」。
+    /// 已绑定 UUID 可挂起一次 iOS connect 等设备可达；真实失败最多尝试三次。
+    /// 收到传输层连接证据后才启用 GATT 看门狗，等待期间 UI 显示「正在连接...」。
     /// 另起轮询：眼镜关机再开时，系统 A2DP 常先连上，但 App 层 didConnect 可能迟迟不来，
     /// 需主动 retrieveConnectedPeripherals 再 attach（切 Tab 触发 ensureConnected 也能修好，是同一路径）。
     private func armSystemAutoConnect(
@@ -1037,7 +1037,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 detail: "id=\(peripheral.identifier.uuidString) seconds=\(systemTransportConnectGraceSeconds) peripheralState=\(peripheralStateDescription(peripheral.state))"
             )
         }
-        // Native connect has no timeout; always bound it with the App watchdog.
+        // Keep one native request pending while the bound glasses wake or return.
+        // GATT claiming is timed only after actual BLE transport evidence appears.
         if standingConnectPeripheralID != peripheral.identifier {
             boundBLEAttemptFailureCounted = false
             standingConnectPeripheralID = peripheral.identifier
@@ -1565,7 +1566,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
 
         if attachToAlreadyConnectedPeripheralIfPossible(source: "systemReconnectMonitor") {
-            connectLog("system reconnect monitor: attached system-connected peripheral")
+            connectLog("system reconnect monitor: handled bound target recovery")
             // attach 会进入 connecting；ready 后 updateState 停轮询。发现中再盯一眼。
             scheduleNextSystemReconnectMonitor(after: 3.0)
             return
@@ -4747,7 +4748,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         autoReconnectEnabled = true
         standingConnectAllowed = true
         lastManualReconnectFailure = nil
-        connectLog("explicit home BLE retry", detail: "source=\(reason) id=\(peripheralID.uuidString) resetAutomaticBudget=true fallback=exact_UUID_scan")
+        connectLog("explicit home BLE retry", detail: "source=\(reason) id=\(peripheralID.uuidString) resetAutomaticBudget=true retry=cached_UUID_connect fallback=exact_UUID_scan_if_cache_missing")
         ensureConnected(reason: reason)
         if !isReady { startSystemReconnectMonitor() }
         return true
@@ -6592,7 +6593,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
     }
 
-    /// 连接流水线看门狗：自动连接单轮超时后软重建；用户配对可继续重试服务发现。
+    /// GATT 流水线看门狗；已绑定设备尚不可达时保留原生请求，不用 20 秒取消它。
     private func startConnectWatchdog(
         for peripheral: CBPeripheral,
         timeoutOverride: TimeInterval? = nil
@@ -6605,10 +6606,29 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             : standingConnectRetryIntervalSeconds
         let timeout = timeoutOverride
             ?? (isStandingAttempt ? standingTimeout : connectWatchdogSeconds)
-        let token = gattWatchdogPolicy.arm(
-            peripheralID: peripheral.identifier, phase: phase,
-            now: ProcessInfo.processInfo.systemUptime, timeout: timeout
-        )
+        let token: GATTWatchdogToken
+        if isStandingAttempt {
+            // A2DP audio, cached identity and connection-event registration are
+            // insufficient. Only a real BLE event/query or connected state counts.
+            let hasTransportEvidence = phase != .connecting
+                || peripheral.state == .connected
+                || systemTransportGracePeripheralIDs.contains(peripheral.identifier)
+                || freshlyRetrievedSystemConnectedPeripheral(matching: peripheral.identifier) != nil
+            guard let armed = gattWatchdogPolicy.armBoundReconnect(
+                peripheralID: peripheral.identifier, phase: phase,
+                hasTransportEvidence: hasTransportEvidence,
+                now: ProcessInfo.processInfo.systemUptime, timeout: timeout
+            ) else {
+                connectLog("bound BLE waiting for reachability", detail: "id=\(peripheral.identifier.uuidString) nativeConnectRetained=true failureBudgetUnchanged=true peripheralState=\(peripheralStateDescription(peripheral.state))")
+                return
+            }
+            token = armed
+        } else {
+            token = gattWatchdogPolicy.arm(
+                peripheralID: peripheral.identifier, phase: phase,
+                now: ProcessInfo.processInfo.systemUptime, timeout: timeout
+            )
+        }
         connectLog("GATT phase watchdog armed", detail: "phase=\(phase) seconds=\(timeout) generation=\(token.generation) id=\(peripheral.identifier.uuidString)")
         if isStandingAttempt {
             connectLog(
@@ -6694,7 +6714,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             }
 
             if isStandingConnect {
-                // Native connect otherwise waits forever outside BLE range.
+                // Only a claim with previously observed BLE transport reaches this
+                // timeout. An unreachable bound target keeps its native request.
                 if self.freshlyRetrievedSystemConnectedPeripheral(matching: peripheral.identifier) == nil {
                     self.recordBoundBLEAttemptFailure()
                     self.systemTransportConnectedPeripheralIDs.remove(peripheral.identifier)

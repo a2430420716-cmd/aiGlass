@@ -3,6 +3,7 @@ import UIKit
 import Network
 import UniformTypeIdentifiers
 import ImageIO
+import MessageUI
 
 struct SharePayload: Identifiable {
     let id = UUID()
@@ -179,6 +180,11 @@ final class SystemShareDiagnostics {
                 + " exists=\(FileManager.default.fileExists(atPath: url.path)) readableInApp=\(FileManager.default.isReadableFile(atPath: url.path)) bytes=\(size)"
         }
         record("开始", detail: "itemCount=\(items.count) metadataTruncated=\(items.count > 20)\n\(files.joined(separator: "\n"))")
+        record("系统信息能力", detail: "canSendText=\(MFMessageComposeViewController.canSendText())"
+            + " canSendAttachments=\(MFMessageComposeViewController.canSendAttachments())"
+            + " supportsJPEG=\(MFMessageComposeViewController.isSupportedAttachmentUTI(UTType.jpeg.identifier))"
+            + " supportsPNG=\(MFMessageComposeViewController.isSupportedAttachmentUTI(UTType.png.identifier))"
+            + " evidenceLimit=message_compose_capabilities_do_not_guarantee_share_sheet_visibility_or_delivery")
         pathMonitor.pathUpdateHandler = { [weak self] path in
             let detail = Self.describePath(path)
             Task { @MainActor [weak self] in
