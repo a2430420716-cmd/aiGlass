@@ -408,7 +408,7 @@ enum AstraA1BleProtocol {
         return AIVisionDataPacket(seq: seq, total: total, flags: flags, payload: payload)
     }
 
-    /// 统一运行状态：二代协议 0〜6，一代适配补充 7〜8；App 本地 UNKNOWN=255。
+    /// 统一运行状态：Gen2协议 0〜6，Gen1适配补充 7〜8；App 本地 UNKNOWN=255。
     enum DeviceRuntimeStatus: UInt8 {
         case standby = 0
         case photoTaking = 1

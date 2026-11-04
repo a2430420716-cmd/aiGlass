@@ -93,9 +93,9 @@ enum Gen1FirmwareUpdateProtocol {
         var errorDescription: String? {
             switch self {
             case .invalidURL:
-                return "一代固件升级地址必须为无需认证的 HTTP 链接，设备不支持 HTTPS"
+                return "固件升级地址必须为无需认证的 HTTP 链接，设备不支持 HTTPS"
             case .invalidCharacters:
-                return "一代固件升级地址必须为有效长度的纯 ASCII 字符，不可包含空格或中文"
+                return "固件升级地址必须为有效长度的纯 ASCII 字符，不可包含空格或中文"
             case .emptySSID:
                 return "请输入眼镜连接的 Wi-Fi 名称"
             case .wifiFieldTooLong:

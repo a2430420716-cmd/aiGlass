@@ -1,3 +1,5 @@
+import Foundation
+
 @main
 enum Gen1BluetoothOtaSessionStateTests {
     typealias Session = Gen1BluetoothOtaSessionState
@@ -6,6 +8,8 @@ enum Gen1BluetoothOtaSessionStateTests {
         testTwoTransfers()
         testLateCallbacks()
         testRecoveryMode()
+        testLoaderConnectionRecovery()
+        testReconnectDeadlineAndStaleCallbacks()
         print("Gen1 Bluetooth OTA stage tests passed")
     }
 
@@ -83,5 +87,66 @@ enum Gen1BluetoothOtaSessionStateTests {
         precondition(!session.canVerifyAfterReboot)
         // SDK terminal success is authoritative even if its last percentage was omitted.
         precondition(session.receiveSuccess())
+    }
+
+    private static func testLoaderConnectionRecovery() {
+        let loader = UUID(uuidString: "17974F32-A276-E8BD-FC27-DBD206CD0955")!
+        var session = Session()
+        var reconnect = Gen1BluetoothOtaReconnectPolicy()
+        precondition(reconnect.claim(peripheralID: loader, isConnectable: true, now: 0) == nil)
+        precondition(session.imageCommandAfterFeature() == .start)
+        session.receiveLoaderProgress(100)
+        precondition(session.requestReconnect())
+        reconnect.begin(now: 0)
+        precondition(reconnect.deadline == 90)
+        precondition(reconnect.claim(peripheralID: loader, isConnectable: false, now: 1) == nil,
+                     "Nonconnectable advertising must not stop scanning or consume a connection attempt")
+        precondition(reconnect.attempts == 0)
+
+        // Both failed Nov 4 sessions discovered this loader about 2.5 seconds
+        // after reboot, then waited the entire 90 seconds without didConnect.
+        let first = reconnect.claim(peripheralID: loader, isConnectable: true, now: 2.5)!
+        precondition(first.deadline == 27.5)
+        precondition(reconnect.claim(peripheralID: loader, isConnectable: true, now: 3) == nil,
+                     "Duplicate advertisements must not create parallel native connects")
+        precondition(!reconnect.expire(first, now: 27.49))
+        precondition(reconnect.expire(first, now: 27.5),
+                     "A stalled loader connection must release before a fresh scan and retry")
+        let second = reconnect.claim(peripheralID: loader, isConnectable: true, now: 29)!
+        precondition(second.deadline == 54 && reconnect.deadline == 90,
+                     "Retry gets its own attempt budget without extending the total wait")
+        // The successful Nov 4 loader connection took 11.175 seconds.
+        precondition(!reconnect.expire(second, now: 40.175))
+        reconnect.stop()
+        precondition(!reconnect.expire(second, now: 54), "Connection success invalidates its old timeout")
+        precondition(session.imageCommandAfterFeature() == .resume,
+                     "Retry continues the retained firmware; it must not push the loader again")
+        session.receiveFirmwareProgress(100)
+        precondition(session.receiveSuccess())
+    }
+
+    private static func testReconnectDeadlineAndStaleCallbacks() {
+        let loader = UUID()
+        var reconnect = Gen1BluetoothOtaReconnectPolicy()
+        reconnect.begin(now: 100)
+        let first = reconnect.claim(peripheralID: loader, isConnectable: true, now: 102)!
+        reconnect.cancelAttempt() // didFailToConnect / disconnect releases this attempt.
+        let second = reconnect.claim(peripheralID: loader, isConnectable: true, now: 104)!
+        precondition(!reconnect.expire(first, now: 150), "Old timers cannot cancel a replacement attempt")
+        precondition(reconnect.expire(second, now: 129))
+        let third = reconnect.claim(peripheralID: loader, isConnectable: true, now: 131)!
+        precondition(reconnect.expire(third, now: 156))
+        precondition(!reconnect.canAttempt(now: 158), "At most three native connections per loader reconnect")
+        precondition(reconnect.deadline == 190, "Failures and duplicate callbacks cannot reset the total deadline")
+
+        reconnect.begin(now: 200)
+        let late = reconnect.claim(peripheralID: loader, isConnectable: true, now: 285)!
+        precondition(late.deadline == 290, "A late discovery cannot extend the 90-second total budget")
+        precondition(reconnect.expire(late, now: 290))
+        precondition(!reconnect.canAttempt(now: 291))
+        reconnect.begin(now: 300)
+        precondition(!reconnect.expire(late, now: 400), "A previous reconnect cycle cannot stop the current cycle")
+        reconnect.stop() // Cancellation, terminal result or target change.
+        precondition(reconnect.claim(peripheralID: UUID(), isConnectable: true, now: 301) == nil)
     }
 }

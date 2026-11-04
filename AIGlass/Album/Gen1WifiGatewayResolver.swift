@@ -49,7 +49,7 @@ final class Gen1WifiGatewayResolver {
                 + "\nserviceProtocol=TCP servicePort=8556 TCPVerified=false"
             if evidence != lastLoggedEvidence {
                 lastLoggedEvidence = evidence
-                diagnostics.log("一代热点与网关观察", detail: evidence, direction: .received)
+                diagnostics.log("热点与网关观察", detail: evidence, direction: .received)
             }
             if case .ready(let gateway) = lastDecision {
                 try Task.checkCancellation()
@@ -60,7 +60,7 @@ final class Gen1WifiGatewayResolver {
             try await Task.sleep(nanoseconds: UInt64(min(0.5, remaining) * 1_000_000_000))
         }
         try Task.checkCancellation()
-        diagnostics.log("一代热点网关等待超时", detail: "\(lastLoggedEvidence ?? "noEvidence")\ntimeout=\(timeout)s", direction: .received)
+        diagnostics.log("热点网关等待超时", detail: "\(lastLoggedEvidence ?? "noEvidence")\ntimeout=\(timeout)s", direction: .received)
         if !Gen1WifiGatewayPolicy.matchesSSID(target: targetSSID, observed: observedSSID) {
             throw DeviceWifiError.joinFailed(L10n.t("未能确认手机已连接到眼镜热点，请检查 Wi-Fi 连接后重试", "Could not confirm that your phone is connected to the glasses hotspot. Check the Wi-Fi connection and try again"))
         }

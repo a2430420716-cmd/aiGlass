@@ -313,7 +313,7 @@ actor Gen1MediaTCPClient {
 
     private func logConnection(_ detail: String) {
         #if !GEN1_MEDIA_TCP_TESTING
-        DebugLogStore.logWiFi("一代：TCP 连接诊断",
+        DebugLogStore.logWiFi("TCP 连接诊断",
             detail: "endpoint=\(host):\(port) \(detail); TCP_ready_is_required_before_file_list")
         #endif
     }

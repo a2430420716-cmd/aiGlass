@@ -24,7 +24,7 @@ final class Gen1HotspotSession {
         } catch Gen1APImportError.hotspotTimeout {
             try Task.checkCancellation()
             guard ble.isGen1MediaImportCurrent(identity) else { throw Gen1APImportError.targetChanged }
-            DebugLogStore.logWiFi("一代：热点信息超时，准备唯一一次自动重试", detail: "target=\(identity.targetID) retry=1/1 next=close_0x38_then_fresh_standby")
+            DebugLogStore.logWiFi("热点信息超时，准备唯一一次自动重试", detail: "target=\(identity.targetID) retry=1/1 next=close_0x38_then_fresh_standby")
             let reportSequenceBeforeClose = ble.deviceRuntimeStatusReportSequence
             guard await close() == .settled else { throw Gen1APImportError.hotspotCleanupPending }
             needsCleanup = false
@@ -45,7 +45,7 @@ final class Gen1HotspotSession {
             next.receive(command: frame.command, payload: frame.payload)
             guard next != self.availability else { return }
             self.availability = next
-            DebugLogStore.logWiFi("一代：本轮热点收到主控关机状态", detail: "target=\(self.identity.targetID) availability=\(next.rawValue) source=0x73 requiresRestart=\(next.requiresRestart) historyRetainedBeforeManualJoin=true")
+            DebugLogStore.logWiFi("本轮热点收到主控关机状态", detail: "target=\(self.identity.targetID) availability=\(next.rawValue) source=0x73 requiresRestart=\(next.requiresRestart) historyRetainedBeforeManualJoin=true")
         }
         response = nil
         subscription = ble.gen1ControlSubject.sink { [weak self] frame in
@@ -65,7 +65,7 @@ final class Gen1HotspotSession {
             throw Gen1APImportError.sendFailed
         }
         needsCleanup = true
-        DebugLogStore.logWiFi("一代：已请求开启热点", detail: "command=0x37 payloadBytes=0 target=\(identity.targetID)")
+        DebugLogStore.logWiFi("已请求开启热点", detail: "command=0x37 payloadBytes=0 target=\(identity.targetID)")
         let deadline = ProcessInfo.processInfo.systemUptime + timeout
         while ProcessInfo.processInfo.systemUptime < deadline {
             try Task.checkCancellation()
@@ -102,7 +102,7 @@ final class Gen1HotspotSession {
         defer { observation.cancel() }
         try Task.checkCancellation()
         guard ble.isGen1MediaImportCurrent(identity) else { throw Gen1APImportError.targetChanged }
-        DebugLogStore.logWiFi("一代：开启热点前查询最新设备状态", detail: "command=0x72 target=\(identity.targetID) cachedStatus=\(ble.deviceRuntimeStatus) timeout=3s")
+        DebugLogStore.logWiFi("开启热点前查询最新设备状态", detail: "command=0x72 target=\(identity.targetID) cachedStatus=\(ble.deviceRuntimeStatus) timeout=3s")
         guard ble.sendGen1Command(command: Gen1Commands.deviceStatusQuery) else {
             throw Gen1APImportError.statusUnconfirmed
         }
@@ -111,7 +111,7 @@ final class Gen1HotspotSession {
             try Task.checkCancellation()
             guard ble.isGen1MediaImportCurrent(identity) else { throw Gen1APImportError.targetChanged }
             if let latestStatus {
-                DebugLogStore.logWiFi("一代：开启热点前状态确认", detail: "freshDeviceReport=true sourceCommand=\(latestCommand.map { String(format: "0x%02X", $0) } ?? "none") status=\(latestStatus) allowOpen=\(latestStatus == .standby) target=\(identity.targetID)")
+                DebugLogStore.logWiFi("开启热点前状态确认", detail: "freshDeviceReport=true sourceCommand=\(latestCommand.map { String(format: "0x%02X", $0) } ?? "none") status=\(latestStatus) allowOpen=\(latestStatus == .standby) target=\(identity.targetID)")
                 try Gen1APImportProtocol.requireStandby(fresh: latestStatus, current: .unknown, lastReported: .unknown)
                 return
             }
@@ -120,16 +120,16 @@ final class Gen1HotspotSession {
         try Task.checkCancellation()
         guard ble.isGen1MediaImportCurrent(identity) else { throw Gen1APImportError.targetChanged }
         if requiresFresh {
-            DebugLogStore.logWiFi("一代：自动重试未取得新的空闲回报，停止重开热点", detail: "target=\(identity.targetID) retry=1/1 openSent=false cachedStandbyNotAccepted=true")
+            DebugLogStore.logWiFi("自动重试未取得新的空闲回报，停止重开热点", detail: "target=\(identity.targetID) retry=1/1 openSent=false cachedStandbyNotAccepted=true")
             throw Gen1APImportError.statusUnconfirmed
         }
         let current = Gen1DomainDeviceStatus(rawValue: ble.deviceRuntimeStatus.rawValue) ?? .unknown
         let reported = Gen1DomainDeviceStatus(rawValue: ble.lastReportedDeviceRuntimeStatus.rawValue) ?? .unknown
         do {
             try Gen1APImportProtocol.requireStandby(fresh: latestStatus, current: current, lastReported: reported)
-            DebugLogStore.logWiFi("一代：状态查询无回包，兼容设备已报告的空闲状态", detail: "target=\(identity.targetID) current=\(current) lastReported=\(reported) freshReport=false fallback=reportedStandby deviceBusyReplyStillRequired=true")
+            DebugLogStore.logWiFi("状态查询无回包，兼容设备已报告的空闲状态", detail: "target=\(identity.targetID) current=\(current) lastReported=\(reported) freshReport=false fallback=reportedStandby deviceBusyReplyStillRequired=true")
         } catch {
-            DebugLogStore.logWiFi("一代：状态未满足空闲条件，未开启热点", detail: "target=\(identity.targetID) current=\(current) lastReported=\(reported) openSent=false wifiApply=false error=\(error.localizedDescription)")
+            DebugLogStore.logWiFi("状态未满足空闲条件，未开启热点", detail: "target=\(identity.targetID) current=\(current) lastReported=\(reported) openSent=false wifiApply=false error=\(error.localizedDescription)")
             throw error
         }
     }

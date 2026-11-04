@@ -25,6 +25,15 @@ Aligned with `glasses(3).zip`: Android `Gen1OtaFailureStore`,
   `cmdOtaDataIIResult` so the device can pull firmware in the second stage.
   Neither loader completion nor its reboot completes OTA. The UI shows both
   stages and the intervening reconnect separately.
+- During the loader reconnect, ignore explicitly nonconnectable advertisements.
+  Keep the 90-second total deadline; allow at most three native connection attempts,
+  with at most 25 seconds each through authentication and feature discovery. Release
+  a stalled attempt before scanning again. If cancellation produces no callback
+  within three seconds, replace only the OTA central, retaining the SDK and image.
+  Obsolete central callbacks and callbacks during release cannot resume the image.
+  A recovered connection still uses `cmdOtaDataIIResult`; it never restarts the loader
+  or reports success from the first transfer. Ordinary standby reconnect and Gen2
+  updates do not use this retry policy.
 - Clear recovery evidence only on SDK terminal success or a fresh matching
   version after the second transfer's reboot; 100% alone does not clear it. Normal-service fresh
   version verification still decides whether the UI confirms success or shows

@@ -283,7 +283,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var aboutDeviceInfoPendingTypes: [AstraA1BleProtocol.DevInfoType] = []
     private var aboutDeviceInfoQueryTimeout: DispatchWorkItem?
     private let aboutDeviceInfoQueryTimeoutSeconds: TimeInterval = 2.5
-    /// 二代 getdevinfo 间隔对齐 Android；一代串行查询保留原 200ms 间隔。
+    /// Gen2 getdevinfo 间隔对齐 Android；Gen1串行查询保留原 200ms 间隔。
     private static let gen2GetDevInfoSendIntervalSeconds: TimeInterval = 3.0
     private var getDevInfoSendIntervalSeconds: TimeInterval {
         deviceGeneration == .gen1G5K61 ? 0.2 : Self.gen2GetDevInfoSendIntervalSeconds
@@ -2117,7 +2117,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 固件在忙（传输/录音）时会回 0，直接覆盖会让首页反复跳 0%。
     private func applyBatteryPercent(_ percent: Int, isCharging: Bool, source: String) {
         let clamped = max(0, min(100, percent))
-        // 二代充电状态只认 chargestat；batt0 / batteryntf / BAS 电量刷新均不覆盖。
+        // Gen2充电状态只认 chargestat；batt0 / batteryntf / BAS 电量刷新均不覆盖。
         let charging = deviceGeneration == .gen2 ? deviceIsCharging : isCharging
         if clamped == 0, let last = lastKnownBatteryPercent, last > 0 {
             deviceIsCharging = charging
@@ -2359,7 +2359,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     private func sendNextVersionsAndStorageQuery() {
         guard isQueryingDeviceVersionsAndStorage else { return }
-        // 初连也在发送 getdevinfo，等待其结束后再推进页面刷新，保持二代发送间隔。
+        // 初连也在发送 getdevinfo，等待其结束后再推进页面刷新，保持Gen2发送间隔。
         guard !isInitialDeviceInfoQueryInProgress else { return }
         // 已有值的项跳过（补缺查询时避免重复打通道）。
         while let type = versionsStoragePendingTypes.first, cachedValue(for: type) != nil {
@@ -5093,7 +5093,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     func requireGen1HotspotCleanupFinished(for targetID: UUID) throws {
         guard gen1HotspotCleanup.isPending(targetID) else { return }
         gen1HotspotCleanup.resume(targetID)
-        DebugLogStore.logWiFi("一代：上次热点尚未收尾，阻止新操作", detail: "target=\(targetID)")
+        DebugLogStore.logWiFi("上次热点尚未收尾，阻止新操作", detail: "target=\(targetID)")
         throw Gen1APImportError.hotspotCleanupPending
     }
 
@@ -6976,7 +6976,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         let generation = initialDeviceInfoQueryGeneration
         isInitialDeviceInfoQueryInProgress = true
 
-        // 连接就绪后主动查询基础信息及版本，二代按 Android 的 3 秒间隔发送。
+        // 连接就绪后主动查询基础信息及版本，Gen2按 Android 的 3 秒间隔发送。
         let firstGeneration = deviceGeneration == .gen1G5K61
         let interval = firstGeneration ? 0.35 : Self.gen2GetDevInfoSendIntervalSeconds
         let types: [AstraA1BleProtocol.DevInfoType] = firstGeneration
@@ -7006,7 +7006,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             guard let self else { return }
             guard self.initialDeviceInfoQueryGeneration == generation else { return }
             self.isInitialDeviceInfoQueryInProgress = false
-            // 二代 SN 在约 9 秒才发出，早先的 2.5 秒身份检查可能尚未收到 SN。
+            // Gen2 SN 在约 9 秒才发出，早先的 2.5 秒身份检查可能尚未收到 SN。
             self.markDeviceInfoReadyIfNeeded(force: true)
             if self.isQueryingDeviceVersionsAndStorage {
                 self.sendNextVersionsAndStorageQuery()
@@ -7125,7 +7125,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         DebugLogStore.logBLEReceived(data)
         print("\(logTag) notify command=\(command)")
 
-        // 二代连接启用通知后即上报一次，插拔充电器时继续上报。
+        // Gen2连接启用通知后即上报一次，插拔充电器时继续上报。
         // 独立更新 Published 状态，让首页在电量百分比不变时也立即切换充电图标。
         if command == "chargestat" {
             guard deviceGeneration == .gen2 else { return }
@@ -8700,7 +8700,7 @@ extension AstraA1BleManager: CBPeripheralDelegate {
             print("\(logTag) didUpdateValue char=\(uuid)")
 
             // 标准电池服务电量（0x2A19）：连接后几乎立刻可读，先展示；
-            // 随后 getdevinfo batt0 会覆盖电量。二代充电态由 chargestat 独立维护。
+            // 随后 getdevinfo batt0 会覆盖电量。Gen2充电态由 chargestat 独立维护。
             // 读到 0 视为固件尚未采样，忽略。
             if uuid == AstraA1BleProtocol.batteryLevelCharacteristicUUID {
                 if let raw = data.first {
@@ -8715,7 +8715,7 @@ extension AstraA1BleManager: CBPeripheralDelegate {
                 return
             }
 
-            // 标准电池状态（0x2BED）：二代使用 chargestat，避免另一个来源覆盖插拔通知。
+            // 标准电池状态（0x2BED）：Gen2使用 chargestat，避免另一个来源覆盖插拔通知。
             if uuid == AstraA1BleProtocol.batteryLevelStatusCharacteristicUUID {
                 guard deviceGeneration != .gen2 else { return }
                 if let charging = AstraA1BleProtocol.parseCharging(fromLevelStatus: data) {

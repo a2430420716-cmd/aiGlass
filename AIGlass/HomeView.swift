@@ -624,9 +624,9 @@ struct HomeView: View {
     }
 
     private func openAIRecording() {
-        // 与 Android 首页一致：一代设备按键录音单独处理，暂不开放手动录音入口。
+        // 与 Android 首页一致：Gen1设备按键录音单独处理，暂不开放手动录音入口。
         guard ble.deviceGeneration != .gen1G5K61 else {
-            showMediaActionToast(L10n.t("一代设备录音功能暂未开放", "Recording is not available for Gen 1 devices yet"))
+            showMediaActionToast(L10n.t("设备录音功能暂未开放", "Recording is not available for this device yet"))
             return
         }
         guard ble.isDeviceAvailable else {

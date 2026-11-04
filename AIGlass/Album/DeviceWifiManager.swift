@@ -153,7 +153,7 @@ enum DeviceWifiManager {
             return "192.168.4.1"
         }
         diagnostics.log(
-            "开始加入一代眼镜热点",
+            "开始加入眼镜热点",
             detail: "targetSSID=\(ssid.debugDescription) passwordUTF8Bytes=\(password.utf8.count)"
                 + "\nserviceEndpoint=192.168.4.1:8556 endpointSource=fixedFirmwareAddress"
                 + "\nidentityPolicy=applyThenRequireGlassesLANThenTCP ssidReadRequired=false gatewayReadRequired=false",
@@ -188,12 +188,12 @@ enum DeviceWifiManager {
             }
             try Task.checkCancellation()
             try validateSession?()
-            diagnostics.log("一代热点配置已应用，连接固定文件服务", detail: "ssid=\(ssid.debugDescription)"
+            diagnostics.log("热点配置已应用，连接固定文件服务", detail: "ssid=\(ssid.debugDescription)"
                 + "\nserviceEndpoint=192.168.4.1:8556 TCPVerified=false glassesLANIPv4Confirmed=true"
                 + "\nnextStage=WiFiOnlyTCPMediaTransport ssidReadRequired=false gatewayReadRequired=false", direction: .received)
             return "192.168.4.1"
         } catch {
-            diagnostics.log("一代热点尚未就绪，交由导入会话处理", detail: "ssid=\(ssid.debugDescription)"
+            diagnostics.log("热点尚未就绪，交由导入会话处理", detail: "ssid=\(ssid.debugDescription)"
                 + "\ncancelled=\(error is CancellationError || Task.isCancelled) error=\(error.localizedDescription)"
                 + "\nserviceEndpoint=192.168.4.1:8556 TCPVerified=false", direction: .received)
             throw error

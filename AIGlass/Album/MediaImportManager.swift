@@ -66,25 +66,25 @@ private final class Gen1ImportInterruptionProtection {
             Task { @MainActor [weak self] in
                 guard let self, !self.ended else { return }
                 self.expiredDuringInterruption = true
-                DebugLogStore.logWiFi("一代：短暂失活保护额度到期", detail: "cancelImport=false cancelStabilize=false systemMaySuspend=true")
+                DebugLogStore.logWiFi("短暂失活保护额度到期", detail: "cancelImport=false cancelStabilize=false systemMaySuspend=true")
                 self.releaseGrant()
             }
         }
-        DebugLogStore.logWiFi("一代：申请短暂失活保护", detail: "backgroundTaskActive=\(identifier != .invalid) finiteExecution=true")
+        DebugLogStore.logWiFi("申请短暂失活保护", detail: "backgroundTaskActive=\(identifier != .invalid) finiteExecution=true")
     }
 
     private func receive(_ name: Notification.Name) {
         guard !ended else { return }
         if name == UIApplication.didBecomeActiveNotification {
             let duration = backgroundAt.map { ProcessInfo.processInfo.systemUptime - $0 } ?? 0
-            DebugLogStore.logWiFi("一代：返回前台结束失活保护", detail: "backgroundDurationSeconds=\(duration) backgroundTaskActive=\(identifier != .invalid)")
+            DebugLogStore.logWiFi("返回前台结束失活保护", detail: "backgroundDurationSeconds=\(duration) backgroundTaskActive=\(identifier != .invalid)")
             backgroundAt = nil
             expiredDuringInterruption = false
             releaseGrant()
         } else {
             if name == UIApplication.didEnterBackgroundNotification { backgroundAt = ProcessInfo.processInfo.systemUptime }
             begin()
-            DebugLogStore.logWiFi("一代：导入短暂失活", detail: "event=\(name.rawValue) backgroundTaskActive=\(identifier != .invalid) cancelImport=false cancelStabilize=false")
+            DebugLogStore.logWiFi("导入短暂失活", detail: "event=\(name.rawValue) backgroundTaskActive=\(identifier != .invalid) cancelImport=false cancelStabilize=false")
         }
     }
 
@@ -238,7 +238,7 @@ final class MediaImportManager: ObservableObject {
 
     func cancelManualWifiJoin(id: UUID) {
         guard manualWifiJoin?.id == id else { return }
-        DebugLogStore.logWiFi("一代：用户取消手动连接", detail: "cancelReason=userCancelledManualJoin")
+        DebugLogStore.logWiFi("用户取消手动连接", detail: "cancelReason=userCancelledManualJoin")
         importTask?.cancel()
     }
 
@@ -257,7 +257,7 @@ final class MediaImportManager: ObservableObject {
         manualWifiRestartID = nil
         manualWifiHotspotMayBeOff = hotspot.availability.requiresRestart
         manualWifiJoin = request
-        diagnostics.log("一代：等待用户手动连接热点", detail: "ssid=\(credentials.ssid) timeout=300s appSentCloseHotspot=false deviceAPAvailability=\(hotspot.availability.rawValue) requiresRestart=\(hotspot.availability.requiresRestart) historyIncludesSystemJoin=true retryKind=TCPOnly noApply=true noOpenHotspot=true")
+        diagnostics.log("等待用户手动连接热点", detail: "ssid=\(credentials.ssid) timeout=300s appSentCloseHotspot=false deviceAPAvailability=\(hotspot.availability.rawValue) requiresRestart=\(hotspot.availability.requiresRestart) historyIncludesSystemJoin=true retryKind=TCPOnly noApply=true noOpenHotspot=true")
         defer {
             manualWifiJoin = nil
             manualWifiRetryID = nil
@@ -270,7 +270,7 @@ final class MediaImportManager: ObservableObject {
             guard availability.requiresRestart, let self else { return }
             self.manualWifiHotspotMayBeOff = true
             self.manualWifiRetryID = nil
-            diagnostics.log("一代：手动连接提示使用本轮关机记录", detail: "appSentCloseHotspot=false availability=\(availability.rawValue) action=offerExplicitRestart TCPRetryAllowed=false")
+            diagnostics.log("手动连接提示使用本轮关机记录", detail: "appSentCloseHotspot=false availability=\(availability.rawValue) action=offerExplicitRestart TCPRetryAllowed=false")
         }
         defer { statusObservation.cancel() }
         // After a TCP failure, an unchanged LAN address must not trigger an
@@ -281,22 +281,22 @@ final class MediaImportManager: ObservableObject {
             try Task.checkCancellation()
             guard ble.isGen1MediaImportCurrent(hotspot.identity) else { throw Gen1APImportError.targetChanged }
             if manualWifiRestartID == request.id {
-                diagnostics.log("一代：用户请求重新开启热点，先清理旧会话", detail: "restartReason=networkNotFound cleanupRequired=true")
+                diagnostics.log("用户请求重新开启热点，先清理旧会话", detail: "restartReason=networkNotFound cleanupRequired=true")
                 throw ManualWifiJoinExit.restartHotspot
             }
             if manualWifiRetryID == request.id, !hotspot.availability.requiresRestart {
-                diagnostics.log("一代：用户确认已连接，直接重试 TCP", detail: "retryKind=TCPOnly endpoint=192.168.4.1:8556")
+                diagnostics.log("用户确认已连接，直接重试 TCP", detail: "retryKind=TCPOnly endpoint=192.168.4.1:8556")
                 return
             }
             let hasClientIPv4 = DeviceWifiManager.gen1HasClientIPv4
             if !hasClientIPv4 { observedOutsideLAN = true }
             if hasClientIPv4 && !hotspot.availability.requiresRestart && (!requireLANRejoin || observedOutsideLAN) {
-                diagnostics.log("一代：手动连接等待期间检测到眼镜网段，自动继续导入", detail: "targetLAN=192.168.4.0/24 retryKind=TCPOnly endpoint=192.168.4.1:8556 noApply=true noOpenHotspot=true requireLANRejoin=\(requireLANRejoin)")
+                diagnostics.log("手动连接等待期间检测到眼镜网段，自动继续导入", detail: "targetLAN=192.168.4.0/24 retryKind=TCPOnly endpoint=192.168.4.1:8556 noApply=true noOpenHotspot=true requireLANRejoin=\(requireLANRejoin)")
                 return
             }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
-        diagnostics.log("一代：手动连接等待超时，进入热点清理", detail: "timeout=300s")
+        diagnostics.log("手动连接等待超时，进入热点清理", detail: "timeout=300s")
         throw DeviceWifiError.unreachable
     }
 
@@ -695,9 +695,9 @@ final class MediaImportManager: ObservableObject {
         try validateOwnership()
         let processingStarted = ProcessInfo.processInfo.systemUptime
         var processingCompleted = false
-        DebugLogStore.logWiFi("一代：开始处理已下载原件", detail: "file=\(entry.fileName) appState=\(UIApplication.shared.applicationState.rawValue) glassesLANIPv4=\(DeviceWifiManager.gen1HasClientIPv4) processingOrder=perFile")
+        DebugLogStore.logWiFi("开始处理已下载原件", detail: "file=\(entry.fileName) appState=\(UIApplication.shared.applicationState.rawValue) glassesLANIPv4=\(DeviceWifiManager.gen1HasClientIPv4) processingOrder=perFile")
         defer {
-            DebugLogStore.logWiFi("一代：已下载原件处理退出", detail: "file=\(entry.fileName) completed=\(processingCompleted) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - processingStarted) appState=\(UIApplication.shared.applicationState.rawValue) glassesLANIPv4=\(DeviceWifiManager.gen1HasClientIPv4) taskCancelled=\(Task.isCancelled)")
+            DebugLogStore.logWiFi("已下载原件处理退出", detail: "file=\(entry.fileName) completed=\(processingCompleted) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - processingStarted) appState=\(UIApplication.shared.applicationState.rawValue) glassesLANIPv4=\(DeviceWifiManager.gen1HasClientIPv4) taskCancelled=\(Task.isCancelled)")
         }
         let watermark = PhotoCaptureWatermarkStore.shared.configuration(fileName: entry.fileName,
             account: entry.accountID, device: entry.targetID.uuidString)
@@ -707,7 +707,7 @@ final class MediaImportManager: ObservableObject {
             do {
                 try await SystemPhotoLibrarySaver.save(fileURL: library.originalURL(for: item), isVideo: item.isVideo)
             } catch {
-                DebugLogStore.logWiFi("一代：保存系统相册失败，App 原件已保留", detail: "file=\(entry.fileName) error=\(error.localizedDescription)")
+                DebugLogStore.logWiFi("保存系统相册失败，App 原件已保留", detail: "file=\(entry.fileName) error=\(error.localizedDescription)")
                 throw MediaImportError.message(L10n.t(
                     "\(entry.fileName) 的 App 原件已保存，但系统相册保存失败；可再次导入重试：\(error.localizedDescription)",
                     "The app original for \(entry.fileName) is safe, but saving to Photos failed. Import again to retry: \(error.localizedDescription)"
@@ -718,7 +718,7 @@ final class MediaImportManager: ObservableObject {
         // Permanent original and app manifest have committed. A cleanup failure can be
         // retried safely because the library receipt deduplicates this exact source URL.
         do { try inbox.removeCommitted(entry) }
-        catch { DebugLogStore.logWiFi("一代：待恢复目录清理失败", detail: "file=\(entry.fileName) error=\(error.localizedDescription)") }
+        catch { DebugLogStore.logWiFi("待恢复目录清理失败", detail: "file=\(entry.fileName) error=\(error.localizedDescription)") }
         processingCompleted = true
         return item
     }
@@ -790,7 +790,7 @@ final class MediaImportManager: ObservableObject {
                         baseURL: "local://Gen1ImportInbox", bytesDownloaded: nil,
                         errorDetail: Self.formatErrorDetail(error)
                     ))
-                    DebugLogStore.logWiFi("一代：本地恢复失败，原件保留并继续下一项", detail: "file=\(entry.fileName) error=\(error.localizedDescription)")
+                    DebugLogStore.logWiFi("本地恢复失败，原件保留并继续下一项", detail: "file=\(entry.fileName) error=\(error.localizedDescription)")
                 }
             }
             try checkOwnership()
@@ -863,11 +863,11 @@ final class MediaImportManager: ObservableObject {
                 fileIndex: index, totalFiles: total, stage: stage, baseURL: endpoint,
                 bytesDownloaded: nil, errorDetail: Self.formatErrorDetail(error)
             ))
-            diagnostics.log("一代：文件导入失败，保留手机现有原始数据", detail: "file=\(name) stage=\(stage) error=\(error.localizedDescription)")
+            diagnostics.log("文件导入失败，保留手机现有原始数据", detail: "file=\(name) stage=\(stage) error=\(error.localizedDescription)")
         }
 
         state = .fetchingList
-        diagnostics.log("一代：开始 AP 相册导入", detail: "target=\(targetID) transport=TCP:8556")
+        diagnostics.log("开始 AP 相册导入", detail: "target=\(targetID) transport=TCP:8556")
         do {
             // License activation may need internet. Finish this while still on the
             // phone's normal network, before switching to the glasses' local AP.
@@ -875,9 +875,9 @@ final class MediaImportManager: ObservableObject {
                 let licensed = await Task.detached(priority: .utility) {
                     PixSmartImageStabilizer.prewarmLicense()
                 }.value
-                diagnostics.log("一代：视频防抖预鉴权结束", detail: "licensed=\(licensed); failure_keeps_original_video")
+                diagnostics.log("视频防抖预鉴权结束", detail: "licensed=\(licensed); failure_keeps_original_video")
             } else {
-                diagnostics.log("一代：临时测试版跳过视频防抖预鉴权", detail: "testVariant=gen1-no-eis stabilizationEnabled=false")
+                diagnostics.log("临时测试版跳过视频防抖预鉴权", detail: "testVariant=gen1-no-eis stabilizationEnabled=false")
             }
             try checkTarget()
             // Restore previously completed downloads first; do not ask glasses to send
@@ -909,7 +909,7 @@ final class MediaImportManager: ObservableObject {
             } catch {
                 try checkTarget()
                 if case DeviceWifiError.userDenied = error { throw error }
-                diagnostics.log("一代：自动加入未完成，转手动连接或重新开启热点", detail: "error=\(error.localizedDescription) availability=\(hotspot.availability.rawValue) requiresRestart=\(hotspot.availability.requiresRestart)")
+                diagnostics.log("自动加入未完成，转手动连接或重新开启热点", detail: "error=\(error.localizedDescription) availability=\(hotspot.availability.rawValue) requiresRestart=\(hotspot.availability.requiresRestart)")
                 try await waitForManualWifiJoin(credentials, ble: ble, hotspot: hotspot, diagnostics: diagnostics)
             }
             endpoint = "tcp://192.168.4.1:8556"
@@ -938,14 +938,14 @@ final class MediaImportManager: ObservableObject {
                         let denied = await current.hadLocalNetworkDenial()
                         await current.close()
                         guard pathRetryCount < 3 else {
-                            diagnostics.log("一代：网络抖动重试耗尽", detail: "retryCount=3 localNetworkDenied=\(denied) error=\(Self.formatErrorDetail(error))")
+                            diagnostics.log("网络抖动重试耗尽", detail: "retryCount=3 localNetworkDenied=\(denied) error=\(Self.formatErrorDetail(error))")
                             if denied && DeviceWifiManager.gen1HasClientIPv4 {
                                 throw DeviceWifiError.joinFailed("本地网络连接持续受限，请检查「设置 → App → 本地网络」权限；若使用 VPN，请暂时关闭后重试")
                             }
                             throw error
                         }
                         while !DeviceWifiManager.gen1HasClientIPv4 || hotspot.availability.requiresRestart {
-                            diagnostics.log("一代：传输网络不可用，等待手动连接或重开热点", detail: "availability=\(hotspot.availability.rawValue) noApply=true noOpenHotspot=true")
+                            diagnostics.log("传输网络不可用，等待手动连接或重开热点", detail: "availability=\(hotspot.availability.rawValue) noApply=true noOpenHotspot=true")
                             try await waitForManualWifiJoin(credentials, ble: ble, hotspot: hotspot, diagnostics: diagnostics)
                         }
                         let delays: [UInt64] = [500_000_000, 1_000_000_000, 2_000_000_000]
@@ -953,7 +953,7 @@ final class MediaImportManager: ObservableObject {
                         pathRetryCount += 1
                         let interfaces = WifiDiagnosticSession.captureInterfaces()
                         let tunnelInterfaces = Set(interfaces.addresses.filter { $0.name.hasPrefix("utun") }.map(\.name)).sorted().joined(separator: ",")
-                        diagnostics.log("一代：仍在眼镜网段，重试 TCP", detail: "retryIndex=\(pathRetryCount) maxRetries=3 selectedIPv4=\(interfaces.selectedIPv4 ?? "none") tunnelInterfaces=\(tunnelInterfaces) tunnelDoesNotProveVPN=true delayNs=\(delay) keptHotspot=true localNetworkDenied=\(denied) noApply=true noOpenHotspot=true error=\(Self.formatErrorDetail(error))")
+                        diagnostics.log("仍在眼镜网段，重试 TCP", detail: "retryIndex=\(pathRetryCount) maxRetries=3 selectedIPv4=\(interfaces.selectedIPv4 ?? "none") tunnelInterfaces=\(tunnelInterfaces) tunnelDoesNotProveVPN=true delayNs=\(delay) keptHotspot=true localNetworkDenied=\(denied) noApply=true noOpenHotspot=true error=\(Self.formatErrorDetail(error))")
                         try await Task.sleep(nanoseconds: delay)
                         try checkTarget()
                         while !DeviceWifiManager.gen1HasClientIPv4 || hotspot.availability.requiresRestart {
@@ -968,7 +968,7 @@ final class MediaImportManager: ObservableObject {
             while connectedTransport == nil {
                 try checkTarget()
                 guard DeviceWifiManager.gen1HasClientIPv4, !hotspot.availability.requiresRestart else {
-                    diagnostics.log("一代：热点连接条件不满足，提示手动连接或重开热点", detail: "targetLAN=192.168.4.0/24 availability=\(hotspot.availability.rawValue) TCPAttempted=false")
+                    diagnostics.log("热点连接条件不满足，提示手动连接或重开热点", detail: "targetLAN=192.168.4.0/24 availability=\(hotspot.availability.rawValue) TCPAttempted=false")
                     try await waitForManualWifiJoin(credentials, ble: ble, hotspot: hotspot, diagnostics: diagnostics)
                     continue
                 }
@@ -999,7 +999,7 @@ final class MediaImportManager: ObservableObject {
                         } catch {
                             // Capture before outer cleanup removes the hotspot configuration.
                             networkDiagnostics.recordSnapshot(phase: "tcp-connect-failed-before-cleanup", force: true)
-                            networkDiagnostics.log("一代：TCP 建连失败现场", detail: "endpoint=\(endpoint)\nerror=\(Self.formatErrorDetail(error))\nSSID_not_read_or_required; snapshot_does_not_prove_AP_authentication_or_service_failure")
+                            networkDiagnostics.log("TCP 建连失败现场", detail: "endpoint=\(endpoint)\nerror=\(Self.formatErrorDetail(error))\nSSID_not_read_or_required; snapshot_does_not_prove_AP_authentication_or_service_failure")
                             throw error
                         }
                     }
@@ -1009,7 +1009,7 @@ final class MediaImportManager: ObservableObject {
                     await client?.close()
                     try checkTarget()
                     if pathRetryCount >= 3 { throw error }
-                    diagnostics.log("一代：TCP 未连通，保留热点供手动连接", detail: "error=\(error.localizedDescription); fileListRequested=false")
+                    diagnostics.log("TCP 未连通，保留热点供手动连接", detail: "error=\(error.localizedDescription); fileListRequested=false")
                     try await waitForManualWifiJoin(credentials, ble: ble, hotspot: hotspot, requireLANRejoin: true, diagnostics: diagnostics)
                 }
             }
@@ -1019,16 +1019,16 @@ final class MediaImportManager: ObservableObject {
             listedNames = try await withPathRecovery(transport) { try await $0.fileList() }
             let watermarkBinding = PhotoCaptureWatermarkStore.shared.bind(fileNames: listedNames,
                 account: identity.accountID, device: targetID.uuidString)
-            diagnostics.log("一代：关联拍照水印设置", detail: watermarkBinding)
+            diagnostics.log("关联拍照水印设置", detail: watermarkBinding)
             remainingFileCount = listedNames.count
-            diagnostics.log("一代：TCP 文件列表已获取", detail: "endpoint=\(endpoint) count=\(listedNames.count); BLE_ready_not_required_during_transfer")
+            diagnostics.log("TCP 文件列表已获取", detail: "endpoint=\(endpoint) count=\(listedNames.count); BLE_ready_not_required_during_transfer")
             var finalProcessingReconnected = false
             for (index, name) in listedNames.enumerated() {
                 try checkTarget()
                 state = .downloading(current: index + 1, total: listedNames.count, fileName: name)
                 let entry = try inbox.prepare(targetID: targetID, fileName: name, accountID: identity.accountID)
                 do {
-                    diagnostics.log("一代：开始传输原始文件", detail: "file=\(name) fileTimeout=\(AlbumTransferPolicy.fileTimeout)s; read_and_write_use_file_deadline", direction: .sent)
+                    diagnostics.log("开始传输原始文件", detail: "file=\(name) fileTimeout=\(AlbumTransferPolicy.fileTimeout)s; read_and_write_use_file_deadline", direction: .sent)
                     var restartingFile = false
                     let destination = inbox.fileURL(for: entry)
                     let bytes = try await withPathRecovery(client ?? transport) { activeTransport in
@@ -1044,7 +1044,7 @@ final class MediaImportManager: ObservableObject {
                         return try await activeTransport.downloadFile(named: name, to: destination)
                     }
                     remainingFileCount = max(0, (remainingFileCount ?? 0) - 1)
-                    diagnostics.log("一代：原始文件已完整落盘", detail: "file=\(name) bytes=\(bytes) original=\(inbox.fileURL(for: entry).path)")
+                    diagnostics.log("原始文件已完整落盘", detail: "file=\(name) bytes=\(bytes) original=\(inbox.fileURL(for: entry).path)")
                 } catch {
                     record(name, index: index + 1, total: listedNames.count, stage: "tcpDownload", error: error)
                     throw error // A broken stream cannot safely continue with another request.
@@ -1064,25 +1064,25 @@ final class MediaImportManager: ObservableObject {
                         if failure == nil { failure = await active.processingRecoveryError() }
                         guard let error = failure else { continue }
                         guard DeviceWifiManager.gen1HasClientIPv4 else {
-                            diagnostics.log("一代：算法期间离开眼镜网段，停止 TCP 保活重连", detail: "phase=localProcessing keptHotspot=true stabilizeCancelled=false noApply=true")
+                            diagnostics.log("算法期间离开眼镜网段，停止 TCP 保活重连", detail: "phase=localProcessing keptHotspot=true stabilizeCancelled=false noApply=true")
                             break
                         }
                         guard attempts < retryBudget else {
-                            diagnostics.log("一代：算法期间 TCP 保活重试耗尽", detail: "phase=localProcessing attempts=\(attempts) keptHotspot=true stabilizeCancelled=false error=\(Self.formatErrorDetail(error))")
+                            diagnostics.log("算法期间 TCP 保活重试耗尽", detail: "phase=localProcessing attempts=\(attempts) keptHotspot=true stabilizeCancelled=false error=\(Self.formatErrorDetail(error))")
                             break
                         }
                         let delays: [UInt64] = [300_000_000, 800_000_000, 1_500_000_000]
                         do { try await Task.sleep(nanoseconds: delays[attempts]) } catch { break }
                         guard !Task.isCancelled, ble.isGen1MediaImportCurrent(identity), DeviceWifiManager.gen1HasClientIPv4 else { break }
                         attempts += 1
-                        diagnostics.log("一代：算法期间静默重连 TCP", detail: "phase=localProcessing keepaliveRetryIndex=\(attempts) remainingSessionBudget=\(retryBudget) selectedIPv4=\(WifiDiagnosticSession.captureInterfaces().selectedIPv4 ?? "none") keptHotspot=true stabilizeCancelled=false noApply=true noOpenHotspot=true noFileList=true noRedownload=true error=\(Self.formatErrorDetail(error))")
+                        diagnostics.log("算法期间静默重连 TCP", detail: "phase=localProcessing keepaliveRetryIndex=\(attempts) remainingSessionBudget=\(retryBudget) selectedIPv4=\(WifiDiagnosticSession.captureInterfaces().selectedIPv4 ?? "none") keptHotspot=true stabilizeCancelled=false noApply=true noOpenHotspot=true noFileList=true noRedownload=true error=\(Self.formatErrorDetail(error))")
                         await active.close()
                         let replacement = Gen1MediaTCPClient(host: "192.168.4.1")
                         do {
                             try await replacement.connect()
                             active = replacement
                             failure = nil
-                            diagnostics.log("一代：算法期间 TCP 保活恢复", detail: "phase=localProcessing keepaliveRetryIndex=\(attempts) heartbeatResumed=true stabilizeCancelled=false")
+                            diagnostics.log("算法期间 TCP 保活恢复", detail: "phase=localProcessing keepaliveRetryIndex=\(attempts) heartbeatResumed=true stabilizeCancelled=false")
                         } catch {
                             // Preserve its terminal error for the next transfer/finish.
                             active = replacement
@@ -1112,7 +1112,7 @@ final class MediaImportManager: ObservableObject {
             do {
                 if finalProcessingReconnected {
                     transferFinishWarning = true
-                    diagnostics.log("一代：最终文件处理期间已重连，不跨 TCP 会话重发结束指令", detail: "imported=\(importedNames.count) listed=\(listedNames.count) transferCompleteUnconfirmed=true next=closeTCP_then_ownedHotspotCleanup")
+                    diagnostics.log("最终文件处理期间已重连，不跨 TCP 会话重发结束指令", detail: "imported=\(importedNames.count) listed=\(listedNames.count) transferCompleteUnconfirmed=true next=closeTCP_then_ownedHotspotCleanup")
                 } else {
                     try hotspot.prepareForTransferCompletion()
                     try await finishingTransport.finishTransfer()
@@ -1126,16 +1126,16 @@ final class MediaImportManager: ObservableObject {
                     failed: failures.count, recoverableNetworkError: recoverable
                 ) else { throw error }
                 transferFinishWarning = true
-                diagnostics.log("一代：全部文件已保存，传输结束指令发送失败", detail: "imported=\(importedNames.count) listed=\(listedNames.count) stage=transferComplete allFilesCommitted=true completionCommandDelivery=unconfirmed resendOnNewTCP=false nextStage=closeTCPThen0x38 error=\(Self.formatErrorDetail(error))")
+                diagnostics.log("全部文件已保存，传输结束指令发送失败", detail: "imported=\(importedNames.count) listed=\(listedNames.count) stage=transferComplete allFilesCommitted=true completionCommandDelivery=unconfirmed resendOnNewTCP=false nextStage=closeTCPThen0x38 error=\(Self.formatErrorDetail(error))")
             }
         } catch {
             finalError = ble.isGen1MediaImportCurrent(identity) ? error : Gen1APImportError.targetChanged
             if finalError is ManualWifiJoinExit {
-                diagnostics.log("一代：准备重新开启热点", detail: "endpoint=\(endpoint) cleanupBeforeRestart=true")
+                diagnostics.log("准备重新开启热点", detail: "endpoint=\(endpoint) cleanupBeforeRestart=true")
             } else if finalError is CancellationError {
-                diagnostics.log("一代：导入已取消", detail: "endpoint=\(endpoint) imported=\(importedNames.count) nextStage=hotspotCleanup")
+                diagnostics.log("导入已取消", detail: "endpoint=\(endpoint) imported=\(importedNames.count) nextStage=hotspotCleanup")
             } else {
-                diagnostics.log("一代：导入流程失败", detail: "endpoint=\(endpoint) imported=\(importedNames.count) error=\(finalError!.localizedDescription)")
+                diagnostics.log("导入流程失败", detail: "endpoint=\(endpoint) imported=\(importedNames.count) error=\(finalError!.localizedDescription)")
             }
         }
 
@@ -1143,10 +1143,10 @@ final class MediaImportManager: ObservableObject {
         state = .finishing
         await client?.close()
         isClosingGen1Hotspot = true
-        diagnostics.log("一代：TCP 已关闭，先等待设备热点收尾", detail: "cleanupOrder=closeTCP,waitNormalShutdownOrAbnormal0x38,removePhoneConfiguration")
+        diagnostics.log("TCP 已关闭，先等待设备热点收尾", detail: "cleanupOrder=closeTCP,waitNormalShutdownOrAbnormal0x38,removePhoneConfiguration")
         let cleanupPending = await hotspot.close() == .pending
         if let ssid, !cleanupPending {
-            diagnostics.log("一代：设备热点收尾等待结束，清理手机配置", detail: "deviceCleanupPending=\(cleanupPending) removeReason=importSessionEnded")
+            diagnostics.log("设备热点收尾等待结束，清理手机配置", detail: "deviceCleanupPending=\(cleanupPending) removeReason=importSessionEnded")
             DeviceWifiManager.disconnect(from: ssid)
         }
         isClosingGen1Hotspot = false
@@ -1189,14 +1189,14 @@ final class MediaImportManager: ObservableObject {
                 "已导入 \(importedNames.count) 项，文件已保存在 App 相册，无需重复导入。设备传输结束通知未确认。\(cleanupDetail)",
                 "Imported \(importedNames.count) item(s), saved in the app album. No need to import them again. The device transfer-end notification is unconfirmed. \(cleanupDetail)"
             )
-            diagnostics.log("一代：文件导入完成，附带设备收尾提示", detail: "imported=\(importedNames.count) transferCompleteUnconfirmed=true hotspotCleanupPending=\(cleanupPending) nextImportBlocked=\(cleanupPending)")
+            diagnostics.log("文件导入完成，附带设备收尾提示", detail: "imported=\(importedNames.count) transferCompleteUnconfirmed=true hotspotCleanupPending=\(cleanupPending) nextImportBlocked=\(cleanupPending)")
             state = .completed(imported: importedNames.count)
         } else if cleanupPending {
             completionNotice = L10n.t(
                 "已导入 \(importedNames.count) 项，文件已保存在 App 相册，无需重复导入。眼镜热点关闭尚未确认，暂不能再次导入、升级或拍摄，请稍后重试。",
                 "Imported \(importedNames.count) item(s), saved in the app album. No need to import them again. Hotspot shutdown is not yet confirmed. Wait before importing, upgrading, or capturing again."
             )
-            diagnostics.log("一代：文件已保存，热点关闭未确认", detail: "imported=\(importedNames.count) failedPhotos=\(failedPhotos) failedVideos=\(failedVideos) hotspotCleanupPending=true importFailure=false")
+            diagnostics.log("文件已保存，热点关闭未确认", detail: "imported=\(importedNames.count) failedPhotos=\(failedPhotos) failedVideos=\(failedVideos) hotspotCleanupPending=true importFailure=false")
             state = .completed(imported: importedNames.count, failedPhotos: failedPhotos, failedVideos: failedVideos)
         } else {
             state = .completed(imported: importedNames.count, failedPhotos: failedPhotos, failedVideos: failedVideos)

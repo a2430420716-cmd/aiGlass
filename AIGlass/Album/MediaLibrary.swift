@@ -276,10 +276,10 @@ final class MediaLibrary: ObservableObject {
                     try await Gen1MediaOrientation.rotateVideoClockwise90(from: video, audioFrom: audio, to: output)
                 },
                 diagnostic: { detail in
-                    DebugLogStore.logWiFi("一代：视频防抖回退原件", detail: "file=\(fileName) \(detail)")
+                    DebugLogStore.logWiFi("视频防抖回退原件", detail: "file=\(fileName) \(detail)")
                 }
             )
-            DebugLogStore.logWiFi("一代：视频导入处理完成", detail: "file=\(fileName) stabilized=\(processing == .stabilized) rotation=clockwise90 originalPreserved=true")
+            DebugLogStore.logWiFi("视频导入处理完成", detail: "file=\(fileName) stabilized=\(processing == .stabilized) rotation=clockwise90 originalPreserved=true")
             await Self.logVideoDuration(url: temporary, fileName: fileName, stage: "gen1_album_final")
             item = StoredMediaItem(
                 id: receipt.id, fileName: displayName, isVideo: true,

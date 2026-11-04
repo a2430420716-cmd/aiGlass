@@ -20,7 +20,7 @@ final class Gen1FirmwareUpdateSession {
             case .unavailable: return "眼镜当前不可升级，请先结束拍摄、录音或导入，并确认已绑定当前账号"
             case .targetChanged: return "账号、绑定或连接的眼镜已改变，本次升级已停止"
             case .batteryUnknown: return "未能读取眼镜电量，请重新连接后再升级"
-            case .batteryLow(let level): return "眼镜电量不足（当前\(level)%），一代主固件升级需要电量至少 80%"
+            case .batteryLow(let level): return "眼镜电量不足（当前\(level)%），主固件升级需要电量至少 80%"
             case .sendFailed(let command): return String(format: "升级指令 0x%02X 未发送，请重新连接眼镜后重试", command)
             case .wifiProvisionFailed: return "眼镜回复 Wi-Fi 配置失败。请确认网络为 2.4GHz，并检查名称和密码；此回复未说明具体原因"
             case .wifiResponseTimedOut: return "未收到眼镜的 Wi-Fi 配置结果，已停止升级。请导出 Wi-Fi 和蓝牙日志排查；这不代表密码错误"

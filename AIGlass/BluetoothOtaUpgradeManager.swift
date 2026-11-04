@@ -963,7 +963,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 ble.endGen1FirmwareUpgrade(identity)
             }
             state = .upgrading(percent: 0)
-            DebugLogStore.logWiFi("一代主固件升级：开始", detail: "diagnosticVersion=2 diagnosticID=\(diagnosticID) target=\(identity.targetID) version=\(serverInfo.version) currentMain=\(ble.deviceVersion6350 ?? "unknown") currentBluetooth=\(ble.deviceVersion2800 ?? "unknown") transport=BLE-provision+device-HTTP-download")
+            DebugLogStore.logWiFi("主固件升级：开始", detail: "diagnosticVersion=2 diagnosticID=\(diagnosticID) target=\(identity.targetID) version=\(serverInfo.version) currentMain=\(ble.deviceVersion6350 ?? "unknown") currentBluetooth=\(ble.deviceVersion2800 ?? "unknown") transport=BLE-provision+device-HTTP-download")
             let session = Gen1FirmwareUpdateSession(
                 send: { command, data in
                     guard ble.isGen1FirmwareUpgradeCurrent(identity) else { return false }
@@ -980,7 +980,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                     self.gen1FirmwarePhase = phase
                     if case .upgrading(let percent) = phase { self.state = .upgrading(percent: percent) }
                 },
-                log: { message in DebugLogStore.logWiFi("一代主固件升级", detail: "diagnosticID=\(diagnosticID) target=\(identity.targetID) bleState=\(ble.connectionState) \(message)") }
+                log: { message in DebugLogStore.logWiFi("主固件升级", detail: "diagnosticID=\(diagnosticID) target=\(identity.targetID) bleState=\(ble.connectionState) \(message)") }
             )
             // Subscribe before querying battery or sending Wi-Fi credentials.
             let subscription = ble.gen1ControlSubject.sink { frame in
@@ -990,9 +990,9 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             try await session.run(wifi: wifi, urlPayload: payload, targetVersion: serverInfo.version,
                                   baselineBattery: ble.deviceBatteryPercent)
             state = .completed
-            DebugLogStore.logWiFi("一代主固件升级：版本确认成功", detail: "diagnosticID=\(diagnosticID) target=\(identity.targetID) version=\(serverInfo.version)")
+            DebugLogStore.logWiFi("主固件升级：版本确认成功", detail: "diagnosticID=\(diagnosticID) target=\(identity.targetID) version=\(serverInfo.version)")
         } catch {
-            DebugLogStore.logWiFi("一代主固件升级：停止", detail: "diagnosticID=\(diagnosticID) elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - startedAt))s bleReady=\(ble.isReady) errorType=\(String(describing: type(of: error))) error=\(error.localizedDescription)")
+            DebugLogStore.logWiFi("主固件升级：停止", detail: "diagnosticID=\(diagnosticID) elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - startedAt))s bleReady=\(ble.isReady) errorType=\(String(describing: type(of: error))) error=\(error.localizedDescription)")
             if let failure = error as? Gen1FirmwareUpdateSession.Failure {
                 switch failure {
                 case .batteryUnknown:

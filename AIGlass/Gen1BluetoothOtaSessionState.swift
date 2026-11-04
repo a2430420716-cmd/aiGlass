@@ -1,3 +1,5 @@
+import Foundation
+
 /// The first transfer installs the loader. After its requested reconnect, the
 /// device pulls the firmware through the SDK's second-stage transfer command.
 struct Gen1BluetoothOtaSessionState {
@@ -75,4 +77,60 @@ struct Gen1BluetoothOtaSessionState {
 
     /// A reboot after the second transfer still needs a fresh matching version.
     var canVerifyAfterReboot: Bool { phase == .awaitingResult }
+}
+
+/// Bounds each advertised loader's connection attempt within one reconnect budget.
+/// A stalled native connect must not consume the entire wait without recovery.
+struct Gen1BluetoothOtaReconnectPolicy {
+    static let totalTimeout: TimeInterval = 90
+    static let attemptTimeout: TimeInterval = 25
+    static let maximumAttempts = 3
+
+    struct Attempt: Equatable {
+        let generation: UInt64
+        let peripheralID: UUID
+        let deadline: TimeInterval
+    }
+
+    private(set) var deadline: TimeInterval?
+    private(set) var attempts = 0
+    private(set) var active: Attempt?
+    private var generation: UInt64 = 0
+
+    mutating func begin(now: TimeInterval) {
+        stop()
+        deadline = now + Self.totalTimeout
+        attempts = 0
+    }
+
+    func canAttempt(now: TimeInterval) -> Bool {
+        guard let deadline else { return false }
+        return now < deadline && attempts < Self.maximumAttempts && active == nil
+    }
+
+    mutating func claim(peripheralID: UUID, isConnectable: Bool, now: TimeInterval) -> Attempt? {
+        guard isConnectable, canAttempt(now: now), let deadline else { return nil }
+        attempts += 1
+        generation &+= 1
+        let attempt = Attempt(generation: generation, peripheralID: peripheralID,
+                              deadline: min(deadline, now + Self.attemptTimeout))
+        active = attempt
+        return attempt
+    }
+
+    mutating func expire(_ attempt: Attempt, now: TimeInterval) -> Bool {
+        guard active == attempt, now >= attempt.deadline else { return false }
+        cancelAttempt()
+        return true
+    }
+
+    mutating func cancelAttempt() {
+        generation &+= 1
+        active = nil
+    }
+
+    mutating func stop() {
+        cancelAttempt()
+        deadline = nil
+    }
 }

@@ -29,7 +29,7 @@ final class PairingCoordinator: ObservableObject {
     @Published var classicAudioTipMessage: String?
     @Published private(set) var isWaitingForUnpairFactoryReset = false
 
-    /// 一代 G5K61 与二代 G5T71 共用连接管理，按 GATT 服务选择协议。
+    /// Gen1 G5K61 与Gen2 G5T71 共用连接管理，按 GATT 服务选择协议。
     let astraA1BleManager = AstraA1BleManager()
 
     weak var authSession: AuthSession? {
@@ -472,7 +472,7 @@ final class PairingCoordinator: ObservableObject {
         }
     }
 
-    /// 二代普通解绑先确认设备恢复成功，再解除账号绑定并清理目标缓存。
+    /// Gen2普通解绑先确认设备恢复成功，再解除账号绑定并清理目标缓存。
     /// - Parameters:
     ///   - serialNumber: 蓝牙标识（`serial_number`）
     ///   - sn: 设备硬件 SN（`sn`）
@@ -585,7 +585,7 @@ final class PairingCoordinator: ObservableObject {
     private func bindDeviceIfNeeded(attempt token: Int) async {
         guard pairingAttempt.isCurrent(token) else { return }
         guard pairingModel != nil, userConfirmedPairingDevice, !hasStartedBind else { return }
-        // 保留用户选择的销售型号；不能将一代或未知型号回退成 G5T71。
+        // 保留用户选择的销售型号；不能将Gen1或未知型号回退成 G5T71。
         guard let bindModelName = selectedAPIModelName?.trimmingCharacters(in: .whitespacesAndNewlines),
               !bindModelName.isEmpty else { return }
         guard let request = astraA1BleManager.bindDeviceSnapshot(appModelName: bindModelName) else { return }

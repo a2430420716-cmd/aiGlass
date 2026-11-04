@@ -8,7 +8,7 @@ enum PixSmartVideoEIS {
     /// Explicit entry point prevents a Gen1 import from inheriting Gen2 parameters.
     static func stabilizeGen1Video(from inputURL: URL, to outputURL: URL) async -> Bool {
         guard gen1StabilizationEnabled else {
-            DebugLogStore.logWiFi("一代：临时测试版跳过视频防抖", detail: "file=\(inputURL.lastPathComponent) stabilizationEnabled=false rotationEnabled=true audioPreserved=true testVariant=gen1-no-eis")
+            DebugLogStore.logWiFi("临时测试版跳过视频防抖", detail: "file=\(inputURL.lastPathComponent) stabilizationEnabled=false rotationEnabled=true audioPreserved=true testVariant=gen1-no-eis")
             return false
         }
         try? FileManager.default.removeItem(at: outputURL)
@@ -16,7 +16,7 @@ enum PixSmartVideoEIS {
         let diagnosticID = UUID().uuidString
         let started = ProcessInfo.processInfo.systemUptime
         func logAppState(_ event: String) {
-            DebugLogStore.logWiFi("一代：视频防抖运行状态", detail: "processingID=\(diagnosticID) file=\(inputURL.lastPathComponent) event=\(event) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - started) appState=\(UIApplication.shared.applicationState.rawValue) cancellationRequested=\(cancellation.wasCancelled)")
+            DebugLogStore.logWiFi("视频防抖运行状态", detail: "processingID=\(diagnosticID) file=\(inputURL.lastPathComponent) event=\(event) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - started) appState=\(UIApplication.shared.applicationState.rawValue) cancellationRequested=\(cancellation.wasCancelled)")
         }
         logAppState("start")
         let observers = [UIApplication.willResignActiveNotification, UIApplication.didBecomeActiveNotification,
@@ -36,13 +36,13 @@ enum PixSmartVideoEIS {
                         guard total > 0, current > 0 else { return }
                         let percent = min(99, current * 100 / total)
                         if cancellation.shouldLogProgress(percent) {
-                            DebugLogStore.logWiFi("一代：视频防抖进度", detail: "processingID=\(diagnosticID) percent=\(percent) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - started) callbackOnMainThread=\(Thread.isMainThread)")
+                            DebugLogStore.logWiFi("视频防抖进度", detail: "processingID=\(diagnosticID) percent=\(percent) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - started) callbackOnMainThread=\(Thread.isMainThread)")
                         }
                     },
                     completion: { success, message in
                         Task { @MainActor in
                             logAppState("completion")
-                            DebugLogStore.logWiFi("一代：视频防抖处理结束", detail: "processingID=\(diagnosticID) success=\(success) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - started) cancellationRequested=\(cancellation.wasCancelled) error=\(message ?? "none") interruptionCause=notInferredFromErrorText")
+                            DebugLogStore.logWiFi("视频防抖处理结束", detail: "processingID=\(diagnosticID) success=\(success) elapsedSeconds=\(ProcessInfo.processInfo.systemUptime - started) cancellationRequested=\(cancellation.wasCancelled) error=\(message ?? "none") interruptionCause=notInferredFromErrorText")
                             if !success { try? FileManager.default.removeItem(at: outputURL) }
                             continuation.resume(returning: success)
                         }

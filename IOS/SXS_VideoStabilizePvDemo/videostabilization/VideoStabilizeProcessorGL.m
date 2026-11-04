@@ -157,7 +157,7 @@ _Static_assert(BT709 == 0 && BT709_FULLRANGE == 1, "PixSmart profile color const
         return;
     }
     
-    // 与 Android 导入流程保持一致（二代眼镜参数）。
+    // 与 Android 导入流程保持一致（Gen2眼镜参数）。
     PixSmartVideoProfile profile = PixSmartVideoProfileForSize(false,
         (uint32_t)_inputSize.width, (uint32_t)_inputSize.height);
     PIXSMART_VS_PV_PARAM vsParam = {

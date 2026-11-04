@@ -100,7 +100,7 @@ final class AIRecordingImportManager: ObservableObject {
             return
         }
         guard ble.deviceGeneration != .gen1G5K61 else {
-            state = .failed(L10n.t("一代眼镜录音已通过蓝牙保存到手机，无需 Wi-Fi 导入", "First-generation recordings are saved to your phone over Bluetooth; Wi-Fi import is not needed"))
+            state = .failed(L10n.t("眼镜录音已通过蓝牙保存到手机，无需 Wi-Fi 导入", "Recordings are saved to your phone over Bluetooth; Wi-Fi import is not needed"))
             return
         }
         if MediaImportManager.shared.isImporting {

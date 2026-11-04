@@ -246,7 +246,7 @@ final class NewbieGuideController: ObservableObject {
         advanceStep(reason: "guide_event")
     }
 
-    /// 一代只上报当前步骤完成状态，不能按二代触控事件解释。
+    /// Gen1只上报当前步骤完成状态，不能按Gen2触控事件解释。
     private func handleGen1GuideAck(source: UUID, capturedAt: Date, step: Int, result: Int) {
         let evidence = "source=\(source) receivedStep=\(step) result=\(result) callbackAt=\(capturedAt.timeIntervalSince1970)"
         if let reason = gen1EventRejection(source: source, capturedAt: capturedAt) {
