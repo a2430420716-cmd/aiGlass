@@ -763,7 +763,12 @@ struct HomeView: View {
         }
         authSession.selectedHomeDeviceKey = serial
         reconnectFailure = nil
-        let started = ble.retryBoundHomeDevice(peripheralID: id, reason: "home-card-tap")
+        let started = ble.retryBoundHomeDevice(
+            peripheralID: id, reason: "home-card-tap", allowAuthorizationRequest: true
+        )
+        if case .bluetoothUnavailable(let message) = ble.connectionState {
+            mediaActionAlertMessage = message
+        }
         if started, ble.isConnectionInProgress || ble.connectionState == .scanning {
             reconnectingDeviceID = card.id
             scheduleReconnectTimeout(for: card.id)

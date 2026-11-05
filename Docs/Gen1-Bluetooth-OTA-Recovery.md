@@ -39,8 +39,12 @@ Aligned with `glasses(3).zip`: Android `Gen1OtaFailureStore`,
   with at most 25 seconds each through authentication and feature discovery. Release
   a stalled attempt before scanning again for the exact UUID (or the SDK-provided
   loader MAC). Retrieve the cached UUID only on the first attempt; retries wait for
-  a fresh matching advertisement. If cancellation produces no callback
-  within three seconds, replace only the OTA central, retaining the SDK and image.
+  a fresh matching advertisement. After an attempt times out, replace only the OTA
+  central after releasing the link, even when cancellation returns normally. A
+  successful cancellation callback does not establish that this central can acquire
+  the rebooted loader. If cancellation produces no callback within three seconds,
+  use the same replacement path. Retain the SDK, image, attempt count and original
+  deadline. Do not create another central after the final attempt or deadline.
   SDK disconnect notifications during acquisition cannot shorten its total budget.
   Obsolete central callbacks and callbacks during release cannot resume the image.
   A recovered initial connection submits `cmdOTAData` once; a loader reconnect uses
@@ -55,7 +59,11 @@ Aligned with `glasses(3).zip`: Android `Gen1OtaFailureStore`,
   an unconfirmed result. This intentionally differs from Android's optimistic
   success on cancellation after a complete transfer.
 - Logs record reminder, target, session, image submission, retained failures
-  and marker clearance. Record no new Wi-Fi credentials or authorization tokens.
+  and marker clearance. Loader matching also records the SDK's expected MAC,
+  matching peripheral name/UUID, advertised services and at most 64 manufacturer
+  bytes, so device-side connection failures can be correlated with the OTA broadcast.
+  The native connecting state alone cannot establish the physical cause of a timeout.
+  Record no new Wi-Fi credentials or authorization tokens.
 
 Validation: persistence/device-isolation tests in
 `Tests/Gen1BluetoothOtaRecoveryTests.swift` and two-stage transition tests in

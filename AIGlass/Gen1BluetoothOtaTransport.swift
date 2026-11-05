@@ -157,8 +157,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
         clearConnectionForReconnect()
         central.stopScan()
         guard let peripheral, peripheral.state != .disconnected else {
-            self.peripheral = nil
-            queueReconnectAttempt()
+            reconnectConnectionEnded()
             return
         }
         reconnectReleasePeripheral = peripheral
@@ -168,30 +167,42 @@ final class Gen1BluetoothOtaTransport: NSObject {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard !Task.isCancelled, let self, self.continuation != nil,
                   self.finishingResult == nil, self.reconnectReleasePeripheral === peripheral else { return }
-            // A stuck cancellation cannot leave the retry loop polling disconnecting.
-            // Replace only the OTA central; keep the image and vendor session intact.
-            self.log("RCSP reconnect release timeout; replacing OTA central target=\(peripheral.identifier)")
-            self.reconnectReleaseTask = nil
-            self.central.delegate = nil
-            self.central.stopScan()
-            self.central.cancelPeripheralConnection(peripheral)
-            peripheral.delegate = nil
-            self.peripheral = nil
-            self.reconnectReleasePeripheral = nil
-            self.sdk.noteEntityDisconnected()
-            self.central = CBCentralManager(delegate: self, queue: .main)
+            self.log("RCSP reconnect release timeout target=\(peripheral.identifier)")
+            self.reconnectConnectionEnded(releaseTimedOut: true)
         }
     }
 
-    private func reconnectConnectionEnded() {
+    private func reconnectConnectionEnded(releaseTimedOut: Bool = false) {
         cancelReconnectAttempt()
         reconnectReleaseTask?.cancel()
         reconnectReleaseTask = nil
         reconnectReleasePeripheral = nil
-        peripheral?.delegate = nil
+        let releasedPeripheral = peripheral
+        releasedPeripheral?.delegate = nil
         peripheral = nil
         clearConnectionForReconnect()
-        queueReconnectAttempt()
+        let now = ProcessInfo.processInfo.systemUptime
+        switch connectionPolicy.retryActionAfterRelease(now: now, releaseTimedOut: releaseTimedOut) {
+        case .none:
+            log("RCSP reconnect released; no retry budget remains attempts=\(connectionPolicy.attempts)")
+        case .scan:
+            queueReconnectAttempt()
+        case .replaceCentral:
+            log("RCSP replacing OTA central after stalled connection target=\(releasedPeripheral?.identifier.uuidString ?? "none") attempts=\(connectionPolicy.attempts) remainingSeconds=\(max(0, (connectionPolicy.deadline ?? now) - now)) releaseTimedOut=\(releaseTimedOut); retain SDK and image")
+            // didDisconnect can arrive normally even while the next connect on
+            // this central would stall. Rebuild for both release paths.
+            central.delegate = nil
+            central.stopScan()
+            if let releasedPeripheral, releasedPeripheral.state != .disconnected {
+                central.cancelPeripheralConnection(releasedPeripheral)
+            }
+            reconnectTask?.cancel()
+            reconnectTask = nil
+            // didDisconnect already notified the SDK on the callback path.
+            if releaseTimedOut { sdk.noteEntityDisconnected() }
+            connectionPolicy.centralDidReplace()
+            central = CBCentralManager(delegate: self, queue: .main)
+        }
     }
 
     private func armTimeout(seconds: UInt64, message: String) {
@@ -297,7 +308,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
         if let mac, !mac.isEmpty { reconnectMAC = mac }
         guard sessionState.requestReconnect() else { return }
         onPhaseChanged?(sessionState.phase)
-        log("RCSP SDK requested reconnect byMAC=\(mac != nil)")
+        log("RCSP SDK requested reconnect byMAC=\(mac != nil) expectedMAC=\(reconnectMAC ?? "none") originalTarget=\(targetIdentifier?.uuidString ?? "none")")
         if reconnectMAC == nil, let identifier = UUID(uuidString: sdk.mBLE_UUID) { targetIdentifier = identifier }
         reconnectRequested = true
         connectionPolicy.begin(now: ProcessInfo.processInfo.systemUptime)
@@ -341,7 +352,8 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         guard central === self.central, continuation != nil, finishingResult == nil,
-              reconnectReleasePeripheral == nil else { return }
+              reconnectReleasePeripheral == nil,
+              connectionPolicy.canAttempt(now: ProcessInfo.processInfo.systemUptime) else { return }
         let matches: Bool
         if let reconnectMAC {
             guard let data = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data else { return }
@@ -357,7 +369,11 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBCentralManagerDelegate {
             }
             return
         }
-        log("RCSP discovered matching target=\(peripheral.identifier) state=\(peripheral.state.rawValue) connectable=\(isConnectable) rssi=\(RSSI)")
+        let manufacturer = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data ?? Data()
+        let manufacturerHex = manufacturer.prefix(64).map { String(format: "%02X", $0) }.joined()
+        let services = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []).map(\.uuidString).joined(separator: ",")
+        let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name ?? "unknown"
+        log("RCSP discovered matching target=\(peripheral.identifier) name=\(name.debugDescription) state=\(peripheral.state.rawValue) connectable=\(isConnectable) rssi=\(RSSI) expectedMAC=\(reconnectMAC ?? "none") services=[\(services)] manufacturerBytes=\(manufacturer.count) manufacturerHex=\(manufacturerHex)")
         connect(peripheral, source: reconnectMAC == nil ? "advertised UUID" : "advertised OTA MAC")
     }
 

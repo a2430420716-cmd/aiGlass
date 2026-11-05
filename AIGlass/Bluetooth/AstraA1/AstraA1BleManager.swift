@@ -505,8 +505,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         let targetAppConnected = cached?.identifier == targetID && cached?.state == .connected
         let targetAppReady = isReady && connectedPeripheral?.identifier == targetID && targetID != nil
         let audio = GlassesAudioRouteController.connectionDiagnosticSnapshot
+        let centralState = centralManager?.state ?? .unknown
         let assessment = ConnectionDiagnosticAssessment.assess(
-            centralPoweredOn: centralManager.state == .poweredOn,
+            centralPoweredOn: centralState == .poweredOn,
             hasTarget: targetID != nil,
             targetRetrieved: targetRetrieved,
             targetAppConnected: targetAppConnected,
@@ -520,7 +521,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         let detail = """
         diagnosticVersion=1 source=\(source) decision=\(decision)
         assessment=\(assessment.rawValue): \(assessment.explanation)
-        centralState=\(centralManager.state) (\(centralManager.state.rawValue)) authorization=\(CBManager.authorization.rawValue) appState=\(connectStateDescription(connectionState))
+        centralInitialized=\(centralManager != nil) centralState=\(centralState) (\(centralState.rawValue)) authorization=\(CBManager.authorization.rawValue) appState=\(connectStateDescription(connectionState))
         targetID=\(targetID?.uuidString ?? "none") targetName=\((cached?.name ?? deviceName ?? "unknown").debugDescription)
         serviceFilter=\(Self.supportedServiceUUIDs.map(\.uuidString).joined(separator: ",")) queryPerformed=\(queryPerformed) retrievedCount=\(retrieved.count) targetMatched=\(targetRetrieved)
         retrievedPeripherals=[\(returned)]
@@ -661,11 +662,35 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             .flatMap(UUID.init(uuidString:)) != nil
         autoReconnectEnabled = hasSavedPeripheral
         standingConnectAllowed = false
-        centralManager = CBCentralManager(
-            delegate: self,
-            queue: nil,
-            options: [CBCentralManagerOptionRestoreIdentifierKey: centralRestoreIdentifier]
-        )
+        _ = prepareCentralManager()
+    }
+
+    /// Automatic entry points may restore existing authorization, never request it.
+    /// Only pairing and an explicit bound-device connect action pass `true`.
+    @discardableResult
+    private func prepareCentralManager(allowAuthorizationRequest: Bool = false) -> Bool {
+        let authorization: BluetoothActivationPolicy.Authorization
+        switch CBManager.authorization {
+        case .allowedAlways: authorization = .allowed
+        case .notDetermined: authorization = .notDetermined
+        case .denied: authorization = .denied
+        case .restricted: authorization = .restricted
+        @unknown default: authorization = .restricted
+        }
+        let activated = BluetoothActivationPolicy.activate(
+            central: &centralManager, authorization: authorization,
+            userInitiated: allowAuthorizationRequest
+        ) {
+            CBCentralManager(
+                delegate: self,
+                queue: nil,
+                options: [CBCentralManagerOptionRestoreIdentifierKey: centralRestoreIdentifier]
+            )
+        }
+        if !activated, allowAuthorizationRequest {
+            updateState(.bluetoothUnavailable(L10n.t("请在设置中允许蓝牙权限", "Allow Bluetooth in Settings")))
+        }
+        return activated
     }
 
     var isReady: Bool {
@@ -791,6 +816,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 首页进入：系统蓝牙已连接才接管 GATT；否则只监听系统连接事件。
     func ensureConnected(reason: String = "") {
+        guard prepareCentralManager() else { return }
         guard !isPairingSessionActive else {
             connectLog("background connection deferred: pairing owns BLE", detail: "reason=\(reason)")
             return
@@ -849,6 +875,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 首页显示时刷新电量：已连接则查询，否则恢复已绑定目标的 BLE 连接。
     func refreshBatteryLevel() {
+        guard prepareCentralManager() else { return }
         guard !isPairingSessionActive else { return }
         if stopBoundReconnectIfExhausted() { return }
         guard gen1OTAPeripheralID == nil else { return }
@@ -1576,7 +1603,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 系统层外设连接/断开事件（A2DP 先连上、App GATT 未就绪时的补救入口）。
     private func registerForSystemConnectionEventsIfNeeded() {
-        guard !didRegisterConnectionEvents else { return }
+        guard let centralManager, !didRegisterConnectionEvents else { return }
         didRegisterConnectionEvents = true
         centralManager.registerForConnectionEvents(options: [
             CBConnectionEventMatchingOption.serviceUUIDs: Self.supportedServiceUUIDs
@@ -1598,7 +1625,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             connectLog("attach deferred: rebuilding central")
             return true
         }
-        guard centralManager.state == .poweredOn else {
+        guard centralManager?.state == .poweredOn else {
             logConnectionGateSnapshot(
                 source: source, targetID: savedPeripheralID(), retrieved: [], cached: nil,
                 decision: "wait_bluetooth_powered_on", queryPerformed: false
@@ -1748,7 +1775,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @discardableResult
     private func reconnectSavedPeripheralWithoutSystemConnection(source: String) -> Bool {
         guard autoReconnectEnabled, !userInitiatedDisconnect,
-              centralManager.state == .poweredOn,
+              centralManager?.state == .poweredOn,
               gen1OTAPeripheralID == nil, !isRestoringGen1OTAConnection,
               !isPairingSessionActive, !isManualPairingScan, !isManualReconnectScan,
               !isManualReconnectConnect, !isProbingService,
@@ -4385,8 +4412,16 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 开始扫描；发现设备后列入弹窗，由用户手动选择再连接。
     func startPairing(preferredDeviceName: String? = nil) {
+        guard let modelName = preferredDeviceName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !modelName.isEmpty else {
+            updateState(.failed(L10n.t("请先选择设备型号", "Select a device model first")))
+            return
+        }
+        guard prepareCentralManager(allowAuthorizationRequest: true) else { return }
         homeSelectionTargetID = nil
         gen1OTAVerificationPeripheralID = nil
+        pendingBoundSerialNumbers = []
+        pendingBatteryRefresh = false
         // 解绑后的 didConnect/didDisconnect 可能延迟抵达。新配对必须先清掉旧链路目标，
         // 否则旧 ready 回调会结束新 session，首次点击便会永久停在“正在配对”。
         let stalePeripheral = connectedPeripheral ?? reconnectPeripheral
@@ -4441,17 +4476,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         isPairingSessionActive = true
         isManualPairingScan = true
         isUserInitiatedPairingConnect = false
-        pairingModelNameFilter = preferredDeviceName?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        pairingModelNameFilter = modelName
 
         print("\(logTag) startPairing, central state=\(centralManager.state.rawValue)")
-        if let modelName = pairingModelNameFilter, !modelName.isEmpty {
-            print("\(logTag) pairing scan filter by device name containing model_name=\(modelName)")
-        } else {
-            print("\(logTag) pairing scan missing model_name filter")
-            updateState(.failed(L10n.t("请先选择设备型号", "Select a device model first")))
-            return
-        }
+        print("\(logTag) pairing scan filter by device name containing model_name=\(modelName)")
 
         switch centralManager.state {
         case .poweredOn:
@@ -4613,6 +4641,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         homeSelectionTargetID = nil
         gen1OTAVerificationPeripheralID = nil
         pendingStart = false
+        pendingBoundSerialNumbers = []
         cancelManualReconnectScanTimeout()
         isManualReconnectScan = false
         isManualReconnectConnect = false
@@ -4680,6 +4709,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @discardableResult
     func selectBoundHomeDevice(peripheralID: UUID, reason: String) -> Bool {
         guard !isPairingSessionActive, !isUserInitiatedPairingConnect else { return false }
+        // A passive home refresh can select a card without activating Bluetooth.
+        guard prepareCentralManager() else { return true }
         if savedPeripheralID() == peripheralID {
             homeSelectionTargetID = peripheralID
             ensureConnected(reason: reason)
@@ -4706,7 +4737,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         userInitiatedDisconnect = false
         autoReconnectEnabled = true
         standingConnectAllowed = true
-        reconnectPeripheral = centralManager.retrievePeripherals(withIdentifiers: [peripheralID]).first
+        reconnectPeripheral = centralManager.state == .poweredOn
+            ? centralManager.retrievePeripherals(withIdentifiers: [peripheralID]).first : nil
         connectLog("home card connection target selected", detail: "reason=\(reason) id=\(peripheralID.uuidString) failedAttempts=\(boundBLEReconnectPolicy.failedAttempts)")
         ensureConnected(reason: reason)
         if !isReady, !isConnectionInProgress {
@@ -4717,10 +4749,13 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// Explicit retry reopens the budget; page appearances and polling never do.
     @discardableResult
-    func retryBoundHomeDevice(peripheralID: UUID, reason: String) -> Bool {
+    func retryBoundHomeDevice(
+        peripheralID: UUID, reason: String, allowAuthorizationRequest: Bool = false
+    ) -> Bool {
         guard !isPairingSessionActive, !isUserInitiatedPairingConnect,
               gen1OTAPeripheralID == nil, !isFirmwareUpgradeFlowBusy,
               !isManualHardReconnectCentralTransitionInProgress else { return false }
+        guard prepareCentralManager(allowAuthorizationRequest: allowAuthorizationRequest) else { return false }
         if savedPeripheralID() != peripheralID {
             var retry = BoundBLEReconnectPolicy()
             retry.beginUserRetry()
@@ -5591,6 +5626,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     // MARK: - Private
 
     private func beginScan() {
+        guard let centralManager, centralManager.state == .poweredOn else { return }
         pendingStart = false
         stopScan()
         updateState(.scanning)
@@ -5672,7 +5708,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         boundReconnectScanTimeoutWorkItem?.cancel()
         boundReconnectScanTimeoutWorkItem = nil
         boundReconnectScanTargetID = nil
-        if centralManager.isScanning {
+        if let centralManager, centralManager.isScanning {
             centralManager.stopScan()
         }
     }
@@ -5771,6 +5807,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 否则首页会一直显示「未连接」（attach 因 no saved peripheral 被跳过）。
     func adoptBoundPeripheralIDs(_ serialNumbers: [String]) {
         guard savedPeripheralID() == nil else { return }
+        guard prepareCentralManager() else {
+            pendingBoundSerialNumbers = serialNumbers
+            return
+        }
         guard centralManager.state == .poweredOn else {
             pendingBoundSerialNumbers = serialNumbers
             connectLog("adopt deferred: bluetooth not powered on", detail: "candidates=\(serialNumbers.count)")
@@ -5835,6 +5875,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     func restoreBoundConnectionAfterPairing(boundSerialNumbers: [String]) {
         if case .ready = connectionState { return }
         guard !boundSerialNumbers.isEmpty || savedPeripheralID() != nil else { return }
+        guard prepareCentralManager() else { return }
 
         userInitiatedDisconnect = false
         autoReconnectEnabled = true
@@ -5868,6 +5909,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         allowAnyProtocolDevice: Bool = false,
         reason: String
     ) -> Bool {
+        guard prepareCentralManager() else { return false }
         print("\(logTag) reconnectBoundDevice reason=\(reason) state=\(connectionState)")
         connectLog(
             "reconnectBoundDevice",

@@ -11,6 +11,8 @@ enum Gen1BluetoothOtaSessionStateTests {
         testInitialConnectionRecovery()
         testLoaderConnectionRecovery()
         testReconnectDeadlineAndStaleCallbacks()
+        testNativeTimeoutReplacesCentralAfterSuccessfulCancellation()
+        testReleaseRecoveryLimitsAndStageOwnership()
         print("Gen1 Bluetooth OTA stage tests passed")
     }
 
@@ -189,5 +191,63 @@ enum Gen1BluetoothOtaSessionStateTests {
         precondition(!reconnect.expire(late, now: 400), "A previous reconnect cycle cannot stop the current cycle")
         reconnect.stop() // Cancellation, terminal result or target change.
         precondition(reconnect.claim(peripheralID: UUID(), isConnectable: true, now: 301) == nil)
+    }
+
+    private static func testNativeTimeoutReplacesCentralAfterSuccessfulCancellation() {
+        let loader = UUID(uuidString: "09CCA805-2F0A-91FA-889A-AE4AB8BA4C26")!
+        var connection = Gen1BluetoothOtaConnectionPolicy()
+        connection.begin(now: 0)
+        let first = connection.claim(peripheralID: loader, isConnectable: true, now: 2)!
+        precondition(connection.expire(first, now: 27))
+        // Both Nov 5 failures got didDisconnect immediately after cancel. That
+        // callback used to rescan on the same central and repeat the native stall.
+        connection.cancelAttempt()
+        precondition(connection.retryActionAfterRelease(now: 27.001) == .replaceCentral,
+                     "A normal cancellation callback must not bypass timeout recovery")
+        connection.centralDidReplace()
+        precondition(connection.attempts == 1 && connection.deadline == 90,
+                     "Central replacement retains the bounded budget")
+        precondition(!connection.shouldRetrieveCachedPeripheral,
+                     "The replacement still requires exact-target rediscovery")
+        precondition(!connection.expire(first, now: 28))
+        precondition(connection.retryActionAfterRelease(now: 28) == .scan,
+                     "An old timeout cannot request another replacement")
+        let second = connection.claim(peripheralID: loader, isConnectable: true, now: 29)!
+        precondition(second.deadline == 54)
+        precondition(connection.expire(second, now: 54))
+        precondition(connection.retryActionAfterRelease(now: 54.001) == .replaceCentral)
+        connection.centralDidReplace()
+        let third = connection.claim(peripheralID: loader, isConnectable: true, now: 56)!
+        precondition(connection.expire(third, now: 81))
+        precondition(connection.retryActionAfterRelease(now: 81.001) == .none,
+                     "The final timeout cannot create a fourth attempt or needless central")
+    }
+
+    private static func testReleaseRecoveryLimitsAndStageOwnership() {
+        let loader = UUID()
+        var session = Session()
+        _ = session.imageCommandAfterFeature()
+        session.receiveLoaderProgress(100)
+        precondition(session.requestReconnect())
+        var connection = Gen1BluetoothOtaConnectionPolicy()
+        connection.begin(now: 0)
+        precondition(connection.retryActionAfterRelease(now: 1) == .scan,
+                     "Normal loader reboot does not force a central replacement")
+        precondition(connection.retryActionAfterRelease(now: 3, releaseTimedOut: true) == .replaceCentral,
+                     "Missing release callbacks retain the existing fallback")
+        connection.centralDidReplace()
+        let attempt = connection.claim(peripheralID: loader, isConnectable: true, now: 5)!
+        connection.cancelAttempt() // A genuine connection failure, not a native timeout.
+        precondition(connection.retryActionAfterRelease(now: 6) == .scan)
+        precondition(!connection.expire(attempt, now: 30), "Released attempt timers remain obsolete")
+        precondition(connection.retryActionAfterRelease(now: 90, releaseTimedOut: true) == .none)
+        connection.stop()
+        precondition(connection.retryActionAfterRelease(now: 7, releaseTimedOut: true) == .none,
+                     "Cancel/finish prevents replacement and reconnect")
+        precondition(session.phase == .reconnecting)
+        precondition(session.imageCommandAfterFeature() == .resume,
+                     "Fresh central authentication resumes firmware, never submits the loader again")
+        session.receiveFirmwareProgress(100)
+        precondition(session.receiveSuccess())
     }
 }

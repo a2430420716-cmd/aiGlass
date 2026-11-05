@@ -92,10 +92,13 @@ struct Gen1BluetoothOtaConnectionPolicy {
         let deadline: TimeInterval
     }
 
+    enum RetryAction: Equatable { case none, scan, replaceCentral }
+
     private(set) var deadline: TimeInterval?
     private(set) var attempts = 0
     private(set) var active: Attempt?
     private var generation: UInt64 = 0
+    private var requiresFreshCentral = false
 
     var isActive: Bool { deadline != nil }
 
@@ -127,7 +130,19 @@ struct Gen1BluetoothOtaConnectionPolicy {
     mutating func expire(_ attempt: Attempt, now: TimeInterval) -> Bool {
         guard active == attempt, now >= attempt.deadline else { return false }
         cancelAttempt()
+        requiresFreshCentral = true
         return true
+    }
+
+    /// A cancellation callback proves release, not that the old central can
+    /// acquire the loader. A native timeout requires a fresh OTA central.
+    func retryActionAfterRelease(now: TimeInterval, releaseTimedOut: Bool = false) -> RetryAction {
+        guard canAttempt(now: now) else { return .none }
+        return requiresFreshCentral || releaseTimedOut ? .replaceCentral : .scan
+    }
+
+    mutating func centralDidReplace() {
+        requiresFreshCentral = false
     }
 
     mutating func cancelAttempt() {
@@ -138,5 +153,6 @@ struct Gen1BluetoothOtaConnectionPolicy {
     mutating func stop() {
         cancelAttempt()
         deadline = nil
+        requiresFreshCentral = false
     }
 }
