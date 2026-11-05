@@ -44,7 +44,7 @@ enum Gen1FirmwareUpdateSessionTests {
         var automaticProgress = true
         var automaticallyConfirmWifi = true
         var timing: Session.Timing
-        lazy var session = Session(
+        lazy var session: Session = Session(
             timing: timing,
             send: { [unowned self] command, payload in
                 commands.append(Transmission(command: command, payload: payload, time: clock))
