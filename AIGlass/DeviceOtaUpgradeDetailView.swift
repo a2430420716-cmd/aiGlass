@@ -155,6 +155,20 @@ struct DeviceOtaUpgradeDetailView: View {
         .onDisappear {
             wifiSSIDReader.cancel()
             gen1WifiPassword = ""
+            if needsGen1Wifi, isStateForCurrentOffer { otaManager.cancelGen1WifiProvision() }
+        }
+        .alert(L10n.t("Wi-Fi 配网成功", "Wi-Fi Configured"), isPresented: Binding(
+            get: { needsGen1Wifi && isStateForCurrentOffer && otaManager.isAwaitingGen1WifiConfirmation },
+            set: { _ in }
+        )) {
+            Button(L10n.t("取消", "Cancel"), role: .cancel) {
+                otaManager.cancelGen1WifiProvision()
+            }
+            Button(L10n.t("下一步", "Next")) {
+                otaManager.confirmGen1WifiProvision()
+            }
+        } message: {
+            Text(L10n.t("眼镜已连接 Wi-Fi，点击下一步开始固件升级。", "The glasses have connected to Wi-Fi. Tap Next to start the firmware update."))
         }
         .alert(L10n.t("无法升级", "Unable to Update"), isPresented: Binding(
             get: { batteryAlertMessage != nil },

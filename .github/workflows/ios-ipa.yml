@@ -93,6 +93,7 @@ jobs:
         timeout-minutes: 5
         run: |
           bash Tests/run-gen1-firmware-tests.sh
+          bash Tests/run-gen1-firmware-session-tests.sh
       - name: 签名、归档、导出 IPA
         env:
           IOS_CERTIFICATE_BASE64: ${{ inputs.export_method == 'debugging' && secrets.IOS_TEST_CERTIFICATE_BASE64 || secrets.IOS_CERTIFICATE_BASE64 }}
@@ -102,7 +103,7 @@ jobs:
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
-          name: AIGlass-1.1.6-171-${{ inputs.export_method }}
+          name: AIGlass-1.1.6-172-${{ inputs.export_method }}
           path: build/ipa/*.ipa
           if-no-files-found: error
           retention-days: 7

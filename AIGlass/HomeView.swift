@@ -1141,7 +1141,7 @@ private struct DeviceCarouselSection: View {
             return card.withConnection(
                 isConnected: connected,
                 batteryPercent: connected ? ble.deviceBatteryPercent : nil,
-                isCharging: connected ? ble.deviceIsCharging : false,
+                isCharging: connected && ble.deviceGeneration == .gen2 && ble.deviceIsCharging,
                 connectedImageName: model.connectedImageName
             )
         }

@@ -178,8 +178,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var notifyCharacteristic: CBCharacteristic?
     /// 标准电池服务电量特征（0x2A19），用于可靠读取电量。
     private var batteryLevelCharacteristic: CBCharacteristic?
-    /// 标准电池状态特征（0x2BED），含充电状态；设备可能不实现。
-    private var batteryLevelStatusCharacteristic: CBCharacteristic?
 
     private var isServiceDiscovered = false
     private var isNotificationEnabled = false
@@ -2115,10 +2113,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     /// 对齐安卓 DevicePagerAdapter.mergeDeviceInfo：读到 0 时若已有非 0 读数则保留旧值，
     /// 固件在忙（传输/录音）时会回 0，直接覆盖会让首页反复跳 0%。
-    private func applyBatteryPercent(_ percent: Int, isCharging: Bool, source: String) {
+    private func applyBatteryPercent(_ percent: Int, source: String) {
         let clamped = max(0, min(100, percent))
-        // Gen2充电状态只认 chargestat；batt0 / batteryntf / BAS 电量刷新均不覆盖。
-        let charging = deviceGeneration == .gen2 ? deviceIsCharging : isCharging
+        // Only Gen2 reports charging through chargestat. Battery values carry no charging state.
+        let charging = deviceGeneration == .gen2 && deviceIsCharging
         if clamped == 0, let last = lastKnownBatteryPercent, last > 0 {
             deviceIsCharging = charging
             print("\(logTag) battery \(source)=0 ignored, keep last=\(last)%")
@@ -4506,7 +4504,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             writeCharacteristic = nil
             notifyCharacteristic = nil
             batteryLevelCharacteristic = nil
-            batteryLevelStatusCharacteristic = nil
             isServiceDiscovered = false
             isNotificationEnabled = false
             pendingCharacteristicDiscoveries = 0
@@ -4594,7 +4591,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         writeCharacteristic = nil
         notifyCharacteristic = nil
         batteryLevelCharacteristic = nil
-        batteryLevelStatusCharacteristic = nil
         isServiceDiscovered = false
         isNotificationEnabled = false
         pendingCharacteristicDiscoveries = 0
@@ -5402,8 +5398,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             switch frame.command {
             case Gen1Commands.battery, Gen1Commands.batteryChanged:
                 guard let level = payload.first, level <= 100 else { continue }
-                let charging = payload.dropFirst().first == 1
-                applyGen1DeviceInfo(key: "batt0", payload: Data("\(level),\(charging ? 1 : 0)".utf8))
+                applyGen1DeviceInfo(key: "batt0", payload: Data("\(level)".utf8))
                 scheduleNextBatteryPoll(after: batteryPollingInterval)
             case Gen1Commands.deviceName: applyGen1DeviceInfo(key: "name0", payload: payload)
             case Gen1Commands.deviceType: applyGen1DeviceInfo(key: "model", payload: payload)
@@ -5715,7 +5710,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         writeCharacteristic = nil
         notifyCharacteristic = nil
         batteryLevelCharacteristic = nil
-        batteryLevelStatusCharacteristic = nil
         isServiceDiscovered = false
         isNotificationEnabled = false
         isProtocolNotificationEnabled = false
@@ -7141,7 +7135,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         // 眼镜连上后首包电量走 getdevinfo batt0，之后约每 2 分钟主动上报 batteryntf。
         if command == "batteryntf" {
             if let level = AstraA1BleProtocol.parseBatteryNotify(data) {
-                applyBatteryPercent(level, isCharging: deviceIsCharging, source: "batteryntf")
+                applyBatteryPercent(level, source: "batteryntf")
                 markDeviceInfoReadyIfNeeded(force: false)
                 // 上报即视为一次有效刷新，重新计时，避免刚上报又立刻主动查。
                 scheduleNextBatteryPoll(after: batteryPollingInterval)
@@ -7517,7 +7511,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         case "batt0":
             let battery = AstraA1BleProtocol.parseBatteryValue(result.value, rawValue: result.rawValue)
             if let percent = battery.percent {
-                applyBatteryPercent(percent, isCharging: battery.isCharging, source: "getdevinfo batt0")
+                applyBatteryPercent(percent, source: "getdevinfo batt0")
             } else if !result.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       result.value.uppercased() != "N/A" {
                 deviceBattery = result.value
@@ -8527,7 +8521,7 @@ extension AstraA1BleManager: CBPeripheralDelegate {
                 }
             }
 
-            // 标准电池服务：读取 0x2A19（电量），并尝试 0x2BED（含充电状态）
+            // Read standard battery percentage only. Gen2 charging comes from chargestat.
             if service.uuid == AstraA1BleProtocol.batteryServiceUUID {
                 if let batteryChar = service.characteristics?.first(where: {
                     $0.uuid == AstraA1BleProtocol.batteryLevelCharacteristicUUID
@@ -8540,21 +8534,6 @@ extension AstraA1BleManager: CBPeripheralDelegate {
                         peripheral.setNotifyValue(true, for: batteryChar)
                     }
                     print("\(logTag) subscribed standard battery level 0x2A19")
-                }
-
-                if let statusChar = service.characteristics?.first(where: {
-                    $0.uuid == AstraA1BleProtocol.batteryLevelStatusCharacteristicUUID
-                }) {
-                    batteryLevelStatusCharacteristic = statusChar
-                    if statusChar.properties.contains(.read) {
-                        peripheral.readValue(for: statusChar)
-                    }
-                    if statusChar.properties.contains(.notify) {
-                        peripheral.setNotifyValue(true, for: statusChar)
-                    }
-                    print("\(logTag) battery level status 0x2BED present (charging supported)")
-                } else {
-                    print("\(logTag) battery level status 0x2BED absent (no charging info from standard service)")
                 }
             }
 
@@ -8661,7 +8640,7 @@ extension AstraA1BleManager: CBPeripheralDelegate {
             }
             guard !shouldIgnoreGATTCallback(from: peripheral, event: "didUpdateValue") else { return }
             guard characteristic === notifyCharacteristic || characteristic === gen1VoiceCharacteristic
-                || characteristic === batteryLevelCharacteristic || characteristic === batteryLevelStatusCharacteristic else { return }
+                || characteristic === batteryLevelCharacteristic else { return }
             if deviceGeneration == .gen1G5K61,
                uuid == Self.gen1ControlUUID || uuid == Self.gen1VoiceUUID {
                 if gen1FirmwareUpgradeIdentity != nil, uuid == Self.gen1ControlUUID,
@@ -8708,19 +8687,9 @@ extension AstraA1BleManager: CBPeripheralDelegate {
                     if percent == 0 {
                         print("\(logTag) standard battery level 0 ignored")
                     } else if !isBatteryLevelKnown || deviceBattery != "\(percent)" {
-                        applyBatteryPercent(percent, isCharging: deviceIsCharging, source: "bas0x2A19")
+                        applyBatteryPercent(percent, source: "bas0x2A19")
                         markDeviceInfoReadyIfNeeded(force: false)
                     }
-                }
-                return
-            }
-
-            // 标准电池状态（0x2BED）：Gen2使用 chargestat，避免另一个来源覆盖插拔通知。
-            if uuid == AstraA1BleProtocol.batteryLevelStatusCharacteristicUUID {
-                guard deviceGeneration != .gen2 else { return }
-                if let charging = AstraA1BleProtocol.parseCharging(fromLevelStatus: data) {
-                    deviceIsCharging = charging
-                    print("\(logTag) battery level status charging=\(charging)")
                 }
                 return
             }

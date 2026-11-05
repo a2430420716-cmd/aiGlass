@@ -8,6 +8,7 @@ enum Gen1BluetoothOtaSessionStateTests {
         testTwoTransfers()
         testLateCallbacks()
         testRecoveryMode()
+        testInitialConnectionRecovery()
         testLoaderConnectionRecovery()
         testReconnectDeadlineAndStaleCallbacks()
         print("Gen1 Bluetooth OTA stage tests passed")
@@ -89,10 +90,50 @@ enum Gen1BluetoothOtaSessionStateTests {
         precondition(session.receiveSuccess())
     }
 
+    private static func testInitialConnectionRecovery() {
+        let target = UUID(uuidString: "7632CE9D-1353-D472-1CC4-8592A59202A9")!
+        var session = Session()
+        var connection = Gen1BluetoothOtaConnectionPolicy()
+        precondition(!connection.isActive)
+        precondition(!connection.shouldRetrieveCachedPeripheral)
+        connection.begin(now: 0)
+        precondition(connection.isActive && connection.shouldRetrieveCachedPeripheral)
+        let first = connection.claim(peripheralID: target, isConnectable: true, now: 0)!
+        precondition(first.deadline == 25 && connection.deadline == 90)
+        precondition(!connection.shouldRetrieveCachedPeripheral,
+                     "After a native attempt, rediscover the exact target instead of reusing its cached handle")
+
+        // Nov 5: the initial cached-UUID request stayed connecting for all 40 seconds.
+        // Recovery must start sooner, without pretending a loader has been submitted.
+        precondition(!connection.expire(first, now: 24.99))
+        precondition(connection.expire(first, now: 25))
+        precondition(session.phase == .transferringLoader(0))
+        precondition(!session.requestReconnect(), "A connection retry is not an SDK loader reconnect")
+        precondition(!session.receiveSuccess())
+        precondition(connection.claim(peripheralID: target, isConnectable: false, now: 29.5) == nil)
+        precondition(connection.attempts == 1)
+        let second = connection.claim(peripheralID: target, isConnectable: true, now: 29.5)!
+        precondition(second.deadline == 54.5 && connection.deadline == 90)
+        precondition(!connection.expire(first, now: 40), "An old timer cannot end the replacement connection")
+        // Authentication/features succeed 11 seconds into the rediscovered connection.
+        precondition(!connection.expire(second, now: 40.5))
+        connection.stop()
+        precondition(!connection.isActive && !connection.shouldRetrieveCachedPeripheral)
+        precondition(!connection.expire(second, now: 54.5))
+        precondition(session.imageCommandAfterFeature() == .start,
+                     "Initial acquisition retries must submit the loader once, never call second-stage resume")
+        precondition(session.imageCommandAfterFeature() == nil)
+        precondition(session.requestReconnect())
+        connection.begin(now: 60)
+        precondition(connection.attempts == 0 && connection.deadline == 150,
+                     "The later SDK reconnect gets its own bounded budget")
+        precondition(session.imageCommandAfterFeature() == .resume)
+    }
+
     private static func testLoaderConnectionRecovery() {
         let loader = UUID(uuidString: "17974F32-A276-E8BD-FC27-DBD206CD0955")!
         var session = Session()
-        var reconnect = Gen1BluetoothOtaReconnectPolicy()
+        var reconnect = Gen1BluetoothOtaConnectionPolicy()
         precondition(reconnect.claim(peripheralID: loader, isConnectable: true, now: 0) == nil)
         precondition(session.imageCommandAfterFeature() == .start)
         session.receiveLoaderProgress(100)
@@ -127,7 +168,7 @@ enum Gen1BluetoothOtaSessionStateTests {
 
     private static func testReconnectDeadlineAndStaleCallbacks() {
         let loader = UUID()
-        var reconnect = Gen1BluetoothOtaReconnectPolicy()
+        var reconnect = Gen1BluetoothOtaConnectionPolicy()
         reconnect.begin(now: 100)
         let first = reconnect.claim(peripheralID: loader, isConnectable: true, now: 102)!
         reconnect.cancelAttempt() // didFailToConnect / disconnect releases this attempt.

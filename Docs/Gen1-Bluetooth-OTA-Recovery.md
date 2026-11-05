@@ -20,19 +20,34 @@ Aligned with `glasses(3).zip`: Android `Gen1OtaFailureStore`,
 - Keep existing bound-device, generation, idle/import exclusion and battery
   gates (Gen1 at least 80%). Only the fresh-version-read requirement is waived.
 - Submit through the existing AE00/AE01/AE02 Jieli RCSP transport, with normal
-  BLE reconnect suspended. Keep the firmware and SDK state through the loader's
+  BLE reconnect suspended. Before starting the transport, wait 2.5 seconds after
+  releasing the normal connection, matching the latest Android handoff delay.
+  Log elapsed time and passive audio-route snapshots before and after that wait.
+  Android additionally requests A2DP/HFP disconnection through Android profile APIs;
+  iOS has no public equivalent for disconnecting a system Bluetooth audio device.
+  AudioSession deactivation or changing the output route would not prove that the
+  classic link has disconnected. Keep this platform limitation explicit when
+  diagnosing native BLE timeouts; the longer delay/retries are not hardware proof.
+  Keep the firmware and SDK state through the loader's
   reconnect. After authentication and feature discovery, continue with
   `cmdOtaDataIIResult` so the device can pull firmware in the second stage.
   Neither loader completion nor its reboot completes OTA. The UI shows both
   stages and the intervening reconnect separately.
-- During the loader reconnect, ignore explicitly nonconnectable advertisements.
-  Keep the 90-second total deadline; allow at most three native connection attempts,
+- Initial AE00 service acquisition and the loader reconnect each use a fixed
+  90-second total deadline. Ignore explicitly nonconnectable advertisements.
+  Allow at most three native connection attempts,
   with at most 25 seconds each through authentication and feature discovery. Release
-  a stalled attempt before scanning again. If cancellation produces no callback
+  a stalled attempt before scanning again for the exact UUID (or the SDK-provided
+  loader MAC). Retrieve the cached UUID only on the first attempt; retries wait for
+  a fresh matching advertisement. If cancellation produces no callback
   within three seconds, replace only the OTA central, retaining the SDK and image.
+  SDK disconnect notifications during acquisition cannot shorten its total budget.
   Obsolete central callbacks and callbacks during release cannot resume the image.
-  A recovered connection still uses `cmdOtaDataIIResult`; it never restarts the loader
-  or reports success from the first transfer. Ordinary standby reconnect and Gen2
+  A recovered initial connection submits `cmdOTAData` once; a loader reconnect uses
+  `cmdOtaDataIIResult`, never restarting the loader or reporting success from the
+  first transfer. A pre-submission timeout still does not create recovery evidence:
+  no firmware has been submitted, so Android also excludes it from forced recovery.
+  Ordinary standby reconnect and Gen2
   updates do not use this retry policy.
 - Clear recovery evidence only on SDK terminal success or a fresh matching
   version after the second transfer's reboot; 100% alone does not clear it. Normal-service fresh

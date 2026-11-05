@@ -79,9 +79,9 @@ struct Gen1BluetoothOtaSessionState {
     var canVerifyAfterReboot: Bool { phase == .awaitingResult }
 }
 
-/// Bounds each advertised loader's connection attempt within one reconnect budget.
-/// A stalled native connect must not consume the entire wait without recovery.
-struct Gen1BluetoothOtaReconnectPolicy {
+/// Bounds initial service acquisition and each SDK-requested loader reconnect.
+/// A stalled native connect must release before exact-target rediscovery.
+struct Gen1BluetoothOtaConnectionPolicy {
     static let totalTimeout: TimeInterval = 90
     static let attemptTimeout: TimeInterval = 25
     static let maximumAttempts = 3
@@ -96,6 +96,12 @@ struct Gen1BluetoothOtaReconnectPolicy {
     private(set) var attempts = 0
     private(set) var active: Attempt?
     private var generation: UInt64 = 0
+
+    var isActive: Bool { deadline != nil }
+
+    /// Retrieve once for a fast initial connection. Retrying the same cached
+    /// native request without a fresh advertisement can reproduce its stall.
+    var shouldRetrieveCachedPeripheral: Bool { isActive && attempts == 0 }
 
     mutating func begin(now: TimeInterval) {
         stop()

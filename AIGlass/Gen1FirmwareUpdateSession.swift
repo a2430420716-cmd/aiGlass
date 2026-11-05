@@ -5,14 +5,14 @@ import Foundation
 @MainActor
 final class Gen1FirmwareUpdateSession {
     enum Phase: Equatable {
-        case checkingBattery, provisioningWifi(Int), diagnosingWifi
+        case checkingBattery, provisioningWifi(Int), diagnosingWifi, awaitingWifiConfirmation
         case upgrading(Int), restarting, verifyingVersion, completed
     }
 
     enum Failure: LocalizedError, Equatable {
         case unavailable, targetChanged, batteryUnknown, batteryLow(Int), sendFailed(UInt8)
         case wifiProvisionFailed, otaRejected(UInt8), startTimedOut, progressTimedOut
-        case wifiResponseTimedOut, wifiUnexpectedResult(UInt8), wifiMalformedResponse, wifiConnectionLost
+        case wifiResponseTimedOut, wifiUnexpectedResult(UInt8), wifiMalformedResponse, wifiConnectionLost, wifiConfirmationCancelled
         case reconnectTimedOut, versionNotConfirmed(String?)
 
         var errorDescription: String? {
@@ -27,6 +27,7 @@ final class Gen1FirmwareUpdateSession {
             case .wifiUnexpectedResult(let code): return String(format: "眼镜返回未识别的 Wi-Fi 配置结果（0x%02X），升级未开始，请导出日志排查", code)
             case .wifiMalformedResponse: return "眼镜的 Wi-Fi 配置回包格式异常，升级未开始，请导出 Wi-Fi 和蓝牙日志排查"
             case .wifiConnectionLost: return "配置 Wi-Fi 时眼镜蓝牙连接中断，未能确认配网结果。请重新连接后重试"
+            case .wifiConfirmationCancelled: return "已取消升级，固件尚未下发"
             case .otaRejected(let code): return code == 0xE3 ? "眼镜忙碌，无法开始固件升级" : "眼镜无法开始固件升级，请检查眼镜的 Wi-Fi 网络"
             case .startTimedOut: return "未收到固件升级进度，请检查眼镜连接的 Wi-Fi 是否可以访问互联网"
             case .progressTimedOut: return "固件升级进度超时，请保持眼镜供电，重新连接后检查版本"
@@ -65,6 +66,8 @@ final class Gen1FirmwareUpdateSession {
     private(set) var phase: Phase?
     private var battery: Int?
     private var wifiResult: UInt8?
+    private var wifiConfirmation: Bool?
+    private var isRunning = false
     private var wifiDiagnostic: Data?
     private var progress: Int?
     private var lastProgressAt: TimeInterval = 0
@@ -87,6 +90,19 @@ final class Gen1FirmwareUpdateSession {
         self.sleep = sleep
         self.changed = changed
         self.logOutput = log
+    }
+
+    @discardableResult
+    func confirmWifiProvision() -> Bool { resolveWifiConfirmation(true) }
+
+    @discardableResult
+    func cancelWifiProvision() -> Bool { resolveWifiConfirmation(false) }
+
+    private func resolveWifiConfirmation(_ confirmed: Bool) -> Bool {
+        guard isRunning, phase == .awaitingWifiConfirmation, wifiConfirmation == nil else { return false }
+        wifiConfirmation = confirmed
+        log("wifi confirmation accepted continue=\(confirmed)")
+        return true
     }
 
     /// Caller has already checked generation, account and peripheral identity.
@@ -134,9 +150,13 @@ final class Gen1FirmwareUpdateSession {
     func run(wifi: Gen1FirmwareWifiCredentials, urlPayload: Data,
              targetVersion: String, baselineBattery: Int?) async throws {
         precondition(phase == nil, "An OTA session cannot be reused")
+        isRunning = true
         startedAt = now()
         lastWaitLogAt = now()
-        defer { log("session ended completed=\(phase == .completed); OTA_start_requires_explicit_0x06_success") }
+        defer {
+            isRunning = false
+            log("session ended completed=\(phase == .completed); OTA_start_requires_explicit_0x06_success_and_user_confirmation")
+        }
         try check()
         let credentials = try Gen1FirmwareUpdateProtocol.wifiPayload(ssid: wifi.ssid, password: wifi.password)
         log("input targetVersion=\(targetVersion) wifiPayloadBytes=\(credentials.count) urlPayloadBytes=\(urlPayload.count) ssidTrimmed=\(wifi.ssid != wifi.ssid.trimmingCharacters(in: .whitespacesAndNewlines)) passwordHasBoundaryWhitespace=\(wifi.password != wifi.password.trimmingCharacters(in: .whitespacesAndNewlines)); password_preserved=true credentials_not_logged=true")
@@ -182,6 +202,15 @@ final class Gen1FirmwareUpdateSession {
         }
 
         try check()
+        setPhase(.awaitingWifiConfirmation)
+        log("wifi provision succeeded; waiting for user decision; OTA_command_0x09_not_sent=true")
+        while wifiConfirmation == nil {
+            guard isConnected() else { throw Failure.wifiConnectionLost }
+            try await pause()
+        }
+        try check()
+        guard wifiConfirmation == true else { throw Failure.wifiConfirmationCancelled }
+        guard isConnected() else { throw Failure.wifiConnectionLost }
         setPhase(.upgrading(0))
         lastProgressAt = now()
         // Success has no 0x09 ACK. Only a progress notification confirms startup.

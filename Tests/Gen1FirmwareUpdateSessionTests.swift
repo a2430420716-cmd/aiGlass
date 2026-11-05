@@ -42,6 +42,7 @@ enum Gen1FirmwareUpdateSessionTests {
         var finalVersion: String? = "G5K61_V1.02.3_20250901"
         var baselineBattery: Int?
         var automaticProgress = true
+        var automaticallyConfirmWifi = true
         var timing: Session.Timing
         lazy var session = Session(
             timing: timing,
@@ -63,7 +64,12 @@ enum Gen1FirmwareUpdateSessionTests {
                 await MainActor.run { self.advanceClock(interval) }
                 await Task.yield()
             },
-            changed: { [unowned self] in phases.append($0) },
+            changed: { [unowned self] phase in
+                phases.append(phase)
+                if phase == .awaitingWifiConfirmation, automaticallyConfirmWifi {
+                    _ = session.confirmWifiProvision()
+                }
+            },
             log: { [unowned self] in logs.append($0) }
         )
 
@@ -142,7 +148,7 @@ enum Gen1FirmwareUpdateSessionTests {
             check(h.commands[1].payload == Data("Home/secret-password".utf8), "Credentials retain Android encoding")
             check(h.commands[2].payload == Data([1]) + Data("http://firmware.example.com/main.bin".utf8), "OTA sends exact URL payload")
             check(h.commands[0].payload.isEmpty && h.commands[3].payload.isEmpty && h.commands[4].payload.isEmpty, "Queries/restart carry empty payloads")
-            check(h.phases == [.checkingBattery, .provisioningWifi(1), .upgrading(0), .upgrading(50), .upgrading(100), .restarting, .verifyingVersion, .completed], "Progress notifications drive every OTA phase")
+            check(h.phases == [.checkingBattery, .provisioningWifi(1), .awaitingWifiConfirmation, .upgrading(0), .upgrading(50), .upgrading(100), .restarting, .verifyingVersion, .completed], "Confirmation separates provisioning from firmware download")
             check(h.commands[3].time == 1, "Restart waits for progress 100, without requiring an OTA ACK")
             check(h.commands[4].time == 4, "Version is queried after the full reboot delay")
         }
@@ -308,6 +314,52 @@ enum Gen1FirmwareUpdateSessionTests {
         check(Session.Failure.wifiResponseTimedOut.errorDescription != Session.Failure.wifiProvisionFailed.errorDescription, "Timeout and explicit device rejection have distinct messages")
     }
 
+    private static func testWifiConfirmationGate() async throws {
+        let waiting = Harness()
+        waiting.automaticallyConfirmWifi = false
+        check(!waiting.session.confirmWifiProvision(), "A decision before successful provisioning is ignored")
+        check(!waiting.session.cancelWifiProvision(), "An early cancel cannot poison a later confirmation")
+        waiting.onSleep = {
+            if waiting.session.phase == .awaitingWifiConfirmation {
+                check(waiting.codes == [0x05, 0x06], "Provisioning success cannot send OTA before confirmation")
+                waiting.reply(0x06, [1])
+                waiting.reply(0x3A, [100])
+                check(!waiting.completed, "Late provisioning or progress cannot bypass confirmation")
+            }
+        }
+        waiting.after(45) {
+            check(waiting.session.confirmWifiProvision(), "The user may confirm after the usual startup deadline")
+            check(!waiting.session.confirmWifiProvision(), "Duplicate confirmation is ignored")
+            check(!waiting.session.cancelWifiProvision(), "Only the first decision wins")
+        }
+        try await waiting.run()
+        check(waiting.completed, "Confirmed provisioning continues through version verification")
+        check(waiting.commands.first { $0.command == 0x09 }?.time == 45,
+              "Firmware download starts only when confirmed, even after a long pause")
+        check(waiting.codes.filter { $0 == 0x09 }.count == 1, "Duplicate decisions never resubmit the URL")
+        check(!waiting.session.confirmWifiProvision(), "Completed sessions ignore old UI actions")
+
+        let noProgress = Harness()
+        noProgress.automaticallyConfirmWifi = false
+        noProgress.automaticProgress = false
+        noProgress.after(45) { _ = noProgress.session.confirmWifiProvision() }
+        await expectFailure(noProgress, .startTimedOut)
+        check(noProgress.clock == 75, "The full 30-second startup deadline begins after confirmation")
+
+        let cancelled = Harness()
+        cancelled.automaticallyConfirmWifi = false
+        cancelled.after(1) { check(cancelled.session.cancelWifiProvision(), "User can cancel after provisioning") }
+        await expectFailure(cancelled, .wifiConfirmationCancelled)
+        check(cancelled.codes == [0x05, 0x06], "Cancel never sends OTA or restart")
+
+        let disconnected = Harness()
+        disconnected.automaticallyConfirmWifi = false
+        disconnected.after(1) { disconnected.connected = false }
+        await expectFailure(disconnected, .wifiConnectionLost)
+        check(disconnected.codes == [0x05, 0x06], "A lost connection while waiting cannot authorize OTA")
+        check(!disconnected.session.confirmWifiProvision(), "A failed session ignores a delayed UI confirmation")
+    }
+
     private static func testOTADeadlinesAndRejections() async throws {
         let noProgress = Harness()
         noProgress.automaticProgress = false
@@ -465,8 +517,9 @@ enum Gen1FirmwareUpdateSessionTests {
             } catch { preconditionFailure("Unexpected error: \(error)") }
         }
 
-        for phase: Session.Phase in [.checkingBattery, .provisioningWifi(1), .upgrading(0), .restarting, .verifyingVersion] {
+        for phase: Session.Phase in [.checkingBattery, .provisioningWifi(1), .awaitingWifiConfirmation, .upgrading(0), .restarting, .verifyingVersion] {
             let h = Harness()
+            if phase == .awaitingWifiConfirmation { h.automaticallyConfirmWifi = false }
             if phase == .checkingBattery { h.batteryReply = nil }
             if phase == .provisioningWifi(1) { h.wifiReply = nil }
             if phase == .verifyingVersion { h.finalVersion = nil }
@@ -497,8 +550,9 @@ enum Gen1FirmwareUpdateSessionTests {
             check(cancelledBefore.codes.isEmpty, "Pre-cancelled session sends no commands")
         } catch { preconditionFailure("Unexpected error: \(error)") }
 
-        for phase: Session.Phase in [.provisioningWifi(1), .upgrading(0), .verifyingVersion] {
+        for phase: Session.Phase in [.provisioningWifi(1), .awaitingWifiConfirmation, .upgrading(0), .verifyingVersion] {
             let h = Harness()
+            if phase == .awaitingWifiConfirmation { h.automaticallyConfirmWifi = false }
             if phase == .provisioningWifi(1) { h.wifiReply = nil }
             if phase == .verifyingVersion { h.finalVersion = nil }
             let task = Task { try await h.run() }
@@ -525,6 +579,7 @@ enum Gen1FirmwareUpdateSessionTests {
         try await testBatteryGate()
         try await testWifiRetryAndDiagnostics()
         await testWifiFailureEvidence()
+        try await testWifiConfirmationGate()
         try await testOTADeadlinesAndRejections()
         await testRestartAndVersionFailures()
         try await testReconnectAndMonotonicProgress()

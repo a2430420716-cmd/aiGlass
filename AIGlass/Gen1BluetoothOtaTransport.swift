@@ -24,7 +24,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
     private var reconnectMAC: String?
     private var reconnectRequested = false
     private var sessionState = Gen1BluetoothOtaSessionState()
-    private var reconnectPolicy = Gen1BluetoothOtaReconnectPolicy()
+    private var connectionPolicy = Gen1BluetoothOtaConnectionPolicy()
     private var continuation: CheckedContinuation<Void, Error>?
     private var watchdog: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
@@ -58,7 +58,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
         targetIdentifier = peripheralIdentifier
         reconnectMAC = nil
         reconnectRequested = false
-        reconnectPolicy = Gen1BluetoothOtaReconnectPolicy()
+        connectionPolicy = Gen1BluetoothOtaConnectionPolicy()
         nonconnectableTargets.removeAll()
         self.recoveryRecord = recoveryRecord
         self.log = log
@@ -75,7 +75,9 @@ final class Gen1BluetoothOtaTransport: NSObject {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
-                armTimeout(seconds: 40, message: "连接蓝牙升级服务超时，请保持眼镜开机并重试")
+                connectionPolicy.begin(now: ProcessInfo.processInfo.systemUptime)
+                armTimeout(seconds: UInt64(Gen1BluetoothOtaConnectionPolicy.totalTimeout),
+                           message: "连接蓝牙升级服务超时，请保持眼镜开机并重试")
                 if central.state == .poweredOn { connectTarget() }
             }
         } onCancel: {
@@ -86,17 +88,16 @@ final class Gen1BluetoothOtaTransport: NSObject {
     private func connectTarget() {
         guard continuation != nil, finishingResult == nil else { return }
         guard central.state == .poweredOn, reconnectReleasePeripheral == nil else { return }
-        if reconnectRequested, !reconnectPolicy.canAttempt(now: ProcessInfo.processInfo.systemUptime) {
-            return
-        }
+        guard connectionPolicy.canAttempt(now: ProcessInfo.processInfo.systemUptime) else { return }
         if let peripheral, peripheral.state != .disconnected {
             return
         }
-        if reconnectMAC == nil, let targetIdentifier,
-           let device = central.retrievePeripherals(withIdentifiers: [targetIdentifier]).first {
+        if connectionPolicy.shouldRetrieveCachedPeripheral, reconnectMAC == nil, let targetIdentifier,
+           let device = central.retrievePeripherals(withIdentifiers: [targetIdentifier]).first,
+           device.state != .disconnecting {
             connect(device, source: "cached UUID")
         } else {
-            log("RCSP scan for target reconnectByMAC=\(reconnectMAC != nil)")
+            log("RCSP scan for target reconnectByMAC=\(reconnectMAC != nil) loaderReconnect=\(reconnectRequested) attempts=\(connectionPolicy.attempts)")
             central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
         }
     }
@@ -109,35 +110,33 @@ final class Gen1BluetoothOtaTransport: NSObject {
         }
         guard candidate.state != .disconnecting else {
             log("RCSP connect deferred: target still disconnecting id=\(candidate.identifier)")
-            if reconnectRequested { queueReconnectAttempt() }
+            queueReconnectAttempt()
             return
         }
-        if reconnectRequested {
-            let now = ProcessInfo.processInfo.systemUptime
-            guard let attempt = reconnectPolicy.claim(peripheralID: candidate.identifier,
-                                                     isConnectable: true, now: now) else { return }
-            reconnectAttemptTask?.cancel()
-            reconnectAttemptTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(max(0, attempt.deadline - now) * 1_000_000_000))
-                guard !Task.isCancelled, let self, self.reconnectRequested,
-                      self.continuation != nil, self.finishingResult == nil,
-                      self.reconnectPolicy.expire(attempt, now: ProcessInfo.processInfo.systemUptime) else { return }
-                self.reconnectAttemptTask = nil
-                self.log("RCSP reconnect attempt timed out target=\(candidate.identifier) state=\(candidate.state.rawValue) attempt=\(self.reconnectPolicy.attempts)/\(Gen1BluetoothOtaReconnectPolicy.maximumAttempts); release before rescan")
-                self.releaseForReconnect()
-            }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let attempt = connectionPolicy.claim(peripheralID: candidate.identifier,
+                                                  isConnectable: true, now: now) else { return }
+        reconnectAttemptTask?.cancel()
+        reconnectAttemptTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, attempt.deadline - now) * 1_000_000_000))
+            guard !Task.isCancelled, let self,
+                  self.continuation != nil, self.finishingResult == nil,
+                  self.connectionPolicy.expire(attempt, now: ProcessInfo.processInfo.systemUptime) else { return }
+            self.reconnectAttemptTask = nil
+            self.log("RCSP connection attempt timed out target=\(candidate.identifier) state=\(candidate.state.rawValue) loaderReconnect=\(self.reconnectRequested) attempt=\(self.connectionPolicy.attempts)/\(Gen1BluetoothOtaConnectionPolicy.maximumAttempts); release before rescan")
+            self.releaseForReconnect()
         }
         central.stopScan()
         peripheral = candidate
         candidate.delegate = self
-        log("RCSP connect target=\(candidate.identifier) state=\(candidate.state.rawValue) source=\(source) reconnect=\(reconnectRequested) attempt=\(reconnectPolicy.attempts)")
+        log("RCSP connect target=\(candidate.identifier) state=\(candidate.state.rawValue) source=\(source) reconnect=\(reconnectRequested) attempt=\(connectionPolicy.attempts)")
         central.connect(candidate)
     }
 
     private func cancelReconnectAttempt() {
         reconnectAttemptTask?.cancel()
         reconnectAttemptTask = nil
-        reconnectPolicy.cancelAttempt()
+        connectionPolicy.cancelAttempt()
     }
 
     private func clearConnectionForReconnect() {
@@ -152,7 +151,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
     }
 
     private func releaseForReconnect() {
-        guard continuation != nil, finishingResult == nil, reconnectRequested,
+        guard continuation != nil, finishingResult == nil, connectionPolicy.isActive,
               reconnectReleasePeripheral == nil else { return }
         cancelReconnectAttempt()
         clearConnectionForReconnect()
@@ -163,7 +162,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
             return
         }
         reconnectReleasePeripheral = peripheral
-        log("RCSP release reconnect connection target=\(peripheral.identifier) state=\(peripheral.state.rawValue)")
+        log("RCSP release connection target=\(peripheral.identifier) state=\(peripheral.state.rawValue) loaderReconnect=\(reconnectRequested)")
         central.cancelPeripheralConnection(peripheral)
         reconnectReleaseTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -201,7 +200,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
             try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
             guard !Task.isCancelled else { return }
             if let self {
-                self.log("RCSP timeout seconds=\(seconds) phase=\(self.sessionState.phase) target=\(self.peripheral?.identifier.uuidString ?? "none") state=\(self.peripheral?.state.rawValue ?? -1) scanning=\(self.central.isScanning) reconnectAttempts=\(self.reconnectPolicy.attempts) reason=\(message)")
+                self.log("RCSP timeout seconds=\(seconds) phase=\(self.sessionState.phase) target=\(self.peripheral?.identifier.uuidString ?? "none") state=\(self.peripheral?.state.rawValue ?? -1) scanning=\(self.central.isScanning) connectionAttempts=\(self.connectionPolicy.attempts) reason=\(message)")
             }
             self?.finish(.failure(TransportError.message(message)))
         }
@@ -220,7 +219,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
         reconnectTask?.cancel()
         reconnectTask = nil
         cancelReconnectAttempt()
-        reconnectPolicy.stop()
+        connectionPolicy.stop()
         reconnectReleaseTask?.cancel()
         reconnectReleaseTask = nil
         reconnectReleasePeripheral = nil
@@ -301,18 +300,18 @@ final class Gen1BluetoothOtaTransport: NSObject {
         log("RCSP SDK requested reconnect byMAC=\(mac != nil)")
         if reconnectMAC == nil, let identifier = UUID(uuidString: sdk.mBLE_UUID) { targetIdentifier = identifier }
         reconnectRequested = true
-        reconnectPolicy.begin(now: ProcessInfo.processInfo.systemUptime)
+        connectionPolicy.begin(now: ProcessInfo.processInfo.systemUptime)
         nonconnectableTargets.removeAll()
-        armTimeout(seconds: UInt64(Gen1BluetoothOtaReconnectPolicy.totalTimeout), message: "蓝牙升级重连超时，请重新连接眼镜后检查版本")
+        armTimeout(seconds: UInt64(Gen1BluetoothOtaConnectionPolicy.totalTimeout), message: "蓝牙升级重连超时，请重新连接眼镜后检查版本")
         releaseForReconnect()
     }
 
     private func queueReconnectAttempt() {
         guard reconnectTask == nil, reconnectReleasePeripheral == nil,
-              reconnectPolicy.canAttempt(now: ProcessInfo.processInfo.systemUptime) else { return }
+              connectionPolicy.canAttempt(now: ProcessInfo.processInfo.systemUptime) else { return }
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard !Task.isCancelled, let self, self.reconnectRequested,
+            guard !Task.isCancelled, let self, self.connectionPolicy.isActive,
                   self.continuation != nil, self.finishingResult == nil else { return }
             self.reconnectTask = nil
             self.connectTarget()
@@ -384,7 +383,7 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBCentralManagerDelegate {
         guard central === self.central, isActivePeripheral(peripheral) else { return }
         log("RCSP connect failed error=\(error?.localizedDescription ?? "none")")
         if finishingResult != nil { tearDown(); return }
-        if reconnectRequested { reconnectConnectionEnded(); return }
+        if connectionPolicy.isActive { reconnectConnectionEnded(); return }
         finish(.failure(error ?? TransportError.message("蓝牙升级服务连接失败")))
     }
 
@@ -394,7 +393,7 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBCentralManagerDelegate {
         if finishingResult != nil { tearDown(); return }
         clearConnectionForReconnect()
         sdk.noteEntityDisconnected()
-        if reconnectRequested { reconnectConnectionEnded(); return }
+        if connectionPolicy.isActive { reconnectConnectionEnded(); return }
         // Allow an already queued SDK reconnect/reboot result to arrive. Never restart
         // an interrupted transfer solely because the radio disconnected.
         armTimeout(seconds: 8, message: "蓝牙升级连接中断，请重新连接眼镜后检查版本")
@@ -500,7 +499,7 @@ extension Gen1BluetoothOtaTransport: JLHashHandlerDelegate, JL_OTAManagerDelegat
               peripheral?.state == .connected, writeCharacteristic != nil,
               let command = sessionState.imageCommandAfterFeature() else { return }
         cancelReconnectAttempt()
-        reconnectPolicy.stop()
+        connectionPolicy.stop()
         reconnectRequested = false
         onPhaseChanged?(sessionState.phase)
         log("RCSP image command=\(command) bytes=\(firmware.count) phase=\(sessionState.phase)")
@@ -580,7 +579,9 @@ extension Gen1BluetoothOtaTransport: JLHashHandlerDelegate, JL_OTAManagerDelegat
             guard !reconnectRequested, authenticated else { return }
             armTimeout(seconds: 180, message: "蓝牙升级设备响应超时")
         case .disconnect:
-            if !reconnectRequested {
+            // Releasing a failed service connection can also notify the SDK.
+            // That event must not replace the acquisition budget with eight seconds.
+            if !connectionPolicy.isActive {
                 armTimeout(seconds: 8, message: "蓝牙升级连接中断，请重新连接眼镜后检查版本")
             }
         case .lowPower:

@@ -175,12 +175,14 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
     @Published private(set) var isCleaningUpPreparation = false
     @Published private(set) var isVerifyingGen2Result = false
     @Published private(set) var isWaitingForDeviceRestart = false
+    @Published private(set) var isAwaitingGen1WifiConfirmation = false
     @Published private var gen1FirmwarePhase: Gen1FirmwareUpdateSession.Phase?
     @Published private var gen1BluetoothPhase: Gen1BluetoothOtaSessionState.Phase?
 
     private let logTag = "[DeviceOTA]"
     private let bluetoothOtaLogTag = "[bluetooth_ota]"
     private var upgradeTask: Task<Void, Never>?
+    private var gen1FirmwareSession: Gen1FirmwareUpdateSession?
     private var connectedSSID: String?
     private var isGen1Upgrade = false
 
@@ -192,6 +194,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             case .checkingBattery: return L10n.t("正在检查眼镜电量...", "Checking glasses battery...")
             case .provisioningWifi(let attempt): return L10n.t("正在为眼镜连接 Wi-Fi（\(attempt)/2）...", "Connecting glasses to Wi-Fi (\(attempt)/2)...")
             case .diagnosingWifi: return L10n.t("正在读取眼镜配网结果...", "Reading glasses Wi-Fi diagnostics...")
+            case .awaitingWifiConfirmation: return L10n.t("Wi-Fi 配网成功，请确认后开始升级", "Wi-Fi configured. Confirm to start the update")
             case .restarting: return L10n.t("固件已写入，正在重启眼镜...", "Firmware written. Restarting glasses...")
             case .verifyingVersion: return L10n.t("正在等待眼镜重连并核对版本...", "Waiting for glasses to reconnect and verifying the version...")
             case .upgrading, .completed: break
@@ -232,7 +235,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         if let gen1FirmwarePhase {
             switch gen1FirmwarePhase {
             case .checkingBattery: return 1
-            case .provisioningWifi, .diagnosingWifi: return 5
+            case .provisioningWifi, .diagnosingWifi, .awaitingWifiConfirmation: return 5
             case .upgrading(let percent): return 10 + min(85, max(0, percent) * 85 / 100)
             case .restarting, .verifyingVersion: return 95
             case .completed: return nil
@@ -251,6 +254,18 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
     private func btLog(_ message: String, kind: OtaUpgradeKind) {
         guard kind == .bluetooth else { return }
         print("\(bluetoothOtaLogTag) \(message)")
+    }
+
+    func confirmGen1WifiProvision() {
+        guard isAwaitingGen1WifiConfirmation,
+              gen1FirmwareSession?.confirmWifiProvision() == true else { return }
+        isAwaitingGen1WifiConfirmation = false
+    }
+
+    func cancelGen1WifiProvision() {
+        guard isAwaitingGen1WifiConfirmation,
+              gen1FirmwareSession?.cancelWifiProvision() == true else { return }
+        isAwaitingGen1WifiConfirmation = false
     }
 
     func startBluetoothUpgrade(
@@ -897,12 +912,16 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 if let message = ble.firmwareUpgradeBatteryAlertMessage {
                     throw BluetoothOtaUpgradeError.message(message)
                 }
+                log("handoff requested normalBLEReady=\(ble.isReady) \(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
+                let disconnectedAt = ProcessInfo.processInfo.systemUptime
                 ble.suspendNormalConnectionForGen1OTA()
                 do {
-                    try await Task.sleep(nanoseconds: 800_000_000)
+                    // Match the vendor handoff delay; iOS cannot disconnect system A2DP/HFP profiles.
+                    try await Task.sleep(nanoseconds: 2_500_000_000)
                     guard ble.savedPeripheralUUIDString == targetIdentifier else {
                         throw BluetoothOtaUpgradeError.message(L10n.t("眼镜绑定已改变，升级已停止", "Glasses binding changed. Update stopped"))
                     }
+                    log("handoff wait completed elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - disconnectedAt) * 1000)) \(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
                     state = .uploadingFirmware(percent: 0)
                     let transport = Gen1BluetoothOtaTransport()
                     let recoveryRecord = Gen1BluetoothOtaRecoveryStore.Record(
@@ -959,6 +978,8 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             _ = try Gen1FirmwareUpdateProtocol.wifiPayload(ssid: wifi.ssid, password: wifi.password)
             let identity = try ble.beginGen1FirmwareUpgrade()
             defer {
+                isAwaitingGen1WifiConfirmation = false
+                gen1FirmwareSession = nil
                 gen1FirmwarePhase = nil
                 ble.endGen1FirmwareUpgrade(identity)
             }
@@ -978,10 +999,12 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 reconnect: { ble.ensureConnected(reason: "gen1-ota-version-verification") },
                 changed: { phase in
                     self.gen1FirmwarePhase = phase
+                    self.isAwaitingGen1WifiConfirmation = phase == .awaitingWifiConfirmation
                     if case .upgrading(let percent) = phase { self.state = .upgrading(percent: percent) }
                 },
                 log: { message in DebugLogStore.logWiFi("主固件升级", detail: "diagnosticID=\(diagnosticID) target=\(identity.targetID) bleState=\(ble.connectionState) \(message)") }
             )
+            gen1FirmwareSession = session
             // Subscribe before querying battery or sending Wi-Fi credentials.
             let subscription = ble.gen1ControlSubject.sink { frame in
                 session.receive(command: frame.command, payload: frame.payload)
@@ -995,6 +1018,9 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             DebugLogStore.logWiFi("主固件升级：停止", detail: "diagnosticID=\(diagnosticID) elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - startedAt))s bleReady=\(ble.isReady) errorType=\(String(describing: type(of: error))) error=\(error.localizedDescription)")
             if let failure = error as? Gen1FirmwareUpdateSession.Failure {
                 switch failure {
+                case .wifiConfirmationCancelled:
+                    state = .idle
+                    DebugLogStore.logWiFi("主固件升级：已取消", detail: "diagnosticID=\(diagnosticID) firmwareStartNotSent=true")
                 case .batteryUnknown:
                     state = .failed(L10n.t("未能读取眼镜电量，请重新连接后再升级", "Could not read glasses battery. Reconnect before updating."))
                 case .batteryLow(let percent):
