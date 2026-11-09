@@ -28,6 +28,7 @@ private struct DeviceOTAEntry: Decodable {
 struct UserInfo: Decodable {
     let id: Int
     let phone: String
+    let account: String
     let nickname: String
     let headimg: String
     let openid: String
@@ -39,6 +40,7 @@ struct UserInfo: Decodable {
     init(
         id: Int,
         phone: String,
+        account: String = "",
         nickname: String,
         headimg: String,
         openid: String = "",
@@ -49,6 +51,7 @@ struct UserInfo: Decodable {
     ) {
         self.id = id
         self.phone = phone
+        self.account = account
         self.nickname = nickname
         self.headimg = headimg
         self.openid = openid
@@ -62,6 +65,7 @@ struct UserInfo: Decodable {
         UserInfo(
             id: id,
             phone: phone,
+            account: account,
             nickname: nickname ?? self.nickname,
             headimg: headimg ?? self.headimg,
             openid: openid,
@@ -75,6 +79,7 @@ struct UserInfo: Decodable {
     enum CodingKeys: String, CodingKey {
         case id
         case phone
+        case account
         case nickname
         case headimg
         case openid
@@ -88,6 +93,7 @@ struct UserInfo: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(Int.self, forKey: .id)
         phone = try container.decode(String.self, forKey: .phone)
+        account = try container.decodeIfPresent(String.self, forKey: .account) ?? ""
         nickname = try container.decode(String.self, forKey: .nickname)
         headimg = try container.decodeIfPresent(String.self, forKey: .headimg) ?? ""
         openid = try container.decodeIfPresent(String.self, forKey: .openid) ?? ""

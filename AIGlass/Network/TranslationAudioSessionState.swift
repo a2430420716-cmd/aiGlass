@@ -96,16 +96,24 @@ struct TranslationDeferredSpeechQueue {
 struct TranslationConnectionAttempt {
     private(set) var current: UInt64 = 0
     private var active = false
+    private(set) var isConnecting = false
 
     mutating func begin() -> UInt64 {
         current &+= 1
         active = true
+        isConnecting = true
         return current
     }
 
     mutating func cancel() {
         current &+= 1
         active = false
+        isConnecting = false
+    }
+
+    mutating func finishConnecting(_ attempt: UInt64) {
+        guard isCurrent(attempt) else { return }
+        isConnecting = false
     }
 
     func isCurrent(_ attempt: UInt64) -> Bool {

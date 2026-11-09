@@ -10,7 +10,8 @@ enum FirmwareDownloadClient {
         request.timeoutInterval = 20
         AppRequestHeaders.apply(to: &request)
         guard let (_, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse else {
+              let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode) else {
             return nil
         }
         let length = http.expectedContentLength
@@ -70,6 +71,8 @@ enum FirmwareDownloadClient {
             totalBytesWritten: Int64,
             totalBytesExpectedToWrite: Int64
         ) {
+            guard let http = downloadTask.response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode) else { return }
             guard totalBytesExpectedToWrite > 0 else { return }
             let percent = min(100, Int(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) * 100))
             onProgress?(percent)
@@ -82,6 +85,13 @@ enum FirmwareDownloadClient {
                 return
             }
             guard (200...299).contains(response.statusCode) else {
+                DebugLogStore.logHTTPReceived(
+                    method: "GET",
+                    url: downloadTask.originalRequest?.url?.absoluteString ?? "",
+                    statusCode: response.statusCode,
+                    body: "<firmware download rejected before transfer to glasses>",
+                    headers: DebugLogStore.headerFields(from: response)
+                )
                 finish(.failure(FirmwareDownloadError.httpStatus(response.statusCode)))
                 return
             }

@@ -16,6 +16,16 @@ struct ConversationTranslationView: View {
             navigationBar
             languagePanel
             messages
+            if controller.glassesConnecting || controller.waitingPhoneSocketReady {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text(controller.statusText)
+                        .font(AppTheme.notoSansSC(size: 13, weight: .regular))
+                }
+                .foregroundStyle(AppTheme.secondaryText)
+                .padding(.vertical, 8)
+                .accessibilityElement(children: .combine)
+            }
             recordControls
         }
         .background(Color(red: 0.965, green: 0.965, blue: 0.965).ignoresSafeArea())

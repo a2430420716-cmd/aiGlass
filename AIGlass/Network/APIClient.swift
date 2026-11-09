@@ -322,7 +322,8 @@ enum APIClient {
     static func getRaw(
         path: String,
         queryItems: [URLQueryItem] = [],
-        authorization: String? = nil
+        authorization: String? = nil,
+        session: URLSession = .shared
     ) async throws -> Data {
         let trimmedPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
         guard let relativeURL = URL(string: trimmedPath, relativeTo: baseURL),
@@ -357,7 +358,7 @@ enum APIClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await session.data(for: request)
         } catch {
             DebugLogStore.logHTTPReceived(
                 method: "GET",

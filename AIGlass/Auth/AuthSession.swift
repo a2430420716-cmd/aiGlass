@@ -92,12 +92,13 @@ final class AuthSession: ObservableObject {
     }
 
     /// 使用已解析 token 直接建立登录态（微信登录已绑定手机号场景）。
-    /// `phoneNumber` 可为空，后续 `refreshUserInfo` 会用 userinfo.phone 回填。
+    /// `phoneNumber` 可为空，后续仅使用 userinfo 中的完整账号回填。
     func applyLogin(phoneNumber: String, token: String?) {
         invalidateInFlightUserInfoRefresh(reason: "applyLogin(token)")
         BackendRouting.pinAccountOrigin()
 
-        self.phoneNumber = phoneNumber.isEmpty ? nil : phoneNumber
+        let normalizedAccount = phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.phoneNumber = normalizedAccount.isEmpty ? nil : normalizedAccount
         self.token = token
         self.isLoggedIn = true
         self.userInfo = nil
@@ -108,8 +109,10 @@ final class AuthSession: ObservableObject {
 
         let defaults = UserDefaults.standard
         defaults.set(true, forKey: loggedInKey)
-        if !phoneNumber.isEmpty {
-            defaults.set(phoneNumber, forKey: phoneKey)
+        if normalizedAccount.isEmpty {
+            defaults.removeObject(forKey: phoneKey)
+        } else {
+            defaults.set(normalizedAccount, forKey: phoneKey)
         }
         if let token, !token.isEmpty {
             defaults.set(token, forKey: tokenKey)
@@ -177,11 +180,15 @@ final class AuthSession: ObservableObject {
                 return
             }
             userInfo = info
-            // 海外邮箱账号 userinfo.phone 可能为空，保留登录时写入的账号标识。
-            let resolvedAccount = info.phone.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !resolvedAccount.isEmpty {
-                phoneNumber = resolvedAccount
+            // Prefer userinfo.account; phone may only contain a masked display value.
+            let resolvedAccount = AuthAccountIdentifier.resolving(
+                current: phoneNumber, profilePhone: info.phone, profileAccount: info.account
+            )
+            phoneNumber = resolvedAccount
+            if let resolvedAccount {
                 UserDefaults.standard.set(resolvedAccount, forKey: phoneKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: phoneKey)
             }
             print("[Auth] userInfo loaded devices=\(info.device.count) nickname=\(info.nickname) appVersion=\(info.appInfo?.version ?? "nil") updateAvailable=\(FirmwareVersionComparator.isServerVersionNewer(info.appInfo?.version ?? "", than: AppBundleInfo.shortVersion)) firmwareKeys=\(info.firmwareBySerialNumber.keys.sorted()) bluetoothKeys=\(info.bluetoothBySerialNumber.keys.sorted())")
             if info.device.isEmpty {

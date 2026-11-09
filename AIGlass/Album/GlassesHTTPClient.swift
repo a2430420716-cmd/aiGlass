@@ -391,7 +391,7 @@ nonisolated private enum RawHTTPConnection {
         let interfaces = WifiDiagnosticSession.captureInterfaces()
         DebugLogStore.logWiFi(
             "眼镜 HTTP \(method) \(event)",
-            detail: "httpDiagnosticVersion=3 requestID=\(id) uptime=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime))s\nhost=\(host) port=\(port) path=\(path)\nrequiredInterfaceType=wifi prohibitedInterfaceTypes=cellular\nselectedIPv4=\(interfaces.selectedIPv4 ?? "none")\n\(WifiConnectionDiagnostics.interfaceDescription(interfaces))\n\(TCPReachability.pathDescription(connection.currentPath))\n\(error.map { TCPReachability.errorDescription($0) } ?? "")\n\(detail)",
+            detail: "httpDiagnosticVersion=4 requestID=\(id) uptime=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime))s\nhost=\(host) port=\(port) path=\(path)\nconnectionState=\(connection.state)\nrequiredInterfaceType=wifi prohibitedInterfaceTypes=cellular\nselectedIPv4=\(interfaces.selectedIPv4 ?? "none")\n\(WifiConnectionDiagnostics.interfaceDescription(interfaces))\n\(TCPReachability.pathDescription(connection.currentPath))\n\(error.map { TCPReachability.errorDescription($0) } ?? "")\n\(detail)",
             direction: .received
         )
     }

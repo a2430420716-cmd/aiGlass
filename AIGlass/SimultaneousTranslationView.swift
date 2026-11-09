@@ -17,6 +17,16 @@ struct SimultaneousTranslationView: View {
         VStack(spacing: 0) {
             navigationBar
             languagePanel
+            if controller.isConnecting {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text(controller.socketStatus)
+                        .font(AppTheme.notoSansSC(size: 13, weight: .regular))
+                }
+                .foregroundStyle(AppTheme.secondaryText)
+                .padding(.vertical, 8)
+                .accessibilityElement(children: .combine)
+            }
 
             GeometryReader { proxy in
                 let separatorHeight: CGFloat = 20
@@ -28,7 +38,7 @@ struct SimultaneousTranslationView: View {
                     translationPanel(
                         language: controller.sourceLanguage,
                         text: controller.sourceText,
-                        placeholder: controller.isRecording ? L10n.t("正在识别原文…", "Recognizing source…") : L10n.t("此处显示原文", "Source text appears here"),
+                        placeholder: controller.isConnecting ? controller.socketStatus : (controller.isRecording ? L10n.t("正在识别原文…", "Recognizing source…") : L10n.t("此处显示原文", "Source text appears here")),
                         showsRecordButton: false
                     )
                     .frame(height: sourceHeight)
@@ -154,7 +164,7 @@ struct SimultaneousTranslationView: View {
                 language: controller.sourceLanguage,
                 alignment: .leading
             ) {
-                guard !controller.isRecording else { return }
+                guard !controller.hasActiveRecordingRequest else { return }
                 selectingSource = true
                 showsLanguageSelect = true
             }
@@ -168,8 +178,8 @@ struct SimultaneousTranslationView: View {
                     .frame(width: 38, height: 26)
             }
             .buttonStyle(.plain)
-            .disabled(controller.isRecording)
-            .opacity(controller.isRecording ? 0.45 : 1)
+            .disabled(controller.hasActiveRecordingRequest)
+            .opacity(controller.hasActiveRecordingRequest ? 0.45 : 1)
             .accessibilityLabel(L10n.t("互换语言", "Swap Languages"))
 
             languageSelector(
@@ -177,7 +187,7 @@ struct SimultaneousTranslationView: View {
                 language: controller.targetLanguage,
                 alignment: .trailing
             ) {
-                guard !controller.isRecording else { return }
+                guard !controller.hasActiveRecordingRequest else { return }
                 selectingSource = false
                 showsLanguageSelect = true
             }
@@ -215,8 +225,8 @@ struct SimultaneousTranslationView: View {
             .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
         }
         .buttonStyle(.plain)
-        .disabled(controller.isRecording)
-        .opacity(controller.isRecording ? 0.55 : 1)
+        .disabled(controller.hasActiveRecordingRequest)
+        .opacity(controller.hasActiveRecordingRequest ? 0.55 : 1)
     }
 
     private func translationPanel(
@@ -261,14 +271,14 @@ struct SimultaneousTranslationView: View {
                                 .resizable()
                                 .scaledToFit()
                                 .frame(width: 76, height: 76)
-                            Image(controller.isRecording ? "android_translation_record_stop" : "android_translation_record_mic")
+                            Image(controller.hasActiveRecordingRequest ? "android_translation_record_stop" : "android_translation_record_mic")
                                 .resizable()
                                 .scaledToFit()
                                 .frame(width: 36, height: 36)
                         }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(controller.isRecording ? L10n.t("停止录音", "Stop Recording") : L10n.t("开始录音", "Start Recording"))
+                    .accessibilityLabel(controller.isConnecting ? L10n.t("取消连接", "Cancel connection") : (controller.isRecording ? L10n.t("停止录音", "Stop Recording") : L10n.t("开始录音", "Start Recording")))
                     .padding(.bottom, 38)
                 }
             }

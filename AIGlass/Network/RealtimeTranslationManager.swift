@@ -24,6 +24,7 @@ final class RealtimeTranslationManager: NSObject {
     private weak var callback: Callback?
     private var webSocketTask: URLSessionWebSocketTask?
     private var session: URLSession?
+    private var urlLookupSession: URLSession?
     enum PlaybackRoute: Equatable {
         /// 系统默认路由（通常眼镜已连时走蓝牙）。
         case `default`
@@ -47,6 +48,8 @@ final class RealtimeTranslationManager: NSObject {
     private var receiveLoopRunning = false
     private var connectionAttempt = TranslationConnectionAttempt()
     private var connectionTask: Task<Void, Never>?
+    private var connectionReadyTimeoutTask: Task<Void, Never>?
+    var isConnecting: Bool { connectionAttempt.isConnecting }
     private let diagnosticID = String(UUID().uuidString.prefix(8))
     private var pcmQueuedChunks = 0
     private var pcmQueuedBytes = 0
@@ -109,6 +112,14 @@ final class RealtimeTranslationManager: NSObject {
         sendCallbackTiming = TranslationAudioTiming()
         receivedEvents.removeAll()
         logFlow("connect", "source=\(sourceLanguage) target=\(targetLanguage) inputRate=16000 playbackRate=24000 pcmBits=16 channels=1")
+        connectionReadyTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            guard !Task.isCancelled, let self,
+                  self.connectionAttempt.isCurrent(attempt), self.isConnecting else { return }
+            self.logFlow("connection ready timeout", "stage=\(self.opened ? "waiting-service-ready" : "fetching-url") budgetSeconds=20")
+            self.close()
+            self.callback?.onError(L10n.t("翻译服务连接超时，请检查网络后重试", "Translation service timed out. Check the network and try again."))
+        }
         connectionTask = Task { [weak self] in
             await self?.fetchAndOpen(token: token, attempt: attempt)
         }
@@ -268,6 +279,11 @@ final class RealtimeTranslationManager: NSObject {
 
     func finish() {
         logFlow("finish", "\(gateDetail) \(audioSummary)")
+        // A stopped pending start must not open a socket or microphone later.
+        if isConnecting {
+            close()
+            return
+        }
         flushPendingPCM()
         pendingPCM.removeAll(keepingCapacity: true)
         turnBusyRecoveryTask?.cancel()
@@ -285,8 +301,12 @@ final class RealtimeTranslationManager: NSObject {
             logFlow("close", audioSummary)
         }
         connectionAttempt.cancel()
+        connectionReadyTimeoutTask?.cancel()
+        connectionReadyTimeoutTask = nil
         connectionTask?.cancel()
         connectionTask = nil
+        urlLookupSession?.invalidateAndCancel()
+        urlLookupSession = nil
         receiveLoopRunning = false
         turnBusyRecoveryTask?.cancel()
         turnBusyRecoveryTask = nil
@@ -307,10 +327,25 @@ final class RealtimeTranslationManager: NSObject {
     // MARK: - Connect
 
     private func fetchAndOpen(token: String, attempt: UInt64) async {
+        guard connectionAttempt.isCurrent(attempt), !Task.isCancelled else { return }
+        // Each retry owns its lookup transport. A stalled lookup must be
+        // cancellable without keeping later starts on the shared HTTP session.
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 20
+        configuration.waitsForConnectivity = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let lookupSession = URLSession(configuration: configuration)
+        urlLookupSession = lookupSession
+        defer {
+            lookupSession.invalidateAndCancel()
+            if urlLookupSession === lookupSession { urlLookupSession = nil }
+        }
         do {
             let data = try await APIClient.getRaw(
                 path: "translate/ws_url",
-                authorization: token
+                authorization: token,
+                session: lookupSession
             )
             guard connectionAttempt.isCurrent(attempt), !Task.isCancelled else { return }
             let raw = String(data: data, encoding: .utf8) ?? ""
@@ -318,6 +353,7 @@ final class RealtimeTranslationManager: NSObject {
             guard let wsURLString = Self.parseWsURL(from: data),
                   let wsURL = URL(string: wsURLString) else {
                 logFlow("URL invalid")
+                close()
                 callback?.onError("WebSocket url is empty")
                 return
             }
@@ -325,6 +361,7 @@ final class RealtimeTranslationManager: NSObject {
         } catch {
             guard connectionAttempt.isCurrent(attempt), !Task.isCancelled else { return }
             logFlow("URL request failed", error.localizedDescription)
+            close()
             callback?.onError(error.localizedDescription)
         }
     }
@@ -408,6 +445,7 @@ final class RealtimeTranslationManager: NSObject {
         case "connected":
             sendInit()
         case "ready":
+            finishConnectionStartup()
             turnBusyRecoveryTask?.cancel()
             turnBusyRecoveryTask = nil
             ready = true
@@ -461,16 +499,7 @@ final class RealtimeTranslationManager: NSObject {
             }
             // Other warnings are diagnostic, not a terminal recording failure.
             if type == "warn" { return }
-            ready = false
-            if type == "service_disconnected" {
-                opened = false
-                resetInputGate()
-                stopPlayback()
-                stopTransportMonitor()
-                sendQueue.reset()
-            } else {
-                markInputClosing(reason: "error")
-            }
+            close()
             callback?.onError(Self.localizedServiceError(message, disconnected: type == "service_disconnected"))
         default:
             break
@@ -669,6 +698,12 @@ final class RealtimeTranslationManager: NSObject {
         pingStartedAt = nil
     }
 
+    private func finishConnectionStartup() {
+        connectionAttempt.finishConnecting(connectionAttempt.current)
+        connectionReadyTimeoutTask?.cancel()
+        connectionReadyTimeoutTask = nil
+    }
+
     private var gateDetail: String {
         "opened=\(opened) ready=\(ready) recording=\(inputState.recording) canSend=\(canSendAudio()) \(inputState.diagnosticDetail)"
     }
@@ -694,17 +729,7 @@ final class RealtimeTranslationManager: NSObject {
         // The receive and send callbacks can both report the same transport failure.
         guard webSocketTask === task, receiveLoopRunning else { return }
         logFlow("socket failed", "operation=\(operation) error=\(error.localizedDescription) closeCode=\(task.closeCode.rawValue) \(audioSummary)")
-        receiveLoopRunning = false
-        opened = false
-        ready = false
-        inputState.close()
-        pendingPCM.removeAll(keepingCapacity: true)
-        stopTransportMonitor()
-        sendQueue.reset()
-        turnBusyRecoveryTask?.cancel()
-        turnBusyRecoveryTask = nil
-        stopPlayback()
-        task.cancel(with: .goingAway, reason: nil)
+        close()
         callback?.onError(error.localizedDescription)
         callback?.onClosed()
     }

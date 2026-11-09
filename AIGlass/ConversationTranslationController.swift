@@ -671,10 +671,13 @@ final class ConversationTranslationController: ObservableObject {
             guard !Task.isCancelled, let self, self.isActive, self.activeSide == side else { return }
             if side == .glasses, self.glassesState.shouldSendStart {
                 self.failGlassesStart(reason: "20s waiting for translation service ready")
+                self.statusText = L10n.t("翻译服务连接超时，请重试", "Translation service timed out. Try again.")
+                self.alertMessage = self.statusText
             } else if side == .phone, self.waitingPhoneSocketReady {
                 self.waitingPhoneSocketReady = false
                 self.manager?.close()
                 self.statusText = L10n.t("翻译服务连接超时，请重试", "Translation service timed out. Try again.")
+                self.alertMessage = self.statusText
             }
         }
     }

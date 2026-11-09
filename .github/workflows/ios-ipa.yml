@@ -69,6 +69,9 @@ jobs:
       - name: 验证正式接口路由
         timeout-minutes: 5
         run: bash Tests/run-backend-routing-tests.sh
+      - name: 验证改密账号不被脱敏资料覆盖
+        timeout-minutes: 5
+        run: bash Tests/run-auth-account-identifier-tests.sh
       - name: 验证水印与 TCP 传输
         timeout-minutes: 5
         run: |
@@ -103,7 +106,7 @@ jobs:
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
-          name: AIGlass-1.1.6-173-${{ inputs.export_method }}
+          name: AIGlass-1.1.6-174-${{ inputs.export_method }}
           path: build/ipa/*.ipa
           if-no-files-found: error
           retention-days: 7

@@ -11,6 +11,8 @@ final class SimultaneousTranslationController: ObservableObject {
     @Published var targetText = ""
     @Published var socketStatus = L10n.t("正在连接翻译服务...", "Connecting to translation service...")
     @Published var isRecording = false
+    @Published private(set) var isConnecting = false
+    var hasActiveRecordingRequest: Bool { isRecording || isConnecting }
     @Published var hasRecorded = false
     @Published var glassesSoundEnabled = SimultaneousTranslationRecordStore.glassesSoundEnabled
     @Published var alertMessage: String?
@@ -52,7 +54,7 @@ final class SimultaneousTranslationController: ObservableObject {
         isActive = false
         permissionGeneration += 1
         autoStopTask?.cancel()
-        if isRecording {
+        if hasActiveRecordingRequest {
             stopRealtimeTranslation()
         } else {
             stopRecordingOnly()
@@ -78,7 +80,7 @@ final class SimultaneousTranslationController: ObservableObject {
     }
 
     func swapLanguages() {
-        guard !isRecording else { return }
+        guard !hasActiveRecordingRequest else { return }
         let temp = sourceLanguage
         sourceLanguage = targetLanguage
         targetLanguage = temp
@@ -86,7 +88,7 @@ final class SimultaneousTranslationController: ObservableObject {
     }
 
     func updateSourceLanguage(_ language: String) {
-        guard !isRecording else { return }
+        guard !hasActiveRecordingRequest else { return }
         sourceLanguage = language
         if sameLanguage(sourceLanguage, targetLanguage) {
             targetLanguage = TranslationLanguage.fallback(excluding: sourceLanguage)
@@ -95,7 +97,7 @@ final class SimultaneousTranslationController: ObservableObject {
     }
 
     func updateTargetLanguage(_ language: String) {
-        guard !isRecording else { return }
+        guard !hasActiveRecordingRequest else { return }
         targetLanguage = language
         if sameLanguage(sourceLanguage, targetLanguage) {
             sourceLanguage = TranslationLanguage.fallback(excluding: targetLanguage)
@@ -118,7 +120,7 @@ final class SimultaneousTranslationController: ObservableObject {
     }
 
     func toggleRecording() {
-        if isRecording {
+        if hasActiveRecordingRequest {
             stopRealtimeTranslation()
         } else {
             startRealtimeTranslation()
@@ -140,7 +142,7 @@ final class SimultaneousTranslationController: ObservableObject {
     // MARK: - Recording
 
     private func startRealtimeTranslation() {
-        guard isActive, !isRecording else { return }
+        guard isActive, !hasActiveRecordingRequest else { return }
         guard !token.isEmpty else {
             alertMessage = L10n.t("未登录，无法开始同声传译", "Not signed in, cannot start interpretation")
             return
@@ -155,13 +157,13 @@ final class SimultaneousTranslationController: ObservableObject {
                 alertMessage = L10n.t("请开启麦克风权限后重试", "Enable microphone access and try again")
                 return
             }
-            guard !isRecording else { return }
+            guard !hasActiveRecordingRequest else { return }
 
             maybeSaveCurrentRecord()
-            isRecording = true
+            isConnecting = true
             hasRecorded = false
             recordSaved = false
-            recordStartedAt = Date()
+            recordStartedAt = nil
             sourceText = ""
             targetText = ""
             sourceSegments.removeAll()
@@ -172,11 +174,15 @@ final class SimultaneousTranslationController: ObservableObject {
 
             if !socketReady {
                 socketStatus = L10n.t("正在连接翻译服务...", "Connecting to translation service...")
-                translationManager?.connect(
-                    sourceLanguage: TranslationLanguage.code(forDisplayName: sourceLanguage),
-                    targetLanguage: TranslationLanguage.code(forDisplayName: targetLanguage),
-                    token: token
-                )
+                // Page entry may already be fetching the URL or awaiting ready.
+                // Keep that attempt and its deadline when the user taps Start.
+                if translationManager?.isConnecting != true {
+                    translationManager?.connect(
+                        sourceLanguage: TranslationLanguage.code(forDisplayName: sourceLanguage),
+                        targetLanguage: TranslationLanguage.code(forDisplayName: targetLanguage),
+                        token: token
+                    )
+                }
             } else {
                 pendingStartRecord = false
                 beginAudioRecord()
@@ -185,13 +191,14 @@ final class SimultaneousTranslationController: ObservableObject {
     }
 
     private func stopRealtimeTranslation() {
+        let capturedAudio = isRecording
         translationManager?.markLocalRecordingStopped(reason: "simultaneous manual stop")
         translationManager?.finish()
         // 服务端结束当前 turn 后会关闭连接；下一次录音必须重新建连。
         socketReady = false
         stopRecordingOnly()
         isRecording = false
-        hasRecorded = true
+        hasRecorded = capturedAudio
         maybeSaveCurrentRecord()
         socketStatus = L10n.t("录音已结束", "Recording ended")
     }
@@ -201,10 +208,13 @@ final class SimultaneousTranslationController: ObservableObject {
         guard translationManager?.markLocalRecordingStarted() == true else {
             socketStatus = L10n.t("翻译服务尚未就绪，请稍后再试", "Translation service not ready, try again later")
             isRecording = false
+            isConnecting = false
             pendingStartRecord = false
             waitingSocketReady = false
             return
         }
+        isConnecting = false
+        isRecording = true
         do {
             translationManager?.setPhoneMicrophoneCaptureEnabled(true)
             let recordingManager = translationManager
@@ -219,6 +229,7 @@ final class SimultaneousTranslationController: ObservableObject {
                 self.alertMessage = error.localizedDescription
                 self.socketStatus = error.localizedDescription
             })
+            recordStartedAt = Date()
             socketStatus = L10n.t("正在录音翻译…", "Recording & translating…")
             scheduleAutoStop()
             print("[SimultaneousTranslation] audio record started")
@@ -243,6 +254,7 @@ final class SimultaneousTranslationController: ObservableObject {
         stopAudioEngine()
         waitingSocketReady = false
         pendingStartRecord = false
+        isConnecting = false
     }
 
     private func stopAudioEngine() {
@@ -275,7 +287,7 @@ final class SimultaneousTranslationController: ObservableObject {
     }
 
     private func reconnectForLanguageChange() {
-        guard !isRecording else { return }
+        guard !hasActiveRecordingRequest else { return }
         socketReady = false
         translationManager?.close()
         let manager = RealtimeTranslationManager(callback: self)
@@ -286,7 +298,7 @@ final class SimultaneousTranslationController: ObservableObject {
     }
 
     private func maybeSaveCurrentRecord() {
-        guard !isRecording else { return }
+        guard !hasActiveRecordingRequest else { return }
         saveCurrentRecord()
     }
 
@@ -456,11 +468,8 @@ extension SimultaneousTranslationController: RealtimeTranslationManager.Callback
         socketReady = true
         // 录音中再次 ready 表示上一轮处理完毕，别把提示退回「点击开始录音」。
         socketStatus = isRecording ? L10n.t("正在录音翻译…", "Recording & translating…") : L10n.t("翻译服务已就绪，点击下方按钮开始录音", "Ready — tap below to start recording")
-        if waitingSocketReady, isRecording, !microphoneCapture.isCapturing {
+        if pendingStartRecord, isConnecting, !microphoneCapture.isCapturing {
             waitingSocketReady = false
-            pendingStartRecord = false
-            beginAudioRecord()
-        } else if pendingStartRecord, isRecording, !microphoneCapture.isCapturing {
             pendingStartRecord = false
             beginAudioRecord()
         }
@@ -539,7 +548,7 @@ extension SimultaneousTranslationController: RealtimeTranslationManager.Callback
 
     func onClosed() {
         socketReady = false
-        if !isRecording {
+        if !isRecording, alertMessage == nil {
             socketStatus = L10n.t("翻译服务已断开", "Translation service disconnected")
         }
     }

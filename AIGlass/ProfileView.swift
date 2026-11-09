@@ -105,7 +105,7 @@ struct ProfileView: View {
                     .font(AppTheme.notoSansSC(size: 18, weight: .semibold))
                     .foregroundStyle(AppTheme.primaryText)
 
-                Text(maskedPhone)
+                Text(displayedAccount)
                     .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                     .foregroundStyle(AppTheme.secondaryText)
             }
@@ -133,11 +133,14 @@ struct ProfileView: View {
         .padding(.vertical, 8)
     }
 
-    private var maskedPhone: String {
-        let phone = authSession.phoneNumber ?? ""
-        guard phone.count == 11 else { return phone.isEmpty ? L10n.t("未绑定手机号", "No phone linked") : phone }
-        let prefix = phone.prefix(3)
-        let suffix = phone.suffix(4)
+    private var displayedAccount: String {
+        let profileAccount = authSession.userInfo?.account.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let account = profileAccount.isEmpty ? (authSession.phoneNumber ?? "") : profileAccount
+        guard AuthAccountIdentifier.isPhone(account) else {
+            return account.isEmpty ? L10n.t("未获取到账户信息", "No account information found") : account
+        }
+        let prefix = account.prefix(3)
+        let suffix = account.suffix(4)
         return "\(prefix)****\(suffix)"
     }
 

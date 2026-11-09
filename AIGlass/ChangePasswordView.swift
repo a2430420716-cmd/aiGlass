@@ -29,11 +29,11 @@ struct ChangePasswordView: View {
     }
 
     private var isEmailAccount: Bool {
-        Self.isValidEmail(accountValue)
+        AuthAccountIdentifier.isEmail(accountValue)
     }
 
     private var isPhoneAccount: Bool {
-        accountValue.count == 11 && accountValue.allSatisfy(\.isNumber)
+        AuthAccountIdentifier.isPhone(accountValue)
     }
 
     private var isAccountValid: Bool {
@@ -42,16 +42,17 @@ struct ChangePasswordView: View {
 
     private var displayedAccountValue: String {
         guard isPhoneAccount else {
-            return accountValue.isEmpty ? L10n.t("未获取到账户信息", "No account information found") : accountValue
+            let profileAccount = authSession.userInfo?.account.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let displayValue = accountValue.isEmpty ? profileAccount : accountValue
+            return displayValue.isEmpty ? L10n.t("未获取到账户信息", "No account information found") : displayValue
         }
         return "\(accountValue.prefix(3))****\(accountValue.suffix(4))"
     }
 
     private var canSendCode: Bool {
-        isAccountValid
-            && authSession.token?.isEmpty == false
-            && countdown == 0
+        countdown == 0
             && !isSendingCode
+            && !isSubmitting
     }
 
     private var normalizedVerificationCode: String {
@@ -355,16 +356,16 @@ struct ChangePasswordView: View {
     }
 
     private func sendVerificationCode() {
-        guard canSendCode, let token = authSession.token else {
-            if accountValue.isEmpty {
-                alertMessage = L10n.t("未获取到账户信息", "No account information found")
-            } else if !isAccountValid {
-                alertMessage = accountValue.contains("@")
-                    ? L10n.t("请输入正确的邮箱", "Enter a valid email")
-                    : L10n.t("请输入正确的手机号", "Enter a valid phone number")
-            } else if authSession.token?.isEmpty != false {
-                alertMessage = L10n.t("登录凭证缺失，请重新登录", "Session expired. Please sign in again")
-            }
+        guard canSendCode else { return }
+        guard let token = authSession.token, !token.isEmpty else {
+            alertMessage = L10n.t("登录凭证缺失，请重新登录", "Session expired. Please sign in again")
+            return
+        }
+        guard isAccountValid else {
+            alertMessage = L10n.t(
+                "账号信息不完整，请使用完整手机号或邮箱重新登录后再试",
+                "Account information is incomplete. Sign in again with your full phone number or email, then retry."
+            )
             return
         }
 
@@ -478,11 +479,6 @@ struct ChangePasswordView: View {
                 countdown = remaining
             }
         }
-    }
-
-    private static func isValidEmail(_ value: String) -> Bool {
-        let pattern = #"^[A-Z0-9a-z._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"#
-        return value.range(of: pattern, options: .regularExpression) != nil
     }
 }
 
