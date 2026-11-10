@@ -6,6 +6,12 @@ enum AuthAccountIdentifier {
         value.utf8.count == 11 && value.utf8.allSatisfy { (48...57).contains($0) }
     }
 
+    static func maskPhoneForDisplay(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isPhone(trimmed) else { return value }
+        return "\(trimmed.prefix(3))****\(trimmed.suffix(4))"
+    }
+
     static func isEmail(_ value: String) -> Bool {
         let pattern = #"^[A-Z0-9a-z._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"#
         return value.range(of: pattern, options: .regularExpression) != nil

@@ -170,12 +170,17 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
     @Published private(set) var state: BluetoothOtaUpgradeState = .idle
     @Published private(set) var activeKind: OtaUpgradeKind?
     @Published private(set) var activeTargetVersion: String?
+    @Published private(set) var activeTargetID: UUID?
     @Published private(set) var isVerifyingGen1Version = false
     @Published private(set) var isWaitingForBluetooth = false
     @Published private(set) var isCleaningUpPreparation = false
     @Published private(set) var isVerifyingGen2Result = false
     @Published private(set) var isWaitingForDeviceRestart = false
     @Published private(set) var isAwaitingGen1WifiConfirmation = false
+    @Published private(set) var manualWifiCredential: Gen2OtaWifiConnectionSession.Credential?
+    @Published private(set) var manualWifiError: String?
+    @Published private(set) var isCheckingManualWifi = false
+    @Published private(set) var hotspotJoinAttempt = 0
     @Published private var gen1FirmwarePhase: Gen1FirmwareUpdateSession.Phase?
     @Published private var gen1BluetoothPhase: Gen1BluetoothOtaSessionState.Phase?
 
@@ -183,12 +188,21 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
     private let bluetoothOtaLogTag = "[bluetooth_ota]"
     private var upgradeTask: Task<Void, Never>?
     private var gen1FirmwareSession: Gen1FirmwareUpdateSession?
+    private var gen2WifiSession: Gen2OtaWifiConnectionSession?
     private var connectedSSID: String?
     private var isGen1Upgrade = false
 
     var isUpgrading: Bool { state.isActive }
 
     var currentStatusText: String {
+        if manualWifiCredential != nil {
+            return isCheckingManualWifi
+                ? L10n.t("正在确认眼镜 Wi-Fi 连接...", "Checking glasses Wi-Fi...")
+                : L10n.t("请手动连接眼镜 Wi-Fi 后继续", "Connect to glasses Wi-Fi manually to continue")
+        }
+        if case .connectingWifi = state, hotspotJoinAttempt > 1 {
+            return L10n.t("正在重新连接眼镜 Wi-Fi（2/2）...", "Retrying glasses Wi-Fi (2/2)...")
+        }
         if let gen1FirmwarePhase {
             switch gen1FirmwarePhase {
             case .checkingBattery: return L10n.t("正在检查眼镜电量...", "Checking glasses battery...")
@@ -268,6 +282,14 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         isAwaitingGen1WifiConfirmation = false
     }
 
+    func confirmManualWifiConnection() {
+        _ = gen2WifiSession?.confirmManualConnection()
+    }
+
+    func cancelManualWifiConnection() {
+        gen2WifiSession?.cancel()
+    }
+
     func startBluetoothUpgrade(
         serverInfo: DeviceOTAInfo,
         authorization: String?,
@@ -276,6 +298,35 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
     ) {
         print("\(bluetoothOtaLogTag) start requested version=\(serverInfo.version) url=\(serverInfo.downloadURL)")
         startUpgrade(kind: .bluetooth, serverInfo: serverInfo, authorization: authorization, ble: ble, importManager: importManager)
+    }
+
+    /// Explicit recovery of a previously submitted image, using only its saved
+    /// BLE loader identity. The transport verifies the SDK's forced-OTA flag.
+    func startGen1BluetoothRecovery(record: Gen1BluetoothOtaRecoveryStore.Record,
+                                   ble: AstraA1BleManager, importManager: MediaImportManager) {
+        guard !isUpgrading, upgradeTask == nil,
+              record.permitsLoaderRecovery(
+                savedID: ble.savedPeripheralUUIDString.flatMap(UUID.init(uuidString:)),
+                accountID: ble.gen1ImportAccount(for: record.targetID)) else { return }
+        activeKind = .bluetooth
+        activeTargetVersion = record.version
+        activeTargetID = record.targetID
+        guard !importManager.isImporting, !AIRecordingImportManager.shared.isImporting else {
+            state = .failed(L10n.t("文件正在导入，请稍后再恢复升级", "Files are being imported. Try recovery after the import finishes"))
+            return
+        }
+        isGen1Upgrade = true
+        isVerifyingGen1Version = false
+        gen1FirmwarePhase = nil
+        gen1BluetoothPhase = nil
+        state = .downloadingFirmware(percent: 0)
+        let info = DeviceOTAInfo(version: record.version, downloadURL: record.downloadURL, content: record.content)
+        upgradeTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.upgradeTask = nil }
+            await self.runGen1Upgrade(kind: .bluetooth, serverInfo: info, ble: ble,
+                                      gen1Wifi: nil, loaderRecovery: record)
+        }
     }
 
     func startFirmwareUpgrade(
@@ -299,6 +350,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         guard !isUpgrading, upgradeTask == nil else { return }
         activeKind = kind
         activeTargetVersion = serverInfo.version
+        activeTargetID = nil
         isGen1Upgrade = ble.deviceGeneration == .gen1G5K61
         isVerifyingGen1Version = false
         gen1FirmwarePhase = nil
@@ -307,6 +359,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             state = .failed(L10n.t("请先连接已绑定的眼镜设备", "Please connect your bound glasses first"))
             return
         }
+        activeTargetID = UUID(uuidString: startingIdentifier)
         upgradeTask = Task { [weak self] in
             guard let self else { return }
             defer { self.upgradeTask = nil }
@@ -332,6 +385,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         if case .failed = state { state = .idle }
         activeKind = nil
         activeTargetVersion = nil
+        activeTargetID = nil
         isVerifyingGen1Version = false
         gen1BluetoothPhase = nil
     }
@@ -472,23 +526,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 "\(kind == .firmware ? "眼镜固件升级" : "蓝牙固件升级")：开始 Wi-Fi 流程",
                 detail: "firmwareFile=\(fileName)\nfirmwareBytes=\(firmwareData.count)\nbleReady=\(ble.isReady)"
             )
-            let wifi = try await resolveWifiCredential(ble: ble)
-            connectedSSID = wifi.ssid
-            btLog("step2 wifi config ok ssid=\(wifi.ssid)", kind: kind)
-            DebugLogStore.logWiFi(
-                "升级：热点配置就绪",
-                detail: "kind=\(kind)\nssid=\(wifi.ssid)\npasswordEmpty=\(wifi.password.isEmpty)\nhttp=\(wifi.httpAddress)",
-                direction: .received
-            )
-
-            state = .connectingWifi
-            btLog("step3 join hotspot ssid=\(wifi.ssid)", kind: kind)
-            try await DeviceWifiManager.connect(
-                ssid: wifi.ssid,
-                password: wifi.password,
-                probeBaseURL: wifi.httpAddress,
-                diagnosticContext: "ota kind=\(kind) peripheral=\(targetID)"
-            )
+            let wifi = try await connectGen2Hotspot(ble: ble, targetID: targetID, kind: kind)
             btLog("step3 hotspot connected", kind: kind)
             DebugLogStore.logWiFi(
                 "升级：热点连接成功",
@@ -872,9 +910,13 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
     /// Gen1 main firmware pulls its HTTP image; Bluetooth firmware uses vendor RCSP.
     /// Neither path uses Gen2 hotspot, HTTP upload, DLL, or otaupload commands.
     private func runGen1Upgrade(kind: OtaUpgradeKind, serverInfo: DeviceOTAInfo, ble: AstraA1BleManager,
-                                gen1Wifi: Gen1FirmwareWifiCredentials?) async {
-        guard ble.isDeviceAvailable, ble.deviceGeneration == .gen1G5K61,
-              let targetIdentifier = ble.deviceBluetoothIdentifier,
+                                gen1Wifi: Gen1FirmwareWifiCredentials?,
+                                loaderRecovery: Gen1BluetoothOtaRecoveryStore.Record? = nil) async {
+        let canRecoverLoader = loaderRecovery?.permitsLoaderRecovery(
+            savedID: ble.savedPeripheralUUIDString.flatMap(UUID.init(uuidString:)),
+            accountID: loaderRecovery.flatMap { ble.gen1ImportAccount(for: $0.targetID) }) == true
+        guard (ble.isDeviceAvailable && ble.deviceGeneration == .gen1G5K61) || canRecoverLoader,
+              let targetIdentifier = loaderRecovery?.targetID.uuidString ?? ble.deviceBluetoothIdentifier,
               let peripheralIdentifier = UUID(uuidString: targetIdentifier),
               ble.savedPeripheralUUIDString == targetIdentifier else {
             state = .failed(L10n.t("无法识别当前绑定的眼镜，请重新连接", "Unable to identify the bound glasses. Reconnect and retry"))
@@ -886,12 +928,13 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             await runGen1MainFirmwareUpgrade(serverInfo: serverInfo, wifi: gen1Wifi, ble: ble)
             return
         }
-        guard ble.isDeviceRuntimeIdle else {
+        guard canRecoverLoader || ble.isDeviceRuntimeIdle else {
             state = .failed(ble.deviceRuntimeStatus.busyMessage)
             return
         }
-        ble.beginFirmwareUpgradeFlow()
+        ble.beginFirmwareUpgradeFlow(gen1LoaderRecovery: canRecoverLoader ? loaderRecovery : nil)
         defer { ble.endFirmwareUpgradeFlow(reason: "gen1-ota-finished") }
+        let ownerAccountID = loaderRecovery?.accountID ?? ble.gen1ImportAccount(for: peripheralIdentifier)
         let sessionID = UUID()
         let log: (String) -> Void = { message in
             DebugLogStore.logBLEEvent("Gen1 Bluetooth OTA", detail: "session=\(sessionID) target=\(targetIdentifier) targetVersion=\(serverInfo.version) \(message)")
@@ -903,14 +946,34 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 let prepared = try await prepareFirmwarePayload(kind: kind, serverInfo: serverInfo) { percent in
                     self.state = .downloadingFirmware(percent: percent)
                 }
+                let firmwareSHA256 = SHA256.hash(data: prepared.data).map { String(format: "%02x", $0) }.joined()
+                if let expected = loaderRecovery?.firmwareSHA256, expected != firmwareSHA256 {
+                    throw BluetoothOtaUpgradeError.message(L10n.t("恢复固件与上次升级文件不一致，请联系技术支持", "The recovery image differs from the previous update. Contact support"))
+                }
                 try Task.checkCancellation()
-                guard ble.isDeviceAvailable, ble.deviceGeneration == .gen1G5K61,
-                      ble.deviceBluetoothIdentifier == targetIdentifier,
-                      ble.savedPeripheralUUIDString == targetIdentifier else {
+                let accountID = ownerAccountID
+                let validate: @MainActor () throws -> Void = {
+                    guard ble.savedPeripheralUUIDString == targetIdentifier,
+                          accountID != nil, ble.gen1ImportAccount(for: peripheralIdentifier) == accountID,
+                          ble.deviceBluetoothIdentifier.map({ $0 == targetIdentifier }) ?? true else {
+                        throw BluetoothOtaUpgradeError.message(L10n.t("眼镜连接或绑定已改变，升级已停止", "Glasses connection or binding changed. Update stopped"))
+                    }
+                }
+                try validate()
+                // The control connection can recover while the image downloads.
+                // Use its ordinary readiness, idle and battery gates when available.
+                let useLoaderRecovery = canRecoverLoader && !ble.isDeviceAvailable
+                guard useLoaderRecovery || (ble.isDeviceAvailable && ble.deviceGeneration == .gen1G5K61
+                      && ble.deviceBluetoothIdentifier == targetIdentifier) else {
                     throw BluetoothOtaUpgradeError.message(L10n.t("眼镜连接或绑定已改变，升级已停止", "Glasses connection or binding changed. Update stopped"))
                 }
-                if let message = ble.firmwareUpgradeBatteryAlertMessage {
-                    throw BluetoothOtaUpgradeError.message(message)
+                if !useLoaderRecovery {
+                    guard ble.isDeviceRuntimeIdle else {
+                        throw BluetoothOtaUpgradeError.message(ble.deviceRuntimeStatus.busyMessage)
+                    }
+                    if let message = ble.firmwareUpgradeBatteryAlertMessage {
+                        throw BluetoothOtaUpgradeError.message(message)
+                    }
                 }
                 log("handoff requested normalBLEReady=\(ble.isReady) \(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
                 let disconnectedAt = ProcessInfo.processInfo.systemUptime
@@ -924,12 +987,15 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                     log("handoff wait completed elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - disconnectedAt) * 1000)) \(GlassesAudioRouteController.connectionDiagnosticSnapshot.detail)")
                     state = .uploadingFirmware(percent: 0)
                     let transport = Gen1BluetoothOtaTransport()
-                    let recoveryRecord = Gen1BluetoothOtaRecoveryStore.Record(
+                    var recoveryRecord = loaderRecovery ?? Gen1BluetoothOtaRecoveryStore.Record(
                         targetID: peripheralIdentifier, version: serverInfo.version,
                         downloadURL: serverInfo.downloadURL, content: serverInfo.content
                     )
+                    recoveryRecord.accountID = accountID
+                    recoveryRecord.firmwareSHA256 = firmwareSHA256
                     try await transport.upgrade(data: prepared.data, peripheralIdentifier: peripheralIdentifier,
-                                                recoveryRecord: recoveryRecord, log: log) { phase in
+                                                recoveryRecord: recoveryRecord, recoverLoader: useLoaderRecovery,
+                                                validateSession: validate, log: log) { phase in
                         self.gen1BluetoothPhase = phase
                         switch phase {
                         case .transferringLoader(let percent): self.state = .uploadingFirmware(percent: percent)
@@ -1461,10 +1527,82 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         Insecure.MD5.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private struct ResolvedWifi {
-        let ssid: String
-        let password: String
-        let httpAddress: String
+    private typealias ResolvedWifi = Gen2OtaWifiConnectionSession.Credential
+
+    private func connectGen2Hotspot(ble: AstraA1BleManager, targetID: UUID,
+                                    kind: OtaUpgradeKind) async throws -> ResolvedWifi {
+        let ownerAccountID = ble.gen1ImportAccount(for: targetID)
+        let validate: @MainActor () throws -> Void = {
+            guard ble.savedPeripheralUUIDString.flatMap(UUID.init(uuidString:)) == targetID,
+                  ownerAccountID != nil, ble.gen1ImportAccount(for: targetID) == ownerAccountID,
+                  !ble.hasSubmittedGen2Ota(for: targetID),
+                  ble.deviceBluetoothIdentifier.flatMap(UUID.init(uuidString:)).map({ $0 == targetID }) ?? true else {
+                throw BluetoothOtaUpgradeError.message(L10n.t("眼镜连接或绑定已改变，升级已停止", "Glasses connection or binding changed. Update stopped"))
+            }
+        }
+        let session = Gen2OtaWifiConnectionSession(
+            validate: validate,
+            open: { [self] in
+                try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "open-ota-hotspot")
+                state = .openingWifi
+                let wifi = try await resolveWifiCredential(ble: ble)
+                connectedSSID = wifi.ssid
+                DebugLogStore.logWiFi("升级：热点配置就绪", detail: "kind=\(kind)\nssid=\(wifi.ssid)\nhttp=\(wifi.httpAddress) attempt=\(hotspotJoinAttempt)")
+                state = .connectingWifi
+                return wifi
+            },
+            restart: { [self] in
+                try validate()
+                disconnectHotspot()
+                try await waitForGen2Bluetooth(ble, targetID: targetID, reason: "retry-ota-hotspot")
+                try await ble.closeWifi(timeout: 3)
+                DebugLogStore.logWiFi("升级：重新开启热点后再尝试加入", detail: "peripheral=\(targetID) attempt=2/2 firmwareUploadStarted=false")
+            },
+            join: { wifi in
+                try await DeviceWifiManager.connect(
+                    ssid: wifi.ssid, password: wifi.password, probeBaseURL: wifi.httpAddress,
+                    diagnosticContext: "ota kind=\(kind) peripheral=\(targetID)",
+                    keepConnectionInBackground: true, retainForManualConnection: true,
+                    systemApplyTimeout: 45, validateSession: validate
+                )
+            },
+            verify: { wifi in
+                try await DeviceWifiManager.verifyManualConnection(
+                    ssid: wifi.ssid, probeBaseURL: wifi.httpAddress,
+                    diagnosticContext: "ota manual kind=\(kind) peripheral=\(targetID)",
+                    validateSession: validate
+                )
+            },
+            canRetry: { error in
+                if let error = error as? DeviceWifiError, case .unreachable = error { return true }
+                return false
+            },
+            onPhase: { [weak self] phase in
+                guard let self else { return }
+                switch phase {
+                case .joining(let attempt):
+                    self.hotspotJoinAttempt = attempt
+                case .awaitingManual(let credential, let error):
+                    self.manualWifiCredential = credential
+                    self.manualWifiError = error
+                    self.isCheckingManualWifi = false
+                    DebugLogStore.logWiFi("升级：等待用户手动连接热点", detail: "ssid=\(credential.ssid) timeout=180s firmwareUploadStarted=false")
+                case .checkingManual:
+                    self.isCheckingManualWifi = true
+                case .finished:
+                    self.manualWifiCredential = nil
+                    self.manualWifiError = nil
+                    self.isCheckingManualWifi = false
+                    self.hotspotJoinAttempt = 0
+                }
+            }
+        )
+        gen2WifiSession = session
+        defer { gen2WifiSession = nil }
+        do { return try await session.connect() }
+        catch Gen2OtaWifiConnectionSession.Failure.manualConnectionTimedOut {
+            throw BluetoothOtaUpgradeError.message(L10n.t("手动连接眼镜 Wi-Fi 已超时，请重新升级", "Manual glasses Wi-Fi connection timed out. Start the update again"))
+        }
     }
 
     /// 每次：toopenwifi → 本次 wificonfig（不走缓存）。

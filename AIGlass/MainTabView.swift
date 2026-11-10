@@ -169,7 +169,7 @@ struct MainTabView: View {
             Button(L10n.t("立即升级", "Update Now")) {
                 guard let offer = deviceFirmwareUpdateCoordinator.bluetoothUpdate,
                       offer.isGen1BluetoothRecovery,
-                      pairingCoordinator.astraA1BleManager.deviceBluetoothIdentifier == offer.serialNumber else { return }
+                      pairingCoordinator.astraA1BleManager.savedPeripheralUUIDString == offer.serialNumber else { return }
                 gen1RecoverySheet = offer
             }
         } message: {
@@ -242,9 +242,8 @@ struct MainTabView: View {
     private func showGen1RecoveryPromptIfNeeded() {
         let ble = pairingCoordinator.astraA1BleManager
         guard let offer = deviceFirmwareUpdateCoordinator.bluetoothUpdate,
-              offer.isGen1BluetoothRecovery, ble.isDeviceAvailable,
-              ble.deviceGeneration == .gen1G5K61,
-              ble.deviceBluetoothIdentifier == offer.serialNumber,
+              offer.isGen1BluetoothRecovery,
+              ble.savedPeripheralUUIDString == offer.serialNumber,
               let targetID = UUID(uuidString: offer.serialNumber),
               Gen1BluetoothOtaRecoveryStore().record(for: targetID) != nil,
               pairingCoordinator.path.isEmpty,

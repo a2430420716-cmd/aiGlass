@@ -123,7 +123,8 @@ struct GlassesFirmwareUpgradeView: View {
                 )
             }
             .buttonStyle(.plain)
-            .disabled(!ble.isDeviceAvailable || (ble.deviceVersionQueryFailed && !offer.isGen1BluetoothRecovery))
+            .disabled((!ble.isDeviceAvailable && !canOpenLoaderRecovery(offer))
+                      || (ble.deviceVersionQueryFailed && !offer.isGen1BluetoothRecovery))
         } else {
             versionRowLabel(
                 title: L10n.t("蓝牙版本", "Bluetooth Version"),
@@ -154,6 +155,16 @@ struct GlassesFirmwareUpgradeView: View {
                 hasUpdate: false
             )
         }
+    }
+
+    private func canOpenLoaderRecovery(_ offer: DeviceFirmwareUpdateCoordinator.UpdateOffer) -> Bool {
+        guard offer.isGen1BluetoothRecovery,
+              let targetID = UUID(uuidString: offer.serialNumber),
+              let record = Gen1BluetoothOtaRecoveryStore().record(for: targetID) else { return false }
+        return record.permitsLoaderRecovery(
+            savedID: ble.savedPeripheralUUIDString.flatMap(UUID.init(uuidString:)),
+            accountID: ble.gen1ImportAccount(for: targetID)
+        )
     }
 
     private func versionRowLabel(title: String, version: String, hasUpdate: Bool) -> some View {

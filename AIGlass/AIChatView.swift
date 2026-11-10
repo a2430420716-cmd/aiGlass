@@ -125,7 +125,6 @@ struct AIChatView: View {
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 12)
-        .background(Color.white.opacity(0.92))
     }
 
     private var header: some View {

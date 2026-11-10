@@ -8,6 +8,16 @@ struct Gen1BluetoothOtaRecoveryStore {
         let version: String
         let downloadURL: String
         let content: String
+        var accountID: String? = nil
+        var otaPeripheralID: UUID? = nil
+        var otaMAC: String? = nil
+        var firmwareSHA256: String? = nil
+
+        func permitsLoaderRecovery(savedID: UUID?, accountID: String?) -> Bool {
+            targetID == savedID && self.accountID?.isEmpty == false && self.accountID == accountID
+                && firmwareSHA256?.count == 64
+                && (otaPeripheralID != nil || otaMAC?.isEmpty == false)
+        }
     }
 
     private let defaults: UserDefaults

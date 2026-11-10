@@ -66,8 +66,13 @@ enum DeviceWifiManager {
         diagnosticContext: String = "unspecified",
         diagnosticID: String = UUID().uuidString,
         deviceEvidence: (@MainActor () -> String)? = nil,
-        keepConnectionInBackground: Bool = false
+        keepConnectionInBackground: Bool = false,
+        retainForManualConnection: Bool = false,
+        systemApplyTimeout: TimeInterval? = nil,
+        validateSession: (@MainActor () throws -> Void)? = nil
     ) async throws {
+        try Task.checkCancellation()
+        try validateSession?()
         let probeEndpoint = ProbeEndpoint(baseURL: probeBaseURL)
         let diagnostics = WifiDiagnosticSession(
             targetSSID: ssid, context: diagnosticContext, id: diagnosticID, deviceEvidence: deviceEvidence,
@@ -86,13 +91,20 @@ enum DeviceWifiManager {
         removeTransferConfiguration(ssid)
         diagnostics.log("移除旧热点配置", detail: "ssid=\(ssid)")
         do {
-            try await Task.sleep(nanoseconds: 300_000_000)
+            // OTA retries may reuse the same SSID. Let iOS finish removing the
+            // previous persistent association before applying its new credentials.
+            let removalDelay: UInt64 = retainForManualConnection ? 3_000_000_000 : 300_000_000
+            try await Task.sleep(nanoseconds: removalDelay)
+            try validateSession?()
             if keepConnectionInBackground { rememberTransferConfiguration(ssid) }
-            try await applyConfiguration(ssid: ssid, password: password, diagnostics: diagnostics, joinOnce: !keepConnectionInBackground)
+            try await applyConfiguration(ssid: ssid, password: password, diagnostics: diagnostics,
+                                         joinOnce: !keepConnectionInBackground, timeout: systemApplyTimeout,
+                                         retainConfigurationUntilSessionCleanup: retainForManualConnection,
+                                         validateSession: validateSession)
         } catch {
             diagnostics.recordSnapshot(phase: "apply-failed-before-cleanup", force: true)
-            diagnostics.log("热点申请失败，移除配置", detail: "callerTaskCancelled=\(Task.isCancelled)")
-            removeTransferConfiguration(ssid)
+            if !retainForManualConnection { removeTransferConfiguration(ssid) }
+            diagnostics.log("热点申请失败", detail: "callerTaskCancelled=\(Task.isCancelled) retainUntilOwnerCleanup=\(retainForManualConnection)")
             print("\(logTag) apply failed, abort task: \(error.localizedDescription)")
             let nsError = error as NSError
             diagnostics.log(
@@ -104,15 +116,16 @@ enum DeviceWifiManager {
         }
 
         do {
-            guard try await waitUntilReady(ssid: ssid, timeout: readyTimeout, diagnostics: diagnostics) else {
+            guard try await waitUntilReady(ssid: ssid, timeout: readyTimeout, diagnostics: diagnostics,
+                                           validateSession: validateSession) else {
                 throw DeviceWifiError.unreachable
             }
             try Task.checkCancellation()
         } catch {
             let cancelled = error is CancellationError || Task.isCancelled
             diagnostics.recordSnapshot(phase: cancelled ? "cancelled-before-cleanup" : "timeout-before-cleanup", force: true)
-            diagnostics.log("热点等待结束，移除配置", detail: "reason=\(cancelled ? "caller-cancelled" : "readiness-timeout"); snapshot_recorded_before_cleanup")
-            removeTransferConfiguration(ssid)
+            diagnostics.log("热点等待结束", detail: "reason=\(cancelled ? "caller-cancelled" : "readiness-timeout") retainUntilOwnerCleanup=\(retainForManualConnection); snapshot_recorded_before_cleanup")
+            if !retainForManualConnection { removeTransferConfiguration(ssid) }
             diagnostics.log(
                 cancelled ? "热点连接已取消" : "热点关联或 IP 获取超时，本次任务终止",
                 detail: "targetSSID=\(ssid)\ntimeout=\(Int(readyTimeout))s\nserviceEndpoint=\(probeEndpoint.host):\(probeEndpoint.port)\nTCPVerified=false HTTPResponseVerified=false",
@@ -127,6 +140,23 @@ enum DeviceWifiManager {
             detail: "ssid=\(ssid)\nserviceEndpoint=\(probeEndpoint.host):\(probeEndpoint.port)\nTCPVerified=false HTTPResponseVerified=false; next_stage_verifies_HTTP_service",
             direction: .received
         )
+    }
+
+    /// Recheck a manually joined network without applying or removing its configuration.
+    /// The OTA owner keeps the hotspot open and performs all final cleanup.
+    static func verifyManualConnection(
+        ssid: String, probeBaseURL: String, diagnosticContext: String,
+        validateSession: @escaping @MainActor () throws -> Void
+    ) async throws {
+        let diagnostics = WifiDiagnosticSession(targetSSID: ssid, context: diagnosticContext,
+                                               id: UUID().uuidString, joinOnce: false)
+        defer { diagnostics.stop() }
+        try validateSession()
+        diagnostics.log("核验手动连接的眼镜热点", detail: "serviceEndpoint=\(probeBaseURL) apply=false removeConfiguration=false")
+        guard try await waitUntilReady(ssid: ssid, timeout: readyTimeout, diagnostics: diagnostics,
+                                       validateSession: validateSession) else {
+            throw DeviceWifiError.unreachable
+        }
     }
 
     /// Gen1 firmware serves media at a fixed endpoint. Apply the device's SSID,
@@ -364,7 +394,8 @@ enum DeviceWifiManager {
     private static func waitUntilReady(
         ssid: String,
         timeout: TimeInterval,
-        diagnostics: WifiDiagnosticSession
+        diagnostics: WifiDiagnosticSession,
+        validateSession: (@MainActor () throws -> Void)? = nil
     ) async throws -> Bool {
         let started = ProcessInfo.processInfo.systemUptime
         let deadline = started + timeout
@@ -383,6 +414,7 @@ enum DeviceWifiManager {
 
         while ProcessInfo.processInfo.systemUptime < deadline {
             try Task.checkCancellation()
+            try validateSession?()
             ssidObservation.startReadIfNeeded()
             // The system SSID callback is not cancellable. Observe it without awaiting it so
             // cancellation and the monotonic deadline remain effective if the callback stalls.

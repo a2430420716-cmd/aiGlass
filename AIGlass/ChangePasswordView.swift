@@ -41,12 +41,9 @@ struct ChangePasswordView: View {
     }
 
     private var displayedAccountValue: String {
-        guard isPhoneAccount else {
-            let profileAccount = authSession.userInfo?.account.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let displayValue = accountValue.isEmpty ? profileAccount : accountValue
-            return displayValue.isEmpty ? L10n.t("未获取到账户信息", "No account information found") : displayValue
-        }
-        return "\(accountValue.prefix(3))****\(accountValue.suffix(4))"
+        let profileAccount = authSession.userInfo?.account.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let displayValue = accountValue.isEmpty ? profileAccount : accountValue
+        return displayValue.isEmpty ? L10n.t("未获取到账户信息", "No account information found") : AuthAccountIdentifier.maskPhoneForDisplay(displayValue)
     }
 
     private var canSendCode: Bool {

@@ -24,7 +24,7 @@ struct DeviceOtaUpgradeDetailView: View {
         self.kind = kind
         self.offer = offer
         _ble = ObservedObject(wrappedValue: ble)
-        _entryGeneration = State(initialValue: ble.deviceGeneration)
+        _entryGeneration = State(initialValue: offer.isGen1BluetoothRecovery ? .gen1G5K61 : ble.deviceGeneration)
     }
 
     private var needsGen1Wifi: Bool {
@@ -34,7 +34,7 @@ struct DeviceOtaUpgradeDetailView: View {
     private var isGen1BluetoothRecovery: Bool {
         kind == .bluetooth && entryGeneration == .gen1G5K61
             && offer.isGen1BluetoothRecovery
-            && ble.deviceBluetoothIdentifier == offer.serialNumber
+            && ble.savedPeripheralUUIDString == offer.serialNumber
             && UUID(uuidString: offer.serialNumber).map {
                 Gen1BluetoothOtaRecoveryStore().record(for: $0) != nil
             } == true
@@ -55,6 +55,16 @@ struct DeviceOtaUpgradeDetailView: View {
         ble.isDeviceAvailable
             && ble.deviceGeneration == entryGeneration
             && ble.matchesCurrentDevice(serialNumber: offer.serialNumber, hardwareSN: offer.serialNumber)
+    }
+
+    private var loaderRecoveryRecord: Gen1BluetoothOtaRecoveryStore.Record? {
+        guard kind == .bluetooth, entryGeneration == .gen1G5K61,
+              let id = ble.savedPeripheralUUIDString.flatMap(UUID.init(uuidString:)),
+              (isGen1BluetoothRecovery || (isStateForCurrentOffer && otaManager.activeTargetID == id)),
+              let record = Gen1BluetoothOtaRecoveryStore().record(for: id),
+              record.permitsLoaderRecovery(savedID: ble.savedPeripheralUUIDString.flatMap(UUID.init(uuidString:)),
+                                           accountID: ble.gen1ImportAccount(for: id)) else { return nil }
+        return record
     }
 
     private var isStateForCurrentOffer: Bool {
@@ -112,6 +122,9 @@ struct DeviceOtaUpgradeDetailView: View {
                     VStack(alignment: .leading, spacing: 24) {
                         currentVersionCard
                         centerSection
+                        if isUpgradingForThisPage, let wifi = otaManager.manualWifiCredential {
+                            manualWifiSection(wifi)
+                        }
                         contentSection
                         if needsGen1Wifi, !isUpgradingForThisPage {
                             gen1WifiSection
@@ -155,6 +168,7 @@ struct DeviceOtaUpgradeDetailView: View {
         .onDisappear {
             wifiSSIDReader.cancel()
             gen1WifiPassword = ""
+            if isStateForCurrentOffer { otaManager.cancelManualWifiConnection() }
             if needsGen1Wifi, isStateForCurrentOffer { otaManager.cancelGen1WifiProvision() }
         }
         .alert(L10n.t("Wi-Fi 配网成功", "Wi-Fi Configured"), isPresented: Binding(
@@ -278,7 +292,7 @@ struct DeviceOtaUpgradeDetailView: View {
     private var warningSection: some View {
         VStack(spacing: 12) {
             if isGen1BluetoothRecovery {
-                Text(L10n.t("上次蓝牙固件升级未完成，本次将重新写入固件以恢复设备。当前版本读取失败不影响恢复升级。", "The previous Bluetooth firmware update did not finish. This update will rewrite the firmware to recover the glasses. Recovery is available even if the current version cannot be read."))
+                Text(L10n.t("上次蓝牙固件升级未完成，请先为眼镜充足电并保持供电，再恢复升级。恢复期间请保持眼镜开机并靠近手机。", "The previous Bluetooth firmware update did not finish. Charge the glasses and keep them powered before recovery. Keep them on and close to your phone during recovery."))
                     .font(AppTheme.notoSansSC(size: 13, weight: .regular))
                     .foregroundStyle(AppTheme.secondaryText)
                     .multilineTextAlignment(.center)
@@ -370,7 +384,46 @@ struct DeviceOtaUpgradeDetailView: View {
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)
-        .disabled(!isOfferDeviceAvailable)
+        .disabled(!isOfferDeviceAvailable && loaderRecoveryRecord == nil)
+    }
+
+    private func manualWifiSection(_ wifi: Gen2OtaWifiConnectionSession.Credential) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n.t("手动连接眼镜 Wi-Fi", "Connect to Glasses Wi-Fi"))
+                .font(AppTheme.notoSansSC(size: 15, weight: .bold))
+            Text(L10n.t("自动连接未成功。请在手机“设置 → Wi-Fi”中加入以下网络，返回 App 后点击继续。请在 3 分钟内点击继续。", "Automatic connection failed. Open Settings → Wi-Fi, join the network below, then return and tap Continue within 3 minutes."))
+                .font(AppTheme.notoSansSC(size: 13, weight: .regular))
+            Text("Wi-Fi: \(wifi.ssid)")
+                .textSelection(.enabled)
+            if !wifi.password.isEmpty {
+                Text(L10n.t("密码：\(wifi.password)", "Password: \(wifi.password)"))
+                    .textSelection(.enabled)
+            }
+            if let error = otaManager.manualWifiError {
+                Text(error)
+                    .font(AppTheme.notoSansSC(size: 13, weight: .regular))
+                    .foregroundStyle(AppTheme.accent)
+            }
+            Button(action: otaManager.confirmManualWifiConnection) {
+                HStack {
+                    if otaManager.isCheckingManualWifi { ProgressView() }
+                    Text(L10n.t("已连接，继续", "Connected, Continue"))
+                }
+                .frame(maxWidth: .infinity, minHeight: 48)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(AppTheme.primaryText)
+            .disabled(otaManager.isCheckingManualWifi)
+            Button(L10n.t("取消本次升级", "Cancel Update"), role: .cancel,
+                   action: otaManager.cancelManualWifiConnection)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .disabled(otaManager.isCheckingManualWifi)
+        }
+        .foregroundStyle(AppTheme.primaryText)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     private func autofillWifiSSIDIfNeeded() {
@@ -412,6 +465,15 @@ struct DeviceOtaUpgradeDetailView: View {
                             .foregroundStyle(AppTheme.secondaryText)
                             .padding(.top, 16)
                     }
+                    if failureMessage != nil, let record = loaderRecoveryRecord {
+                        Button(L10n.t("恢复蓝牙升级", "Recover Bluetooth Update")) {
+                            otaManager.startGen1BluetoothRecovery(record: record, ble: ble, importManager: importManager)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(AppTheme.primaryText)
+                        .frame(minHeight: 48)
+                        .padding(.top, 24)
+                    }
                 }
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
@@ -425,6 +487,10 @@ struct DeviceOtaUpgradeDetailView: View {
 
     private func startUpgrade() {
         guard !otaManager.isUpgrading else { return }
+        if !isOfferDeviceAvailable, let record = loaderRecoveryRecord {
+            otaManager.startGen1BluetoothRecovery(record: record, ble: ble, importManager: importManager)
+            return
+        }
         guard isOfferDeviceAvailable else {
             batteryAlertMessage = L10n.t("请先连接对应的已绑定眼镜", "Please connect the bound glasses for this update first")
             return

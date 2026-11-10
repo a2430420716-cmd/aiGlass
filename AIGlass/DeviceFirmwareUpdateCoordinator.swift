@@ -80,12 +80,14 @@ final class DeviceFirmwareUpdateCoordinator: ObservableObject {
         guard !otaManager.isUpgrading, !otaManager.state.isTerminal else { return }
         // An interrupted Gen1 Bluetooth image may not answer version queries.
         // Evaluate recovery before the ordinary fresh-version guards.
-        if authSession.isLoggedIn, ble.isDeviceAvailable, ble.deviceGeneration == .gen1G5K61,
-           let identifier = ble.deviceBluetoothIdentifier.flatMap(UUID.init(uuidString:)),
-           let record = Gen1BluetoothOtaRecoveryStore().record(for: identifier) {
-            let keys = [ble.deviceSN ?? "", identifier.uuidString].filter { !$0.isEmpty }
-            let server = authSession.userInfo.flatMap { lookupOTA($0.bluetoothBySerialNumber, keys: keys) }
-            let recoveryInfo = server ?? DeviceOTAInfo(version: record.version, downloadURL: record.downloadURL, content: record.content)
+        if authSession.isLoggedIn,
+           let identifier = ble.savedPeripheralUUIDString.flatMap(UUID.init(uuidString:)),
+           let record = Gen1BluetoothOtaRecoveryStore().record(for: identifier),
+           (record.permitsLoaderRecovery(savedID: identifier, accountID: ble.gen1ImportAccount(for: identifier))
+            || (ble.isDeviceAvailable && ble.deviceGeneration == .gen1G5K61
+                && ble.deviceBluetoothIdentifier == identifier.uuidString)) {
+            // A newer publication must not replace a partially submitted image.
+            let recoveryInfo = DeviceOTAInfo(version: record.version, downloadURL: record.downloadURL, content: record.content)
             bluetoothUpdate = UpdateOffer(
                 serialNumber: identifier.uuidString,
                 currentVersion: ble.deviceVersion2800 ?? "",

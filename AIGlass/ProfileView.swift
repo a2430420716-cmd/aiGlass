@@ -136,12 +136,7 @@ struct ProfileView: View {
     private var displayedAccount: String {
         let profileAccount = authSession.userInfo?.account.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let account = profileAccount.isEmpty ? (authSession.phoneNumber ?? "") : profileAccount
-        guard AuthAccountIdentifier.isPhone(account) else {
-            return account.isEmpty ? L10n.t("未获取到账户信息", "No account information found") : account
-        }
-        let prefix = account.prefix(3)
-        let suffix = account.suffix(4)
-        return "\(prefix)****\(suffix)"
+        return account.isEmpty ? L10n.t("未获取到账户信息", "No account information found") : AuthAccountIdentifier.maskPhoneForDisplay(account)
     }
 
     private var logoutButton: some View {

@@ -18,7 +18,8 @@ struct PersonalInfoView: View {
     }
 
     private var phoneNumber: String {
-        authSession.userInfo?.phone ?? authSession.phoneNumber ?? L10n.t("未绑定手机号", "No phone linked")
+        let value = authSession.userInfo?.phone ?? authSession.phoneNumber ?? L10n.t("未绑定手机号", "No phone linked")
+        return AuthAccountIdentifier.maskPhoneForDisplay(value)
     }
 
     var body: some View {

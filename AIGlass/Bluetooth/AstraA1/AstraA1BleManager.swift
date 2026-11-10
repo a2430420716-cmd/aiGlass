@@ -3893,8 +3893,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     /// Android 从固件包下载前 markBusy；这里同步暂停例行电量和待导入查询。
-    func beginFirmwareUpgradeFlow() {
-        guard ensureDeviceAvailable(for: "beginFirmwareUpgradeFlow") else { return }
+    func beginFirmwareUpgradeFlow(gen1LoaderRecovery: Gen1BluetoothOtaRecoveryStore.Record? = nil) {
+        // A submitted Gen1 loader may expose only RCSP, without the ordinary
+        // control service. Its bound recovery record still owns the OTA flow,
+        // including background-query suppression and post-upgrade reconnection.
+        let ownsLoaderRecovery = gen1LoaderRecovery.map { record in
+            record.permitsLoaderRecovery(savedID: savedPeripheralID(), accountID: gen1ImportAccount(for: record.targetID))
+                && (connectedPeripheral == nil || connectedPeripheral?.identifier == record.targetID)
+        } ?? false
+        guard ownsLoaderRecovery || ensureDeviceAvailable(for: "beginFirmwareUpgradeFlow") else { return }
         guard !isFirmwareUpgradeFlowBusy else { return }
         isFirmwareUpgradeFlowBusy = true
         deviceVersionQueryGate.cancelPendingQuery()

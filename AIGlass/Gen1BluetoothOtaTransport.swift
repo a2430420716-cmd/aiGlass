@@ -39,6 +39,8 @@ final class Gen1BluetoothOtaTransport: NSObject {
     private var lastLoggedResult: JL_OTAResult?
     private var lastLoggedPercent: Int?
     private var recoveryRecord: Gen1BluetoothOtaRecoveryStore.Record?
+    private var requiresLoaderMode = false
+    private var validationTask: Task<Void, Never>?
 
     override init() {
         super.init()
@@ -49,6 +51,8 @@ final class Gen1BluetoothOtaTransport: NSObject {
 
     func upgrade(data: Data, peripheralIdentifier: UUID,
                  recoveryRecord: Gen1BluetoothOtaRecoveryStore.Record,
+                 recoverLoader: Bool = false,
+                 validateSession: @escaping @MainActor () throws -> Void,
                  log: @escaping (String) -> Void,
                  onPhaseChanged: @escaping (Gen1BluetoothOtaSessionState.Phase) -> Void) async throws {
         guard continuation == nil, !data.isEmpty else {
@@ -56,7 +60,8 @@ final class Gen1BluetoothOtaTransport: NSObject {
         }
         firmware = data
         targetIdentifier = peripheralIdentifier
-        reconnectMAC = nil
+        reconnectMAC = recoverLoader ? recoveryRecord.otaMAC : nil
+        requiresLoaderMode = recoverLoader
         reconnectRequested = false
         connectionPolicy = Gen1BluetoothOtaConnectionPolicy()
         nonconnectableTargets.removeAll()
@@ -65,16 +70,29 @@ final class Gen1BluetoothOtaTransport: NSObject {
         self.onPhaseChanged = onPhaseChanged
         lastLoggedResult = nil
         lastLoggedPercent = nil
-        log("RCSP transport started firmwareBytes=\(data.count)")
+        log("RCSP transport started transport=BLE service=AE00 loaderRecovery=\(recoverLoader) firmwareBytes=\(data.count) savedOTAUUID=\(recoveryRecord.otaPeripheralID?.uuidString ?? "none") savedOTAMAC=\(recoveryRecord.otaMAC ?? "none")")
         sdk.delegate = self
         authentication.delegate = self
         sdk.resetOTAManager()
         sdk.bleOnly = true
+        try validateSession()
         sessionState = Gen1BluetoothOtaSessionState()
         finishingResult = nil
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
+                validationTask = Task { [weak self] in
+                    while !Task.isCancelled {
+                        do {
+                            try validateSession()
+                            try await Task.sleep(nanoseconds: 250_000_000)
+                        } catch {
+                            guard !Task.isCancelled else { return }
+                            self?.finish(.failure(error))
+                            return
+                        }
+                    }
+                }
                 connectionPolicy.begin(now: ProcessInfo.processInfo.systemUptime)
                 armTimeout(seconds: UInt64(Gen1BluetoothOtaConnectionPolicy.totalTimeout),
                            message: "连接蓝牙升级服务超时，请保持眼镜开机并重试")
@@ -92,7 +110,8 @@ final class Gen1BluetoothOtaTransport: NSObject {
         if let peripheral, peripheral.state != .disconnected {
             return
         }
-        if connectionPolicy.shouldRetrieveCachedPeripheral, reconnectMAC == nil, let targetIdentifier,
+        if connectionPolicy.shouldRetrieveCachedPeripheral, !requiresLoaderMode,
+           reconnectMAC == nil, let targetIdentifier,
            let device = central.retrievePeripherals(withIdentifiers: [targetIdentifier]).first,
            device.state != .disconnecting {
             connect(device, source: "cached UUID")
@@ -185,6 +204,13 @@ final class Gen1BluetoothOtaTransport: NSObject {
         switch connectionPolicy.retryActionAfterRelease(now: now, releaseTimedOut: releaseTimedOut) {
         case .none:
             log("RCSP reconnect released; no retry budget remains attempts=\(connectionPolicy.attempts)")
+            // Once all bounded BLE attempts are exhausted, the total watchdog
+            // cannot produce another connection. Finish now instead of leaving
+            // the UI in "waiting for reconnect" for the remaining idle seconds.
+            let message = reconnectRequested || requiresLoaderMode
+                ? "蓝牙升级重连超时，请重新连接眼镜后检查版本"
+                : "连接蓝牙升级服务超时，请保持眼镜开机并重试"
+            finish(.failure(TransportError.message(message)))
         case .scan:
             queueReconnectAttempt()
         case .replaceCentral:
@@ -220,6 +246,8 @@ final class Gen1BluetoothOtaTransport: NSObject {
     private func finish(_ result: Result<Void, Error>) {
         guard continuation != nil, finishingResult == nil else { return }
         finishingResult = result
+        validationTask?.cancel()
+        validationTask = nil
         switch result {
         case .success: log("RCSP transfer finished; version still requires confirmation")
         case .failure(let error): log("RCSP finished terminalSuccess=false error=\(error.localizedDescription)")
@@ -305,7 +333,15 @@ final class Gen1BluetoothOtaTransport: NSObject {
         guard continuation != nil, finishingResult == nil else { return }
         // The SDK can report UUID reconnect before its MAC reconnect result.
         // Keep the more specific address without restarting the reconnect budget.
-        if let mac, !mac.isEmpty { reconnectMAC = mac }
+        if let mac, !mac.isEmpty {
+            reconnectMAC = mac
+            if var record = recoveryRecord,
+               Gen1BluetoothOtaRecoveryStore().record(for: record.targetID) != nil {
+                record.otaMAC = mac
+                recoveryRecord = record
+                Gen1BluetoothOtaRecoveryStore().markImageSubmitted(record)
+            }
+        }
         guard sessionState.requestReconnect() else { return }
         onPhaseChanged?(sessionState.phase)
         log("RCSP SDK requested reconnect byMAC=\(mac != nil) expectedMAC=\(reconnectMAC ?? "none") originalTarget=\(targetIdentifier?.uuidString ?? "none")")
@@ -355,7 +391,10 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBCentralManagerDelegate {
               reconnectReleasePeripheral == nil,
               connectionPolicy.canAttempt(now: ProcessInfo.processInfo.systemUptime) else { return }
         let matches: Bool
-        if let reconnectMAC {
+        if requiresLoaderMode, !reconnectRequested,
+           peripheral.identifier == recoveryRecord?.otaPeripheralID {
+            matches = true
+        } else if let reconnectMAC {
             guard let data = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data else { return }
             matches = JLAdvParse.otaBleMacAddress(reconnectMAC, isEqualToCBAdvDataManufacturerData: data)
         } else {
@@ -374,6 +413,11 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBCentralManagerDelegate {
         let services = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []).map(\.uuidString).joined(separator: ",")
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name ?? "unknown"
         log("RCSP discovered matching target=\(peripheral.identifier) name=\(name.debugDescription) state=\(peripheral.state.rawValue) connectable=\(isConnectable) rssi=\(RSSI) expectedMAC=\(reconnectMAC ?? "none") services=[\(services)] manufacturerBytes=\(manufacturer.count) manufacturerHex=\(manufacturerHex)")
+        if reconnectMAC != nil, var record = recoveryRecord {
+            record.otaPeripheralID = peripheral.identifier
+            recoveryRecord = record
+            Gen1BluetoothOtaRecoveryStore().markImageSubmitted(record)
+        }
         connect(peripheral, source: reconnectMAC == nil ? "advertised UUID" : "advertised OTA MAC")
     }
 
@@ -512,8 +556,16 @@ extension Gen1BluetoothOtaTransport: JLHashHandlerDelegate, JL_OTAManagerDelegat
 
     private func startImageWhenReady() {
         guard continuation != nil, finishingResult == nil, authenticated,
-              peripheral?.state == .connected, writeCharacteristic != nil,
-              let command = sessionState.imageCommandAfterFeature() else { return }
+              peripheral?.state == .connected, writeCharacteristic != nil else { return }
+        // Direct recovery is allowed only when the authenticated vendor feature
+        // reply confirms loader/forced OTA mode. A normal device must reconnect
+        // through the control channel and pass its ordinary battery gate.
+        guard let command = sessionState.imageCommandAfterFeature() else { return }
+        if requiresLoaderMode, command == .start, sdk.otaStatus != .force {
+            log("RCSP loader recovery rejected otaStatus=\(sdk.otaStatus.rawValue)")
+            finish(.failure(TransportError.message("眼镜未处于升级恢复模式，请重新连接眼镜后升级")))
+            return
+        }
         cancelReconnectAttempt()
         connectionPolicy.stop()
         reconnectRequested = false

@@ -25,6 +25,23 @@ enum Gen1BluetoothOtaRecoveryTests {
         reopened.clearAfterSuccess(targetID: targetB)
         precondition(store.record(for: targetA) == recordA)
         precondition(store.record(for: targetB) == nil)
+        var loaderRecord = recordA
+        loaderRecord.accountID = "account-a"
+        loaderRecord.otaMAC = "cc731542f757"
+        loaderRecord.otaPeripheralID = UUID()
+        loaderRecord.firmwareSHA256 = String(repeating: "a", count: 64)
+        store.markImageSubmitted(loaderRecord)
+        precondition(reopened.record(for: targetA) == loaderRecord)
+        precondition(loaderRecord.permitsLoaderRecovery(savedID: targetA, accountID: "account-a"))
+        precondition(!loaderRecord.permitsLoaderRecovery(savedID: targetB, accountID: "account-a"))
+        precondition(!loaderRecord.permitsLoaderRecovery(savedID: targetA, accountID: "account-b"))
+        precondition(!loaderRecord.permitsLoaderRecovery(savedID: targetA, accountID: nil))
+        precondition(!recordA.permitsLoaderRecovery(savedID: targetA, accountID: "account-a"))
+        let oldJSON = """
+        {"targetID":"\(targetB.uuidString)","version":"old","downloadURL":"https://example.com/old.ufw","content":""}
+        """
+        let oldRecord = try! JSONDecoder().decode(Gen1BluetoothOtaRecoveryStore.Record.self, from: Data(oldJSON.utf8))
+        precondition(oldRecord.otaMAC == nil && oldRecord.accountID == nil)
         store.clearAfterSuccess(targetID: targetA)
         precondition(reopened.record(for: targetA) == nil)
         print("Gen1 Bluetooth OTA recovery persistence tests passed")
