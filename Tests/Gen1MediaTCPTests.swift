@@ -269,8 +269,15 @@ enum Gen1MediaTCPTests {
         defer { replacementPeer.stop() }
         let replacement = Gen1MediaTCPClient(host: "127.0.0.1", port: replacementPort, testConfiguration: configuration())
         try await replacement.connect()
-        try await Task.sleep(nanoseconds: 170_000_000)
-        let requests = await replacementPeer.snapshot()
+        // Connection readiness does not guarantee that the peer's accept/receive
+        // callbacks ran within 170 ms on a loaded CI host. Wait for the actual
+        // heartbeat, keeping a hard bound so a broken heartbeat still fails.
+        let heartbeatDeadline = ProcessInfo.processInfo.systemUptime + 2
+        var requests = await replacementPeer.snapshot()
+        while !requests.commands.contains(6), ProcessInfo.processInfo.systemUptime < heartbeatDeadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+            requests = await replacementPeer.snapshot()
+        }
         try check(requests.commands.contains(6), "replacement connection resumes heartbeats during local processing")
         try check(!requests.commands.contains(1) && !requests.commands.contains(3) && !requests.commands.contains(7), "processing reconnect does not redownload, relist or finish a different batch")
         await replacement.deliverProcessingFailureForTesting(.posix(.ECONNREFUSED))
