@@ -126,7 +126,9 @@ final class AIChatSession: ObservableObject {
             let result = try await ArkChatService.imageChat(jpeg: jpeg, token: token)
             AIVoiceChatManager.shared.playSpeechResponse(result)
             let text = result.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if text.isEmpty {
+            if AIChatRecordFilter.isExecutionCommand(text) {
+                messages.removeAll { $0.id == pendingID }
+            } else if text.isEmpty {
                 replaceAIMessage(id: pendingID, with: .error(L10n.t("识别结果为空", "Empty recognition result")))
             } else {
                 replaceAIMessage(id: pendingID, with: .aiText(text))
@@ -179,7 +181,7 @@ final class AIChatSession: ObservableObject {
 
     func appendAIText(_ text: String) {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return }
+        guard !value.isEmpty, !AIChatRecordFilter.isExecutionCommand(value) else { return }
         appendTimestampIfNeeded()
         messages.append(AIChatItem(kind: .aiText(value)))
     }
@@ -306,7 +308,7 @@ final class AIChatSession: ObservableObject {
                 ? .userVideo(url: mediaURL, text: videoText)
                 : .aiVideo(url: mediaURL, text: videoText)
         default:
-            guard !text.isEmpty else { return nil }
+            guard !text.isEmpty, !AIChatRecordFilter.isExecutionCommand(text) else { return nil }
             kind = isUser ? .userText(text) : .aiText(text)
         }
         return AIChatItem(kind: kind, date: date)

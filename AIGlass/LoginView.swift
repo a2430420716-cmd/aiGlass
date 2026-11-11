@@ -47,6 +47,13 @@ struct LoginView: View {
 
     private var isEmailAccount: Bool { !isChinaIP }
 
+    private var passwordRecoveryUsesEmail: Bool {
+        let account = phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        if AuthAccountIdentifier.isEmail(account) { return true }
+        if AuthAccountIdentifier.isPhone(account) { return false }
+        return isEmailAccount
+    }
+
     private var accountPlaceholder: String {
         if loginMode == .password {
             return L10n.t("请输入账号/手机号/邮箱", "Enter username, phone number or email")
@@ -103,7 +110,7 @@ struct LoginView: View {
                 .compatibleNavigationDestination(isPresented: $showsForgotPassword) {
                     ForgotPasswordView(
                         initialAccount: phoneNumber,
-                        isEmailAccount: isEmailAccount
+                        isEmailAccount: passwordRecoveryUsesEmail
                     )
                 }
                 .compatibleNavigationDestination(isPresented: $showsServiceAgreement) {
@@ -376,6 +383,8 @@ struct LoginView: View {
                 Text(L10n.t("忘记密码?", "Forgot password?"))
                     .font(AppTheme.notoSansSC(size: 14, weight: .medium))
                     .foregroundStyle(AppTheme.primaryText)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
@@ -585,23 +594,7 @@ struct LoginView: View {
     }
 
     private func openForgotPassword() {
-        guard accountModeResolved else {
-            alertMessage = L10n.t("正在检测登录方式，请稍候", "Detecting sign-in method…")
-            return
-        }
-        let account = phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !account.isEmpty else {
-            alertMessage = isChinaIP
-                ? L10n.t("请输入手机号", "Enter phone number")
-                : L10n.t("请输入邮箱", "Enter email")
-            return
-        }
-        guard isContactAccountValid else {
-            alertMessage = isChinaIP
-                ? L10n.t("请输入正确的手机号", "Enter a valid phone number")
-                : L10n.t("请输入正确的邮箱", "Enter a valid email")
-            return
-        }
+        // Account entry and validation belong to recovery, which works before login.
         dismissKeyboard()
         showsForgotPassword = true
     }

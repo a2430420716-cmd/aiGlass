@@ -195,7 +195,7 @@ struct ForgotPasswordView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("忘记密码", "Forgot Password"))
+            Text(L10n.t("修改密码", "Change Password"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 

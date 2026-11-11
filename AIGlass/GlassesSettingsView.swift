@@ -253,6 +253,19 @@ struct GlassesSettingsView: View {
                 deviceKey: mediaSettingsDeviceKey
             )
         }
+        .onChangeCompat(of: pairingCoordinator.astraA1BleManager.recordDurationSettingResult) { result in
+            guard let result, isSettingsVisible, isGlassesConnected else { return }
+            switch result.outcome {
+            case .confirmed(let seconds):
+                recordDurationSeconds = seconds
+                DeviceMediaSettings.setRecordDurationSeconds(seconds, userId: authSession.phoneNumber, deviceKey: mediaSettingsDeviceKey)
+                guideAlertMessage = L10n.t("录像时长设置成功", "Video duration set")
+            case .different(_, let actual):
+                guideAlertMessage = L10n.t("录像时长未设置成功，眼镜当前为\(recordDurationTitle(actual))，请重试", "Video duration was not applied. Glasses report \(recordDurationTitle(actual)). Please try again.")
+            case .unconfirmed:
+                guideAlertMessage = L10n.t("未能确认眼镜的录像时长，请重试", "Could not confirm the video duration on your glasses. Please try again.")
+            }
+        }
         .onChangeCompat(of: pairingCoordinator.astraA1BleManager.settingsVideoResolutionProfile) { profile in
             guard let profile, isGlassesConnected else { return }
             videoResolutionProfile = profile
@@ -504,10 +517,12 @@ struct GlassesSettingsView: View {
                 if showsCapability(\.recordDuration) {
                     SettingsNavigationRow(
                         title: L10n.t("短视频时间长度", "Short Video Length"),
-                        value: recordDurationTitle(recordDurationSeconds),
+                        value: pairingCoordinator.astraA1BleManager.isRecordDurationSettingPending
+                            ? L10n.t("设置中…", "Setting…") : recordDurationTitle(recordDurationSeconds),
                         subtitle: L10n.t("设置视频录制时长，达到设定时间后自动停止", "Set recording duration; recording stops automatically at the limit"),
                         action: { showRecordDurationOptions = true }
                     )
+                    .disabled(pairingCoordinator.astraA1BleManager.isRecordDurationSettingPending)
                     SettingsDivider()
                 }
                 if showsCapability(\.videoResolution) {
@@ -610,21 +625,21 @@ struct GlassesSettingsView: View {
     private func applyRecordDuration(_ seconds: Int) {
         guard isGlassesConnected, supportedRecordDurations.contains(seconds),
               pairingCoordinator.astraA1BleManager.deviceCapabilities.recordDuration else { return }
-        recordDurationSeconds = seconds
-        DeviceMediaSettings.setRecordDurationSeconds(
-            seconds,
-            userId: authSession.phoneNumber,
-            deviceKey: mediaSettingsDeviceKey
-        )
-
         let ble = pairingCoordinator.astraA1BleManager
+        guard !ble.isRecordDurationSettingPending else { return }
         guard ble.deviceRuntimeStatus == .standby || ble.deviceRuntimeStatus == .unknown else {
             guideAlertMessage = ble.deviceRuntimeStatus.busyMessage
             return
         }
-        guideAlertMessage = ble.setRecordTime(seconds: seconds)
-            ? L10n.t("录像时长设置成功", "Video duration set")
-            : L10n.t("录像时长设置失败", "Failed to set video duration")
+        guard ble.setRecordTime(seconds: seconds) else {
+            guideAlertMessage = L10n.t("录像时长设置失败", "Failed to set video duration")
+            return
+        }
+        // Gen1 persists and reports success only after the separate device query.
+        guard ble.deviceGeneration != .gen1G5K61 else { return }
+        recordDurationSeconds = seconds
+        DeviceMediaSettings.setRecordDurationSeconds(seconds, userId: authSession.phoneNumber, deviceKey: mediaSettingsDeviceKey)
+        guideAlertMessage = L10n.t("录像时长设置成功", "Video duration set")
     }
 
     private func applyVideoResolution(_ profile: UInt8) {

@@ -107,6 +107,12 @@ final class DebugLogStore: ObservableObject {
         }
     }
 
+    nonisolated static func logHTTPEvent(_ title: String, detail: String) {
+        Task { @MainActor in
+            shared.append(channel: .http, direction: .event, title: title, detail: detail)
+        }
+    }
+
     // MARK: - Translation
 
     /// Translation WebSocket lifecycle and bounded counters, without audio or transcripts.

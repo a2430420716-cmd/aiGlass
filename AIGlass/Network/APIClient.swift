@@ -87,7 +87,7 @@ enum APIClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await PublicHTTPDiagnostics.data(for: request, session: .shared)
         } catch {
             DebugLogStore.logHTTPReceived(
                 method: "POST",
@@ -185,7 +185,7 @@ enum APIClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await PublicHTTPDiagnostics.data(for: request, session: .shared)
         } catch {
             DebugLogStore.logHTTPReceived(
                 method: "POST",
@@ -273,7 +273,7 @@ enum APIClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await PublicHTTPDiagnostics.data(for: request, session: .shared)
         } catch {
             DebugLogStore.logHTTPReceived(
                 method: "POST",
@@ -358,7 +358,7 @@ enum APIClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await PublicHTTPDiagnostics.data(for: request, session: session)
         } catch {
             DebugLogStore.logHTTPReceived(
                 method: "GET",
@@ -474,7 +474,7 @@ enum APIClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await PublicHTTPDiagnostics.data(for: request, session: .shared)
         } catch {
             DebugLogStore.logHTTPReceived(
                 method: "UPLOAD",

@@ -1332,8 +1332,10 @@ private struct DeviceCardView: View {
             if device.isFindDevice {
                 Button(action: onFindDeviceTap) {
                     cardContent
+                        .contentShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(L10n.t("查找您的设备，添加眼镜", "Find your device, add glasses"))
             } else {
                 ZStack {
                     cardContent

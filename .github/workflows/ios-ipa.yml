@@ -56,6 +56,7 @@ jobs:
         timeout-minutes: 5
         run: |
           bash Tests/run-gen1-background-query-tests.sh
+          bash Tests/run-gen1-record-duration-tests.sh
           xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-protocol-cache" AIGlass/Bluetooth/Gen1/Gen1Protocol.swift Tests/Gen1ProtocolTests.swift -o "$RUNNER_TEMP/gen1-protocol-tests"
           "$RUNNER_TEMP/gen1-protocol-tests"
           xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-runtime-cache" AIGlass/Bluetooth/Gen1/Gen1Protocol.swift AIGlass/Bluetooth/AstraA1/AstraA1BleProtocol.swift Tests/Gen1RuntimeStatusTests.swift -o "$RUNNER_TEMP/gen1-runtime-tests"
@@ -73,6 +74,9 @@ jobs:
       - name: 验证改密账号不被脱敏资料覆盖
         timeout-minutes: 5
         run: bash Tests/run-auth-account-identifier-tests.sh
+      - name: 验证 AI 对话记录过滤执行指令
+        timeout-minutes: 5
+        run: bash Tests/run-ai-chat-record-filter-tests.sh
       - name: 验证水印与 TCP 传输
         timeout-minutes: 5
         run: |
@@ -107,7 +111,7 @@ jobs:
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
-          name: AIGlass-1.1.6-175-${{ inputs.export_method }}
+          name: AIGlass-1.1.6-176-${{ inputs.export_method }}
           path: build/ipa/*.ipa
           if-no-files-found: error
           retention-days: 7

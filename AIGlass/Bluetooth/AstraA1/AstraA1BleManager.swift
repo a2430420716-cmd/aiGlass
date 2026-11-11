@@ -100,6 +100,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     @Published private(set) var deviceGeneration: DeviceGeneration = .unknown
     @Published private(set) var settingsRecordDurationSeconds: Int?
+    @Published private(set) var isRecordDurationSettingPending = false
+    @Published private(set) var recordDurationSettingResult: Gen1RecordDurationSettingState.Result?
+    private var gen1RecordDurationSetting = Gen1RecordDurationSettingState()
     @Published private(set) var deviceSystemName: String?
     @Published private(set) var deviceHardwareAddress: String?
     var deviceCapabilities: DeviceCapabilities { DeviceCapabilities.forGeneration(deviceGeneration) }
@@ -3598,8 +3601,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             logPhotoCapture("device-status", detail: "previous=\(previous.name) current=\(current.name)")
         }
         let wasVideoStarting = isVideoStarting
+        let recordingStartedAt = homeVideoCapture.startedAt
+        let receivedAt = ProcessInfo.processInfo.systemUptime
         let videoFinished = homeVideoCapture.receive(
-            current, at: ProcessInfo.processInfo.systemUptime, allowsCompletion: allowsVideoCompletion
+            current, at: receivedAt, allowsCompletion: allowsVideoCompletion
         )
         isVideoStarting = homeVideoCapture.isStartPending
         if !isVideoStarting { cancelHomeVideoStartConfirmation() }
@@ -3619,6 +3624,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             finishPhotoCaptureSuccess(evidence: "device_photo_taking_then_standby")
         }
         if videoFinished {
+            if let recordingStartedAt {
+                logVideoCapture("device-ended", detail: "elapsedSeconds=\(max(0, receivedAt - recordingStartedAt)) knownDeviceLimitSeconds=\(settingsRecordDurationSeconds.map { String($0) } ?? "unknown") wearDetectionEnabled=\(settingsWearDetectionEnabled.map { String($0) } ?? "unknown") standby_is_not_file_saved_confirmation")
+            }
             finishVideoCaptureSuccess()
         }
         // 识图传图：末包可能丢，设备已回空闲 → 通知拼包层用已收数据收尾。
@@ -4808,7 +4816,45 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @discardableResult
     func setRecordTime(seconds: Int) -> Bool {
         guard ensureDeviceAvailable(for: "setRecordTime") else { return false }
-        return sendCommand(AstraA1BleProtocol.buildRecordTimeCommand(seconds: seconds))
+        guard !isRecordDurationSettingPending else { return false }
+        let sent = sendCommand(AstraA1BleProtocol.buildRecordTimeCommand(seconds: seconds))
+        guard sent, deviceGeneration == .gen1G5K61 else { return sent }
+        guard let token = gen1RecordDurationSetting.beginSet(seconds: seconds),
+              let target = connectedPeripheral?.identifier else { return false }
+        isRecordDurationSettingPending = true
+        recordDurationSettingResult = nil
+        DebugLogStore.logBLEEvent("Gen1 record duration set queued", detail: "target=\(target) requestedSeconds=\(seconds) token=\(token) queued_is_not_device_confirmation")
+        // Do not repeat SET. Give firmware time to apply it, then query twice.
+        for delay in [1.0, 3.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.connectedPeripheral?.identifier == target,
+                      self.isDeviceAvailable, self.deviceGeneration == .gen1G5K61,
+                      self.gen1RecordDurationSetting.token == token,
+                      self.gen1RecordDurationSetting.isPending,
+                      self.isDeviceRuntimeIdle, !self.isVideoStarting,
+                      !self.isVideoRecording, !self.isVideoStopping,
+                      !self.isTakingPhoto, !self.isAIRecording,
+                      !self.isAIVisionTransferBusy, !self.isFirmwareUpgradeFlowBusy else { return }
+                if self.sendGen1Command(command: Gen1Commands.recordDurationQuery) {
+                    _ = self.gen1RecordDurationSetting.beginVerificationQuery(token: token)
+                    DebugLogStore.logBLEEvent("Gen1 record duration readback sent", detail: "target=\(target) requestedSeconds=\(seconds) token=\(token) delay=\(delay)")
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+            guard let self, self.connectedPeripheral?.identifier == target,
+                  self.gen1RecordDurationSetting.finish(token: token) else { return }
+            self.publishRecordDurationSettingResult()
+        }
+        return true
+    }
+
+    private func publishRecordDurationSettingResult() {
+        isRecordDurationSettingPending = gen1RecordDurationSetting.isPending
+        recordDurationSettingResult = gen1RecordDurationSetting.result
+        if let result = recordDurationSettingResult {
+            DebugLogStore.logBLEEvent("Gen1 record duration verification finished", detail: "target=\(deviceBluetoothIdentifier ?? "none") token=\(result.token) outcome=\(result.outcome)")
+        }
     }
 
     /// 设置/查询录像分辨率（setvidres0/getvidres0）。
@@ -5254,7 +5300,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     @discardableResult
     func queryRecordDuration() -> Bool {
-        sendGen1Command(command: Gen1Commands.recordDurationQuery)
+        guard !isRecordDurationSettingPending else { return false }
+        return sendGen1Command(command: Gen1Commands.recordDurationQuery)
     }
 
     @discardableResult
@@ -5322,6 +5369,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         gen1VoiceDeliveryTiming = TranslationAudioTiming()
         gen1TranslationRouter.reset()
         gen1FactoryResetGeneration += 1
+        gen1RecordDurationSetting.reset()
+        isRecordDurationSettingPending = false
+        recordDurationSettingResult = nil
         settingsRecordDurationSeconds = nil
         deviceSystemName = nil
         deviceHardwareAddress = nil
@@ -5391,7 +5441,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             // Wi-Fi credentials, audio and image payloads are never included.
             if [Gen1Commands.takePhoto, Gen1Commands.startVideo, Gen1Commands.stopVideo,
                 Gen1Commands.deviceStatusQuery, Gen1Commands.deviceStatusChanged,
-                Gen1Commands.newFileCount].contains(frame.command) {
+                Gen1Commands.newFileCount, Gen1Commands.wearingState].contains(frame.command) {
                 let hex = frame.raw.prefix(32).map { String(format: "%02X", $0) }.joined(separator: " ")
                 DebugLogStore.logBLEEvent("Gen1 media control frame", detail: "command=\(String(format: "0x%02X", frame.command)) bytes=\(frame.raw.count) hex=\(hex) omittedBytes=\(max(0, frame.raw.count - 32))", capturedAt: capturedAt)
             }
@@ -5487,8 +5537,14 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 if let mode = payload.last, mode <= 2 { emitGen1Canonical("eqmodersp0", Data([0, mode])) }
             case Gen1Commands.wearingSet, Gen1Commands.wearingQuery:
                 if let enabled = payload.last, enabled <= 1 { emitGen1Canonical("weardetrsp", Data([0, enabled])) }
-            case Gen1Commands.recordDurationQuery, Gen1Commands.recordDurationSet:
-                if let value = payload.first, value < 5 { settingsRecordDurationSeconds = [15, 60, 180, 300, 600][Int(value)] }
+            case Gen1Commands.recordDurationSet, Gen1Commands.recordDurationQuery:
+                DebugLogStore.logBLEEvent("Gen1 record duration reply", detail: "command=\(String(format: "0x%02X", frame.command)) payloadBytes=\(payload.count) value=\(payload.first.map(Int.init) ?? -1) pending=\(isRecordDurationSettingPending) SET_ack_is_not_duration")
+                if let seconds = gen1RecordDurationSetting.receive(command: frame.command, payload: payload) {
+                    settingsRecordDurationSeconds = seconds
+                    if isRecordDurationSettingPending, !gen1RecordDurationSetting.isPending {
+                        publishRecordDurationSettingResult()
+                    }
+                }
             case Gen1Commands.tutorial:
                 guard payload.count >= 2 else {
                     DebugLogStore.logBLEEvent("Gen1 guide acknowledgement ignored", detail: "reason=payload_too_short bytes=\(payload.count)", capturedAt: capturedAt)

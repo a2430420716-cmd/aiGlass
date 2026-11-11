@@ -11,6 +11,7 @@ xcrun swiftc -module-cache-path "$test_dir/cache" "$protocol" \
 "$test_dir/protocol"
 bash Tests/run-gen1-control-diagnostics-tests.sh
 bash Tests/run-gen1-background-query-tests.sh
+bash Tests/run-gen1-record-duration-tests.sh
 bash Tests/run-gen1-guide-tests.sh
 bash Tests/run-gen1-guide-controller-tests.sh
 xcrun swiftc -module-cache-path "$test_dir/cache" "$protocol" \

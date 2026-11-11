@@ -12,6 +12,7 @@ struct BindDeviceRequest {
 struct DeviceModelItem: Decodable, Identifiable, Equatable {
     let id: Int
     let modelName: String
+    let modelNameAlias: String?
     let eqName: String
     let prepare: String?
     let enPrepare: String?
@@ -28,13 +29,15 @@ struct DeviceModelItem: Decodable, Identifiable, Equatable {
         case sort
         case status
         case modelName = "model_name"
+        case modelNameAlias = "model_name_alias"
         case eqName = "eq_name"
         case isWatermark = "is_watermark"
     }
 
     /// 列表展示名
     var displayName: String {
-        modelName
+        let alias = modelNameAlias?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return alias.isEmpty ? modelName : alias
     }
 
     /// Missing English instructions use the page's localized fallback, never Chinese HTML.
