@@ -66,7 +66,7 @@ jobs:
         run: |
           bash Tests/run-gen1-bluetooth-ota-tests.sh
           bash Tests/run-gen1-ota-version-tests.sh
-          xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-recovery-cache" AIGlass/Gen1BluetoothOtaRecoveryStore.swift Tests/Gen1BluetoothOtaRecoveryTests.swift -o "$RUNNER_TEMP/gen1-recovery-tests"
+          xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-recovery-cache" AIGlass/Gen1FirmwareUpdateProtocol.swift AIGlass/Gen1BluetoothOtaRecoveryStore.swift Tests/Gen1BluetoothOtaRecoveryTests.swift -o "$RUNNER_TEMP/gen1-recovery-tests"
           "$RUNNER_TEMP/gen1-recovery-tests"
       - name: 验证正式接口路由
         timeout-minutes: 5
@@ -111,7 +111,7 @@ jobs:
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
-          name: AIGlass-1.1.6-176-${{ inputs.export_method }}
+          name: AIGlass-1.1.6-177-${{ inputs.export_method }}
           path: build/ipa/*.ipa
           if-no-files-found: error
           retention-days: 7

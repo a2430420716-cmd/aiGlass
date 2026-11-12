@@ -61,7 +61,7 @@ struct UserInfo: Decodable {
         self.bluetoothBySerialNumber = bluetoothBySerialNumber
     }
 
-    func updating(nickname: String? = nil, headimg: String? = nil) -> UserInfo {
+    func updating(nickname: String? = nil, headimg: String? = nil, devices: [UserDevice]? = nil) -> UserInfo {
         UserInfo(
             id: id,
             phone: phone,
@@ -70,7 +70,7 @@ struct UserInfo: Decodable {
             headimg: headimg ?? self.headimg,
             openid: openid,
             appInfo: appInfo,
-            device: device,
+            device: devices ?? device,
             firmwareBySerialNumber: firmwareBySerialNumber,
             bluetoothBySerialNumber: bluetoothBySerialNumber
         )
@@ -248,7 +248,9 @@ struct AppVersionInfo: Decodable {
 
 struct UserDevice: Decodable, Identifiable, Equatable {
     let id: Int?
-    let deviceName: String?
+    /// Physical device ID used by update_device_name. `id` identifies the binding.
+    let deviceID: Int?
+    private(set) var deviceName: String?
     let eqName: String?
     let modelName: String?
     /// 绑定用蓝牙标识（iOS = CoreBluetooth UUID）。
@@ -261,6 +263,7 @@ struct UserDevice: Decodable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id
+        case deviceID = "device_id"
         case battery
         case sn
         case deviceName = "device_name"
@@ -283,6 +286,7 @@ struct UserDevice: Decodable, Identifiable, Equatable {
         } else {
             id = nil
         }
+        deviceID = Self.decodeString(from: container, forKey: .deviceID).flatMap { Int($0) }
         deviceName = Self.decodeString(from: container, forKey: .deviceName)
         eqName = Self.decodeString(from: container, forKey: .eqName)
         modelName = Self.decodeString(from: container, forKey: .modelName)
@@ -334,6 +338,12 @@ struct UserDevice: Decodable, Identifiable, Equatable {
             return String(value)
         }
         return nil
+    }
+
+    func updatingName(_ name: String) -> UserDevice {
+        var updated = self
+        updated.deviceName = name
+        return updated
     }
 
     var displayName: String {

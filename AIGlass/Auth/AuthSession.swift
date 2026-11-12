@@ -236,6 +236,33 @@ final class AuthSession: ObservableObject {
         selectedHomeDeviceKey = request.serialNumber
     }
 
+    func updateDeviceName(serialNumber: String, name: String) async throws {
+        let newName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty else {
+            throw APIError.server(message: L10n.t("请输入设备名称", "Enter device name"), code: -1)
+        }
+        guard isLoggedIn, let requestToken = token, !requestToken.isEmpty,
+              let info = userInfo,
+              let device = info.device.first(where: {
+                  $0.serialNumber.caseInsensitiveCompare(serialNumber) == .orderedSame
+              }), let deviceID = device.deviceID, deviceID > 0 else {
+            throw APIError.server(message: L10n.t("设备信息缺失，请刷新后重试", "Device information is missing. Refresh and try again."), code: -1)
+        }
+        try await DeviceService.updateDeviceName(deviceID: deviceID, name: newName, token: requestToken)
+        guard isLoggedIn, token == requestToken, let current = userInfo, current.id == info.id,
+              current.device.contains(where: {
+                  $0.deviceID == deviceID && $0.serialNumber.caseInsensitiveCompare(serialNumber) == .orderedSame
+              }) else { throw CancellationError() }
+        // A userinfo fetch started before this write must not restore the old name.
+        invalidateInFlightUserInfoRefresh(reason: "updateDeviceName")
+        let devices = current.device.map { item in
+            item.deviceID == deviceID && item.serialNumber.caseInsensitiveCompare(serialNumber) == .orderedSame
+                ? item.updatingName(newName) : item
+        }
+        DeviceDisplayNameStore.remove(serialNumber: serialNumber)
+        userInfo = current.updating(devices: devices)
+    }
+
     /// 服务端「该设备已绑定用户」类错误。
     static func isDeviceAlreadyBoundError(_ error: Error) -> Bool {
         let message = ((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)

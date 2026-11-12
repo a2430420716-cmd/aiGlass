@@ -723,6 +723,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
     var currentPeripheralName: String? { connectedPeripheral?.name }
 
+    /// Passive snapshot for recording/connection correlation; never starts a reconnect.
+    var connectionAvailabilityDiagnosticDetail: String {
+        "state=\(connectionState) bleReady=\(isReady) matchingCard=\(deviceCardPresenceProvider?() ?? false) target=\(connectedPeripheral?.identifier.uuidString ?? "nil") saved=\(savedPeripheralUUIDString ?? "nil") nativeState=\(connectedPeripheral.map { peripheralStateDescription($0.state) } ?? "nil") generation=\(deviceGeneration.rawValue)"
+    }
+
     func matchesCurrentDevice(serialNumber: String?, hardwareSN: String?) -> Bool {
         DeviceAvailabilityPolicy.matches(
             serialNumber: serialNumber,
@@ -4688,7 +4693,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     /// 退出登录时断开 BLE，并清除已保存的设备标识。
-    func disconnectAndClearSession() {
+    func disconnectAndClearSession(reason: String = #function, file: StaticString = #fileID, line: UInt = #line) {
+        connectLog("disconnect and clear session requested",
+                   detail: "source=\(reason) file=\(file) line=\(line) \(connectionAvailabilityDiagnosticDetail)")
         homeSelectionRetryPolicies.removeAll()
         gen2OtaRecovery.finish()
         // A suspended vendor OTA must not restore an explicitly removed binding.
@@ -7610,6 +7617,16 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         case "stor0":
             deviceStorage = result.value
         case "ver28":
+            // Reconcile interrupted OTA only from a newly received reply. Never
+            // clear recovery from cached versions, another device, or SDK success.
+            if deviceGeneration == .gen1G5K61, !isFirmwareUpgradeFlowBusy,
+               let targetID = connectedPeripheral?.identifier, savedPeripheralID() == targetID,
+               Gen1BluetoothOtaRecoveryStore().clearAfterVersionConfirmation(
+                   targetID: targetID, actualVersion: result.value, accountID: gen1ImportAccount(for: targetID)
+               ) {
+                DebugLogStore.logBLEEvent("Gen1 Bluetooth OTA recovery version confirmed",
+                    detail: "target=\(targetID) actualVersion=\(result.value) markerCleared=true source=fresh_normal_service_reply")
+            }
             deviceVersion2800 = result.value
         case "ver63":
             deviceVersion6350 = result.value

@@ -234,7 +234,16 @@ final class PairingCoordinator: ObservableObject {
     var discoveredPairingDevices: [DiscoveredBLEDevice] {
         switch pairingModel {
         case .astraA1, .luminaL1, .unknown:
-            return astraA1BleManager.discoveredPairingDevices
+            return astraA1BleManager.discoveredPairingDevices.map { discovered in
+                guard let bound = authSession?.userInfo?.device.first(where: {
+                    $0.serialNumber.caseInsensitiveCompare(discovered.id.uuidString) == .orderedSame
+                }) else { return discovered }
+                let legacyName = DeviceDisplayNameStore.displayName(for: DeviceCardData(device: bound))
+                let serverName = bound.deviceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let name = legacyName ?? (serverName.isEmpty ? discovered.displayName : serverName)
+                // Display aliases never replace UUIDs or change scan/model filtering.
+                return DiscoveredBLEDevice(id: discovered.id, displayName: name, rssi: discovered.rssi)
+            }
         case .none:
             return []
         }

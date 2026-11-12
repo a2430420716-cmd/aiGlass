@@ -22,7 +22,10 @@ enum Gen1BluetoothOtaRecoveryTests {
         precondition(reopened.record(for: targetA) == recordA)
         precondition(reopened.record(for: targetB) == nil)
         reopened.markImageSubmitted(recordB)
-        reopened.clearAfterSuccess(targetID: targetB)
+        precondition(!reopened.clearAfterVersionConfirmation(targetID: targetB, actualVersion: ""))
+        precondition(!reopened.clearAfterVersionConfirmation(targetID: targetB, actualVersion: recordA.version))
+        precondition(reopened.record(for: targetB) == recordB)
+        precondition(reopened.clearAfterVersionConfirmation(targetID: targetB, actualVersion: "V3.26.1.15"))
         precondition(store.record(for: targetA) == recordA)
         precondition(store.record(for: targetB) == nil)
         var loaderRecord = recordA
@@ -42,7 +45,15 @@ enum Gen1BluetoothOtaRecoveryTests {
         """
         let oldRecord = try! JSONDecoder().decode(Gen1BluetoothOtaRecoveryStore.Record.self, from: Data(oldJSON.utf8))
         precondition(oldRecord.otaMAC == nil && oldRecord.accountID == nil)
-        store.clearAfterSuccess(targetID: targetA)
+        // SDK completion/reopening cannot clear evidence; only a matching fresh
+        // normal-service version from the owning account can authorize it.
+        precondition(!store.clearAfterVersionConfirmation(targetID: UUID(), actualVersion: loaderRecord.version, accountID: "account-a"))
+        precondition(!store.clearAfterVersionConfirmation(targetID: targetA, actualVersion: loaderRecord.version, accountID: "account-b"))
+        precondition(!store.clearAfterVersionConfirmation(targetID: targetA, actualVersion: loaderRecord.version))
+        precondition(!store.clearAfterVersionConfirmation(targetID: targetA, actualVersion: "03.26.01.13", accountID: "account-a"))
+        precondition(!store.clearAfterVersionConfirmation(targetID: targetA, actualVersion: " ", accountID: "account-a"))
+        precondition(reopened.record(for: targetA) == loaderRecord)
+        precondition(store.clearAfterVersionConfirmation(targetID: targetA, actualVersion: loaderRecord.version, accountID: "account-a"))
         precondition(reopened.record(for: targetA) == nil)
         print("Gen1 Bluetooth OTA recovery persistence tests passed")
     }

@@ -39,11 +39,16 @@ struct Gen1BluetoothOtaRecoveryStore {
         defaults.set(records, forKey: key)
     }
 
-    /// Called after terminal SDK success or a fresh matching post-reboot version,
-    /// never for a transfer percentage or the loader's reboot alone.
-    func clearAfterSuccess(targetID: UUID) {
+    /// The caller must supply a fresh normal-service reply from this bound device.
+    /// SDK success, transfer percentage and a reboot never authorize clearance.
+    @discardableResult
+    func clearAfterVersionConfirmation(targetID: UUID, actualVersion: String, accountID: String? = nil) -> Bool {
+        guard let record = record(for: targetID),
+              record.accountID == nil || (record.accountID?.isEmpty == false && record.accountID == accountID),
+              Gen1FirmwareUpdateProtocol.versionsMatch(actualVersion, target: record.version) else { return false }
         var records = defaults.dictionary(forKey: key) ?? [:]
         records.removeValue(forKey: targetID.uuidString)
         defaults.set(records, forKey: key)
+        return true
     }
 }

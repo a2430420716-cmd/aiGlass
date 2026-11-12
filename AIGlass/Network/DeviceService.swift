@@ -489,6 +489,19 @@ enum DeviceService {
         )
     }
 
+    /// Same form contract as Android. `id` is the physical device_id, not the binding id.
+    static func updateDeviceName(deviceID: Int, name: String, token: String) async throws {
+        guard let url = URL(string: "device/update_device_name", relativeTo: APIClient.baseURL)?.absoluteURL else {
+            throw APIError.invalidURL
+        }
+        _ = try await APIClient.postForm(
+            url: url,
+            body: ["id": String(deviceID), "device_name": name],
+            authorization: token,
+            as: EmptyResult.self
+        )
+    }
+
     /// 解绑设备。
     /// - Parameters:
     ///   - serialNumber: 蓝牙标识（iOS = CoreBluetooth UUID），对应 `serial_number`

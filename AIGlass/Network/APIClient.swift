@@ -151,6 +151,7 @@ enum APIClient {
     static func postForm<T: Decodable>(
         url: URL,
         body: [String: String],
+        authorization: String? = nil,
         sensitiveFields: Set<String> = [],
         as type: T.Type = T.self
     ) async throws -> T? {
@@ -158,7 +159,9 @@ enum APIClient {
         formComponents.queryItems = body
             .sorted { $0.key < $1.key }
             .map { URLQueryItem(name: $0.key, value: $0.value) }
-        guard let encodedBody = formComponents.percentEncodedQuery?.data(using: .utf8) else {
+        // Form decoders treat + as a space, even when URL query encoding leaves it literal.
+        guard let encodedBody = formComponents.percentEncodedQuery?
+            .replacingOccurrences(of: "+", with: "%2B").data(using: .utf8) else {
             throw APIError.invalidURL
         }
 
@@ -169,6 +172,9 @@ enum APIClient {
         AppRequestHeaders.apply(to: &request)
         request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let authorization, !authorization.isEmpty {
+            request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = encodedBody
         request.timeoutInterval = 20
 
@@ -233,6 +239,8 @@ enum APIClient {
                 code: status.code
             )
         }
+        // Write-only endpoints may return null, [] or omit result on success.
+        if T.self == EmptyResult.self { return nil }
         guard let apiResponse = try? decoder.decode(APIResponse<T>.self, from: data),
               let result = apiResponse.result else {
             throw APIError.decoding

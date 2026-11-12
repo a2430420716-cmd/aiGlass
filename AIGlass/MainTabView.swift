@@ -148,6 +148,9 @@ struct MainTabView: View {
             scheduleFirmwareUpdateRefresh()
         }
         .onChangeCompat(of: deviceFirmwareUpdateCoordinator.bluetoothUpdate) { _ in
+            if deviceFirmwareUpdateCoordinator.bluetoothUpdate?.isGen1BluetoothRecovery != true {
+                showsGen1RecoveryPrompt = false
+            }
             showGen1RecoveryPromptIfNeeded()
         }
         .task(id: pairingCoordinator.navigationResetID) {

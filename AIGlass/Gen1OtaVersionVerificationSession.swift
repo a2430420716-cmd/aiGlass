@@ -73,7 +73,8 @@ final class Gen1OtaVersionVerificationSession {
         log("version reply actual=\(value.debugDescription) target=\(targetVersion.debugDescription) matches=\(matches) queryElapsed=\(now() - versionStartedAt)")
     }
 
-    func run(targetVersion: String) async throws {
+    @discardableResult
+    func run(targetVersion: String) async throws -> String {
         precondition(!started, "A version verification session cannot be reused")
         started = true
         active = true
@@ -100,7 +101,7 @@ final class Gen1OtaVersionVerificationSession {
             // crosses the deadline. Consume that reply before evaluating a timeout.
             if let matchedVersion {
                 log("phase=confirmed actual=\(matchedVersion.debugDescription) elapsed=\(now() - startedAt)")
-                return
+                return matchedVersion
             }
             let current = now()
             let ready = isReady()

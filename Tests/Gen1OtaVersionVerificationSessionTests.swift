@@ -73,7 +73,7 @@ enum Gen1OtaVersionVerificationSessionTests {
         }
 
         func reply(_ version: String) { session.receive(payload: Data(version.utf8)) }
-        func run() async throws { try await session.run(targetVersion: target) }
+        func run() async throws { _ = try await session.run(targetVersion: target) }
     }
 
     private static func expectFailure(_ h: Harness, _ expected: Session.Failure) async {
@@ -94,7 +94,8 @@ enum Gen1OtaVersionVerificationSessionTests {
             h.reply("\0  V3.26.1.7\r\n")
             return true
         }
-        try await h.run()
+        let actual = try await h.session.run(targetVersion: h.target)
+        check(actual == "V3.26.1.7", "Verification returns the fresh matched device version")
         check(h.commands == [3], "Query starts after the full reboot delay")
         check(h.clock == 3, "A synchronous fresh matching reply completes immediately")
         check(h.logs.contains { $0.contains("matches=true") }, "Matching reply recorded")
@@ -109,7 +110,8 @@ enum Gen1OtaVersionVerificationSessionTests {
             multiple.reply("03.26.01.05")
             return true
         }
-        try await multiple.run()
+        let firstMatch = try await multiple.session.run(targetVersion: multiple.target)
+        check(firstMatch == multiple.target, "Later mismatches cannot replace the confirmed value")
         check(multiple.logs.contains { $0.contains("phase=confirmed actual=\"03.26.01.07\"") }, "Confirmation records the matching reply even if another version follows")
     }
 

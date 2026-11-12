@@ -87,6 +87,7 @@ final class ConversationTranslationController: ObservableObject {
         isActive = true
         self.ble = ble
         self.token = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        logRecordingLifecycle("page appeared")
         // Android only disables local AI capture here. Sending an AI stop command
         // can race the translation start on the same device microphone.
         AIVoiceChatManager.shared.setVoiceChatCaptureEnabled(false)
@@ -95,7 +96,9 @@ final class ConversationTranslationController: ObservableObject {
             self?.handleGlassesNotify(command: command, packet: packet)
         }
         bleStateSubscription = ble.$connectionState.dropFirst().sink { [weak self] state in
-            guard let self, self.isActive, self.glassesState.hasSentCommand else { return }
+            guard let self, self.isActive else { return }
+            self.logRecordingLifecycle("BLE state published: \(state)")
+            guard self.glassesState.hasSentCommand else { return }
             if case .ready = state { return }
             if self.glassesStopping {
                 self.finishGlassesStream(reason: "BLE disconnected while draining", confirmed: false)
@@ -108,6 +111,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     func stop() {
+        logRecordingLifecycle("page disappearing")
         isActive = false
         permissionGeneration += 1
         bleStateSubscription?.cancel()
@@ -140,6 +144,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     func toggleGlassesRecording() {
+        logRecordingLifecycle("glasses button tapped")
         permissionGeneration += 1
         guard isActive, !glassesStopping else { return }
         // 连接中再点一次：取消开麦。
@@ -185,6 +190,7 @@ final class ConversationTranslationController: ObservableObject {
             stopPhoneRecording()
         }
         guard ble?.isDeviceAvailable == true else {
+            logRecordingLifecycle("glasses button rejected: bound device unavailable")
             alertMessage = L10n.t("请先连接已绑定的眼镜", "Please connect your bound glasses first")
             return
         }
@@ -204,6 +210,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     func togglePhoneRecording() {
+        logRecordingLifecycle("phone button tapped")
         guard isActive else { return }
         permissionGeneration += 1
         let permissionRequest = permissionGeneration
@@ -231,6 +238,7 @@ final class ConversationTranslationController: ObservableObject {
         Task {
             let granted = await requestMicrophonePermission()
             guard isActive, permissionGeneration == permissionRequest else { return }
+            logRecordingLifecycle("phone microphone permission granted=\(granted)")
             guard granted else {
                 alertMessage = L10n.t("请开启麦克风权限后重试", "Enable microphone access and try again")
                 statusText = L10n.t("请开启麦克风权限后重试", "Enable microphone access and try again")
@@ -257,6 +265,11 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     // MARK: - Turn lifecycle
+
+    private func logRecordingLifecycle(_ event: String) {
+        DebugLogStore.logTranslation("conversation recording lifecycle", detail:
+            "event=\(event) active=\(isActive) side=\(String(describing: activeSide)) glassesPhase=\(glassesState.phase) phoneRecording=\(phoneRecording) phoneWaiting=\(waitingPhoneSocketReady) ble={\(ble?.connectionAvailabilityDiagnosticDetail ?? "missing_manager")}")
+    }
 
     private func beginTranslationTurn() {
         deferredGlassesSpeech.cancel()
@@ -304,6 +317,7 @@ final class ConversationTranslationController: ObservableObject {
     private func startGlassesCommand() {
         guard isActive, glassesConnecting, glassesState.shouldSendStart else { return }
         guard ble?.isDeviceAvailable == true else {
+            logRecordingLifecycle("glasses START rejected: bound device unavailable")
             failGlassesStart(reason: "Bound glasses unavailable before START")
             alertMessage = L10n.t("请先连接已绑定的眼镜", "Please connect your bound glasses first")
             return
@@ -323,6 +337,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     private func startPhoneRecording() {
+        logRecordingLifecycle("phone service connection requested")
         guard !token.isEmpty else {
             alertMessage = L10n.t("未登录，无法使用对话翻译", "Not signed in, cannot use conversation translation")
             return
@@ -336,6 +351,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     private func beginPhoneAudioRecord() {
+        logRecordingLifecycle("phone microphone start requested")
         guard manager?.markLocalRecordingStarted() == true else {
             waitingPhoneSocketReady = false
             phoneRecording = false
@@ -404,7 +420,9 @@ final class ConversationTranslationController: ObservableObject {
         cancelGlassesStartTimeout()
         phoneAutoStopTask?.cancel()
         phoneAutoStopTask = nil
-        if glassesRecording || activeSide == .glasses {
+        // A selected side or pending WebSocket never establishes mic ownership.
+        // Do not send STOP after a rejected start, service timeout or phone-only turn.
+        if glassesState.hasSentCommand {
             manager?.markLocalRecordingStopped(reason: "conversation stopAll glasses")
             _ = ble?.stopTranslateRecording()
             ble?.resetTranslateRecordingState()

@@ -53,11 +53,13 @@ Aligned with `glasses(3).zip`: Android `Gen1OtaFailureStore`,
   no firmware has been submitted, so Android also excludes it from forced recovery.
   Ordinary standby reconnect and Gen2
   updates do not use this retry policy.
-- Clear recovery evidence only on SDK terminal success or a fresh matching
-  version after the second transfer's reboot; 100% alone does not clear it. Normal-service fresh
-  version verification still decides whether the UI confirms success or shows
-  an unconfirmed result. This intentionally differs from Android's optimistic
-  success on cancellation after a complete transfer.
+- Clear recovery evidence only after a fresh matching normal-service version
+  from the same device and owning account. SDK terminal success, 100%, and reboot
+  retain the marker while the UI waits at 95% for version confirmation. After app
+  restart, a fresh matching Bluetooth-version reply also clears the marker and
+  withdraws the recovery reminder. Old/missing versions retain recovery evidence.
+  This intentionally differs from Android's optimistic success on cancellation
+  after a complete transfer.
 - Logs record reminder, target, session, image submission, retained failures
   and marker clearance. Loader matching also records the SDK's expected MAC,
   matching peripheral name/UUID, advertised services and at most 64 manufacturer

@@ -225,6 +225,10 @@ struct HomeView: View {
             if let customName = DeviceDisplayNameStore.displayName(for: card) {
                 return card.withDisplayName(customName)
             }
+            if let serverDevice = authSession.userInfo?.device.first(where: { $0.serialNumber == card.serialNumber }),
+               serverDevice.deviceName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                return card
+            }
             if ble.matchesCurrentDevice(serialNumber: card.serialNumber, hardwareSN: card.hardwareSN),
                let name = [ble.deviceName, ble.currentPeripheralName]
                 .compactMap({ $0?.trimmingCharacters(in: .whitespacesAndNewlines) })
@@ -291,7 +295,7 @@ struct HomeView: View {
                 }
                 .sheet(item: $editingDevice) { device in
                     DeviceNameEditSheet(currentName: device.name ?? "") { newName in
-                        DeviceDisplayNameStore.save(newName, for: device)
+                        try await authSession.updateDeviceName(serialNumber: device.serialNumber ?? "", name: newName)
                         deviceNameRevision += 1
                     }
                     .compatiblePresentationDetents([.height(270)])
@@ -890,7 +894,7 @@ struct HomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius))
         .shadow(color: AppTheme.cardShadow, radius: 10, y: 4)
         .frame(maxWidth: .infinity)
-        .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+        .opacity(ble.isDeviceAvailable ? 1 : 0.5)
         .allowsHitTesting(ble.isDeviceAvailable)
     }
 
@@ -908,7 +912,7 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable || ble.isTakingPhoto || ble.photoCompleted)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                 }
 
                 if showsCapability(\.video) {
@@ -922,7 +926,7 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable || ble.isVideoStarting || ble.isVideoStopping || ble.videoCompleted)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                 }
             }
 
@@ -939,7 +943,7 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                     .background {
                         NavigationLink(
                             isActive: $navigateToAIRecording,
@@ -964,7 +968,7 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                     .background {
                         NavigationLink(
                             isActive: $navigateToAITranslation,
@@ -991,7 +995,7 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                 }
 
                 if showsCapability(\.eq) {
@@ -1006,7 +1010,7 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                 }
             }
 
@@ -1023,7 +1027,7 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                     .background {
                         NavigationLink(
                             isActive: $navigateToNewbieGuide,
@@ -1052,7 +1056,7 @@ struct HomeView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!ble.isDeviceAvailable)
-                .opacity(ble.isDeviceAvailable ? 1 : 0.45)
+                .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                 .background {
                     NavigationLink(
                         isActive: $navigateToOperationGuide,
@@ -1457,7 +1461,7 @@ private struct DeviceCardView: View {
                     width: HomeLayout.glassImageWidth,
                     height: HomeLayout.glassImageHeight
                 )
-                .opacity(device.isFindDevice ? 0.5 : (device.isConnected ? 1 : 0.55))
+                .opacity(device.isFindDevice ? 0.5 : (device.isConnected ? 1 : 0.5))
 
             Spacer(minLength: 0)
         }
@@ -1472,10 +1476,12 @@ private struct DeviceNameEditSheet: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var isNameFocused: Bool
     @State private var draftName: String
+    @State private var isSaving = false
+    @State private var errorMessage: String?
 
-    let onSave: (String) -> Void
+    let onSave: (String) async throws -> Void
 
-    init(currentName: String, onSave: @escaping (String) -> Void) {
+    init(currentName: String, onSave: @escaping (String) async throws -> Void) {
         _draftName = State(initialValue: currentName)
         self.onSave = onSave
     }
@@ -1514,9 +1520,10 @@ private struct DeviceNameEditSheet: View {
                         .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .disabled(isSaving)
 
                 Button(action: save) {
-                    Text(L10n.t("确定", "Confirm"))
+                    Text(isSaving ? L10n.t("保存中…", "Saving…") : L10n.t("确定", "Confirm"))
                         .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
@@ -1525,7 +1532,7 @@ private struct DeviceNameEditSheet: View {
                         .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .disabled(normalizedName.isEmpty)
+                .disabled(normalizedName.isEmpty || isSaving)
                 .opacity(normalizedName.isEmpty ? 0.45 : 1)
             }
         }
@@ -1534,6 +1541,15 @@ private struct DeviceNameEditSheet: View {
         .padding(.bottom, 16)
         .frame(maxWidth: .infinity)
         .background(AppTheme.cardBackground)
+        .interactiveDismissDisabled(isSaving)
+        .alert(L10n.t("提示", "Notice"), isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button(L10n.t("确定", "OK"), role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "")
+        }
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                 isNameFocused = true
@@ -1542,9 +1558,19 @@ private struct DeviceNameEditSheet: View {
     }
 
     private func save() {
-        guard !normalizedName.isEmpty else { return }
-        onSave(normalizedName)
-        dismiss()
+        guard !normalizedName.isEmpty, !isSaving else { return }
+        let name = normalizedName
+        isSaving = true
+        isNameFocused = false
+        Task { @MainActor in
+            defer { isSaving = false }
+            do {
+                try await onSave(name)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 }
 

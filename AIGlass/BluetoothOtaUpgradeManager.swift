@@ -1011,9 +1011,11 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 ble.resumeNormalConnectionAfterGen1OTA()
                 state = .upgrading(percent: 100)
                 // A 100% transfer or bootloader disconnect alone is not success.
-                try await verifyGen1Version(command: 0x14, targetVersion: serverInfo.version,
-                                            targetIdentifier: targetIdentifier, ble: ble, log: log)
-                Gen1BluetoothOtaRecoveryStore().clearAfterSuccess(targetID: peripheralIdentifier)
+                let actualVersion = try await verifyGen1Version(command: 0x14, targetVersion: serverInfo.version,
+                                                               targetIdentifier: targetIdentifier, ble: ble, log: log)
+                Gen1BluetoothOtaRecoveryStore().clearAfterVersionConfirmation(
+                    targetID: peripheralIdentifier, actualVersion: actualVersion, accountID: ownerAccountID
+                )
                 state = .completed
                 log("completed: fresh device version matched target")
             }
@@ -1102,7 +1104,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
     }
 
     private func verifyGen1Version(command: UInt8, targetVersion: String, targetIdentifier: String,
-                                  ble: AstraA1BleManager, log: @escaping (String) -> Void) async throws {
+                                  ble: AstraA1BleManager, log: @escaping (String) -> Void) async throws -> String {
         isVerifyingGen1Version = true
         defer { isVerifyingGen1Version = false }
         let session = Gen1OtaVersionVerificationSession(send: {
@@ -1127,7 +1129,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
             session.receive(payload: frame.payload)
         }
         defer { subscription.cancel() }
-        try await session.run(targetVersion: targetVersion)
+        return try await session.run(targetVersion: targetVersion)
     }
 
     /// Actual cancellation additionally requires ownership and confirmed failure.

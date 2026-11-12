@@ -615,10 +615,9 @@ extension Gen1BluetoothOtaTransport: JLHashHandlerDelegate, JL_OTAManagerDelegat
                 return
             }
             onPhaseChanged?(sessionState.phase)
-            if let recoveryRecord {
-                Gen1BluetoothOtaRecoveryStore().clearAfterSuccess(targetID: recoveryRecord.targetID)
-                log("RCSP terminal success; recovery marker cleared")
-            }
+            // SDK success ends the transport, not the post-reboot version check.
+            // Keep the marker if the app is terminated while the UI is at 95%.
+            log("RCSP terminal success; retaining recovery marker until version confirmation")
             finish(.success(Void()))
         case .reboot:
             // A loader reboot is the boundary between transfers, not OTA success.
