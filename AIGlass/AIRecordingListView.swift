@@ -282,7 +282,7 @@ struct AIRecordingListView: View {
         Group {
             if isBatchMode {
                 HStack {
-                    Button(allRecordingsSelected ? L10n.t("取消全选", "Deselect All") : L10n.t("全选", "Select All")) {
+                    Button(allRecordingsSelected ? L10n.t("取消全选", "Deselect all") : L10n.t("全选", "Select all")) {
                         toggleSelectAll()
                     }
                     .frame(minWidth: 64, alignment: .leading)
@@ -439,7 +439,7 @@ struct AIRecordingListView: View {
         if case .completed(let imported, _) = recordingImport.state {
             return L10n.t("已导入 \(imported) 项", "Imported \(imported) item(s)")
         }
-        return L10n.t("\(pendingImportCount)个录音文件待导入", "\(pendingImportCount) recording(s) to import")
+        return L10n.t("\(pendingImportCount)个录音文件待导入", "\(pendingImportCount) recordings pending import")
     }
 
     private var importButtonTitle: String {
@@ -629,7 +629,7 @@ struct AIRecordingListView: View {
         Button {
             startRecording()
         } label: {
-            Text(L10n.t("开始录音", "Start Recording"))
+            Text(L10n.t("开始录音", "Start recording"))
                 .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                 .foregroundStyle(.white)
                 .frame(width: 265, height: 48)
@@ -658,7 +658,7 @@ struct AIRecordingListView: View {
             Button {
                 stopRecording()
             } label: {
-                Text(L10n.t("结束录音", "Stop Recording"))
+                Text(L10n.t("结束录音", "End recording"))
                     .font(AppTheme.notoSansSC(size: 12, weight: .medium))
                     .foregroundStyle(.white)
                     .frame(width: 88, height: 48)
@@ -707,7 +707,7 @@ struct AIRecordingListView: View {
             return
         }
         guard !mediaImport.isImporting else {
-            alertMessage = L10n.t("相册正在导入，请稍后再试", "Album import in progress, try again later")
+            alertMessage = L10n.t("相册正在导入，请稍后再试", "Gallery import in progress, try again later")
             return
         }
         // UI 由 ble.isAIRecording（对时后约 180ms）驱动。
@@ -742,7 +742,7 @@ struct AIRecordingListView: View {
         }
         let url = URL(fileURLWithPath: item.filePath)
         guard FileManager.default.fileExists(atPath: url.path) else {
-            showToast(L10n.t("录音文件不存在", "Recording file not found"))
+            showToast(L10n.t("录音文件不存在", "Recording file is missing"))
             return
         }
 
@@ -858,7 +858,7 @@ private struct RecordingDialogOverlay: View {
 
     private var editDialog: some View {
         VStack(spacing: 20) {
-            Text(L10n.t("编辑标题", "Edit Title"))
+            Text(L10n.t("编辑标题", "Edit title"))
                 .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                 .foregroundStyle(AppTheme.primaryText)
 

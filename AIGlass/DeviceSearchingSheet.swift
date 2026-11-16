@@ -30,7 +30,7 @@ struct DeviceSearchingSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Text(L10n.t("蓝牙配对请求", "Bluetooth Pairing Request"))
+            Text(L10n.t("蓝牙配对请求", "Bluetooth pairing request"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
                 .frame(maxWidth: .infinity)
@@ -169,7 +169,7 @@ private struct DeviceListOffsetPreferenceKey: PreferenceKey {
 #Preview("Searching") {
     DeviceSearchingSheet(
         devices: [],
-        loadingText: L10n.t("正在搜索设备", "Searching for devices"),
+        loadingText: L10n.t("正在搜索设备", "Searching for devices…"),
         isConnecting: false,
         isBinding: false,
         onPair: { _ in },
@@ -183,7 +183,7 @@ private struct DeviceListOffsetPreferenceKey: PreferenceKey {
             DiscoveredBLEDevice(id: UUID(), displayName: "L1 0036", rssi: -50),
             DiscoveredBLEDevice(id: UUID(), displayName: "L1 0037", rssi: -60)
         ],
-        loadingText: L10n.t("正在搜索设备", "Searching for devices"),
+        loadingText: L10n.t("正在搜索设备", "Searching for devices…"),
         isConnecting: false,
         isBinding: false,
         onPair: { _ in },

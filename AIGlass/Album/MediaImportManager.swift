@@ -348,7 +348,7 @@ final class MediaImportManager: ObservableObject {
         case .connectingWifi:
             return L10n.t("正在连接眼镜 Wi-Fi...", "Connecting to glasses Wi-Fi...")
         case .fetchingList:
-            return L10n.t("正在获取文件列表...", "Fetching file list...")
+            return L10n.t("正在获取文件列表...", "Getting file list")
         case .downloading(let current, let total, _):
             return L10n.t("正在导入 \(current)/\(total)", "Importing \(current)/\(total)")
         case .finishing:
@@ -361,7 +361,7 @@ final class MediaImportManager: ObservableObject {
                 return L10n.t("已导入 \(imported) 项，部分失败", "Imported \(imported) item(s), some failed")
             }
             if imported == 0 {
-                return L10n.t("眼镜中暂无可导入的照片或视频", "No photos or videos to import from the glasses")
+                return L10n.t("眼镜中暂无可导入的照片或视频", "No photos or videos to import")
             }
             return L10n.t("已导入 \(imported) 项", "Imported \(imported) item(s)")
         case .failed(let message):

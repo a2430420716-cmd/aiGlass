@@ -107,7 +107,7 @@ struct ConversationTranslationView: View {
     private var languagePanel: some View {
         HStack(spacing: 8) {
             languageButton(
-                caption: L10n.t("眼镜录入语言", "Glasses Input Language"),
+                caption: L10n.t("眼镜录入语言", "Glasses language"),
                 language: controller.glassesLanguage,
                 alignment: .leading,
                 frameAlignment: .leading
@@ -130,7 +130,7 @@ struct ConversationTranslationView: View {
             .disabled(controller.glassesActive || controller.phoneActive)
 
             languageButton(
-                caption: L10n.t("手机录入语言", "Phone Input Language"),
+                caption: L10n.t("手机录入语言", "Phone language"),
                 language: controller.phoneLanguage,
                 alignment: .trailing,
                 frameAlignment: .trailing
@@ -245,7 +245,7 @@ struct ConversationTranslationView: View {
         HStack {
             recordButton(
                 title: controller.glassesStopping ? L10n.t("正在结束…", "Finishing…")
-                    : (controller.glassesActive ? L10n.t("停止录音", "Stop Recording") : L10n.t("眼镜录音", "Glasses Record")),
+                    : (controller.glassesActive ? L10n.t("停止录音", "Stop recording") : L10n.t("眼镜录音", "Glasses record")),
                 idleImage: "android_conversation_glasses_record",
                 activeImages: [
                     "android_conversation_recording_1",
@@ -261,7 +261,7 @@ struct ConversationTranslationView: View {
             Spacer()
 
             recordButton(
-                title: controller.phoneActive ? L10n.t("停止录音", "Stop Recording") : L10n.t("手机录音", "Phone Record"),
+                title: controller.phoneActive ? L10n.t("停止录音", "Stop recording") : L10n.t("手机录音", "Phone record"),
                 idleImage: "android_conversation_phone_record",
                 activeImages: [
                     "android_conversation_recording_1",

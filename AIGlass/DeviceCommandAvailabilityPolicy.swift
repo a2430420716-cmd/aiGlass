@@ -16,7 +16,7 @@ enum DeviceCommandAvailabilityPolicy {
     static func requiresAvailableDevice(sharedCommand: String, payload: Data) -> Bool {
         switch sharedCommand {
         case "getdevinfo", "hasnewfile", "getdevstat", "geteqmode0", "getvidres0",
-             "getweardet", "getaivsil0", "getwakeup0", "getalgoinf", "getworkpat":
+             "getweardet", "getaivsil0", "getwakeup0", "getalgoinf", "getworkpat", "getledbri0":
             return false
         case "stopvideo0", "closewifi", "closewifi0", "otacancel0", "imgreccan0", "transferok":
             return false

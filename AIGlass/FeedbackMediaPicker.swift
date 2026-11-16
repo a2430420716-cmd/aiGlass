@@ -48,13 +48,13 @@ struct FeedbackMediaSourceSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             if showsCamera {
-                FeedbackMediaSheetActionButton(title: L10n.t("拍照", "Take Photo"), action: onCamera)
+                FeedbackMediaSheetActionButton(title: L10n.t("拍照", "Take photo"), action: onCamera)
                 FeedbackMediaSheetDivider()
-                FeedbackMediaSheetActionButton(title: L10n.t("录制视频", "Record Video"), action: onRecordVideo)
+                FeedbackMediaSheetActionButton(title: L10n.t("录制视频", "Record video"), action: onRecordVideo)
                 FeedbackMediaSheetDivider()
             }
 
-            FeedbackMediaSheetActionButton(title: L10n.t("从相册中选择", "Choose from Library"), action: onPhotoLibrary)
+            FeedbackMediaSheetActionButton(title: L10n.t("从相册中选择", "Choose from gallery"), action: onPhotoLibrary)
 
             FeedbackMediaSheetCancelButton(action: onCancel)
                 .padding(.top, 20)

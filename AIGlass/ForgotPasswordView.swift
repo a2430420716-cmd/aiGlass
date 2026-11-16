@@ -45,13 +45,13 @@ struct ForgotPasswordView: View {
 
     private var accountPlaceholder: String {
         isEmailAccount
-            ? L10n.t("请输入邮箱", "Enter email")
-            : L10n.t("请输入手机号", "Enter phone number")
+            ? L10n.t("请输入邮箱", "Email")
+            : L10n.t("请输入手机号", "Phone number")
     }
 
     private var accountErrorText: String {
         isEmailAccount
-            ? L10n.t("请输入正确的邮箱", "Enter a valid email")
+            ? L10n.t("请输入正确的邮箱", "Please enter a valid email")
             : L10n.t("请输入正确的手机号", "Enter a valid phone number")
     }
 
@@ -64,7 +64,7 @@ struct ForgotPasswordView: View {
         }
         return L10n.t(
             "未注册的手机号验证成功后将自动注册并绑定",
-            "Unregistered phone numbers will be registered and linked after verification"
+            "An unregistered phone number will be automatically registered and linked after successful verification."
         )
     }
 
@@ -168,7 +168,7 @@ struct ForgotPasswordView: View {
         .navigationBarHidden(true)
         .overlay(alignment: .bottom) {
             if showsSuccessToast {
-                Text(L10n.t("密码修改成功", "Password updated"))
+                Text(L10n.t("密码修改成功", "Password changed successfully"))
                     .font(AppTheme.notoSansSC(size: 14, weight: .medium))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 20)
@@ -195,7 +195,7 @@ struct ForgotPasswordView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("修改密码", "Change Password"))
+            Text(L10n.t("修改密码", "Change password"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -260,7 +260,7 @@ struct ForgotPasswordView: View {
                 TextField(
                     "",
                     text: $verificationCode,
-                    prompt: Text(L10n.t("请输入验证码", "Enter verification code"))
+                    prompt: Text(L10n.t("请输入验证码", "Code"))
                         .foregroundColor(AppTheme.secondaryText.opacity(0.55))
                 )
                 .keyboardType(.numberPad)
@@ -283,7 +283,7 @@ struct ForgotPasswordView: View {
                     } else {
                         Text(countdown > 0
                              ? L10n.t("\(countdown)s后重发", "Resend in \(countdown)s")
-                             : L10n.t("发送验证码", "Send Code"))
+                             : L10n.t("发送验证码", "Send code"))
                             .font(AppTheme.notoSansSC(size: 15, weight: .medium))
                             .foregroundStyle(
                                 canSendCode
@@ -301,7 +301,7 @@ struct ForgotPasswordView: View {
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
             passwordField(
-                placeholder: L10n.t("至少输入8位新密码", "At least 8 characters"),
+                placeholder: L10n.t("至少输入8位新密码", "New password (8+ characters)"),
                 text: $password,
                 isVisible: $showsPassword,
                 field: .password
@@ -369,7 +369,7 @@ struct ForgotPasswordView: View {
     private var passwordHint: some View {
         Text(L10n.t(
             "请输入8-18位密码，支持英文、数字、符号，至少包含\n其中两种，不能包含空格",
-            "Enter an 8–18 character password with letters, numbers, or symbols.\nInclude at least two types. No spaces."
+            "8-18 characters. Must contain at least two of the following: letters, numbers, or symbols. No spaces allowed."
         ))
             .font(AppTheme.notoSansSC(size: 12, weight: .regular))
             .foregroundStyle(AppTheme.secondaryText)
@@ -446,7 +446,7 @@ struct ForgotPasswordView: View {
         }
 
         guard !code.isEmpty else {
-            alertMessage = L10n.t("请输入验证码", "Enter verification code")
+            alertMessage = L10n.t("请输入验证码", "Enter the verification code")
             return
         }
 

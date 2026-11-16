@@ -46,7 +46,7 @@ struct AppUpdateView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("APP更新", "App Update"))
+            Text(L10n.t("APP更新", "APP update"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -70,7 +70,7 @@ struct AppUpdateView: View {
 
     private var currentVersionCard: some View {
         HStack {
-            Text(L10n.t("当前APP版本", "Current App Version"))
+            Text(L10n.t("当前APP版本", "Current APP version"))
                 .font(AppTheme.notoSansSC(size: 15, weight: .regular))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -109,12 +109,12 @@ struct AppUpdateView: View {
 
     private var updateContentSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(L10n.t("更新内容：", "What's New:"))
+            Text(L10n.t("更新内容：", "Release notes:"))
                 .font(AppTheme.notoSansSC(size: 15, weight: .semibold))
                 .foregroundStyle(AppTheme.primaryText)
 
             if updateItems.isEmpty {
-                Text(L10n.t("暂无更新说明", "No release notes"))
+                Text(L10n.t("暂无更新说明", "No release notes yet"))
                     .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                     .foregroundStyle(AppTheme.secondaryText)
             } else {
@@ -136,7 +136,7 @@ struct AppUpdateView: View {
         Button {
             AppBundleInfo.openAppStore(preferredURL: appInfo?.downloadURL)
         } label: {
-            Text(L10n.t("立即更新", "Update Now"))
+            Text(L10n.t("立即更新", "Update now"))
                 .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)

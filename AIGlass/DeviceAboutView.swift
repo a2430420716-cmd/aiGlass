@@ -71,7 +71,7 @@ struct DeviceAboutView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("关于设备", "About Device"))
+            Text(L10n.t("关于设备", "About device"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -96,14 +96,14 @@ struct DeviceAboutView: View {
     private var identityCard: some View {
         AboutInfoCard {
             DeviceAboutRow(
-                title: L10n.t("设备名称", "Device Name"),
+                title: L10n.t("设备名称", "Device name"),
                 value: displayName,
                 showsChevron: true
             )
             AboutCardDivider()
             DeviceAboutRow(title: L10n.t("设备型号", "Model"), value: displayHardwareModel)
             AboutCardDivider()
-            DeviceAboutRow(title: L10n.t("序列号", "Serial Number"), value: displaySerialNumber)
+            DeviceAboutRow(title: L10n.t("序列号", "Serial number"), value: displaySerialNumber)
             AboutCardDivider()
             DeviceAboutRow(title: L10n.t("蓝牙标识", "Bluetooth Identifier"), value: displayMACAddress)
         }
@@ -111,11 +111,11 @@ struct DeviceAboutView: View {
 
     private var systemCard: some View {
         AboutInfoCard {
-            DeviceAboutRow(title: L10n.t("系统名称", "System Name"), value: displaySystemName)
+            DeviceAboutRow(title: L10n.t("系统名称", "System name"), value: displaySystemName)
             AboutCardDivider()
-            DeviceAboutRow(title: L10n.t("蓝牙版本", "Bluetooth Version"), value: displayBluetoothVersion)
+            DeviceAboutRow(title: L10n.t("蓝牙版本", "Bluetooth version"), value: displayBluetoothVersion)
             AboutCardDivider()
-            DeviceAboutRow(title: L10n.t("固件版本", "Firmware Version"), value: displayFirmwareVersion)
+            DeviceAboutRow(title: L10n.t("固件版本", "Firmware version"), value: displayFirmwareVersion)
         }
     }
 
@@ -165,7 +165,7 @@ struct DeviceAboutView: View {
     private var displayBluetoothVersion: String {
         guard isAboutDeviceAvailable else { return placeholder }
         if ble.isQueryingAboutDeviceInfo, ble.deviceVersion2800 == nil {
-            return L10n.t("加载中...", "Loading...")
+            return L10n.t("加载中...", "Loading…")
         }
         return nonEmpty(ble.deviceVersion2800) ?? placeholder
     }
@@ -173,7 +173,7 @@ struct DeviceAboutView: View {
     private var displayFirmwareVersion: String {
         guard isAboutDeviceAvailable else { return placeholder }
         if ble.isQueryingAboutDeviceInfo, ble.deviceVersion6350 == nil {
-            return L10n.t("加载中...", "Loading...")
+            return L10n.t("加载中...", "Loading…")
         }
         return nonEmpty(ble.deviceVersion6350) ?? placeholder
     }
@@ -181,7 +181,7 @@ struct DeviceAboutView: View {
     private var displayStorage: String {
         guard isAboutDeviceAvailable else { return placeholder }
         if ble.isQueryingAboutDeviceInfo, ble.deviceStorage == nil {
-            return L10n.t("加载中...", "Loading...")
+            return L10n.t("加载中...", "Loading…")
         }
         if ble.deviceStorage != nil {
             return ble.deviceStorageDisplay

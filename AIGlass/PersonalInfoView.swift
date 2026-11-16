@@ -96,7 +96,7 @@ struct PersonalInfoView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("个人资料", "Profile"))
+            Text(L10n.t("个人资料", "Personal Info"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -124,7 +124,7 @@ struct PersonalInfoView: View {
                 showAvatarSourceSheet = true
             } content: {
                 PersonalInfoRow(
-                    title: L10n.t("头像", "Avatar"),
+                    title: L10n.t("头像", "Profile picture"),
                     showsChevron: true
                 ) {
                     ProfileAvatarView(
@@ -154,7 +154,7 @@ struct PersonalInfoView: View {
             PersonalInfoDivider()
 
             PersonalInfoRow(
-                title: L10n.t("手机号", "Phone Number"),
+                title: L10n.t("手机号", "Phone number"),
                 value: phoneNumber,
                 showsChevron: false
             )
@@ -261,11 +261,11 @@ private struct AvatarSourceSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             if showsCamera {
-                ProfileSheetActionButton(title: L10n.t("拍照", "Take Photo"), action: onCamera)
+                ProfileSheetActionButton(title: L10n.t("拍照", "Take photo"), action: onCamera)
                 ProfileSheetDivider()
             }
 
-            ProfileSheetActionButton(title: L10n.t("从相册中选择", "Choose from Library"), action: onPhotoLibrary)
+            ProfileSheetActionButton(title: L10n.t("从相册中选择", "Choose from gallery"), action: onPhotoLibrary)
 
             ProfileSheetCancelButton(action: onCancel)
                 .padding(.top, 20)

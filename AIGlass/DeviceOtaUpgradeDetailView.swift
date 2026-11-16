@@ -101,8 +101,8 @@ struct DeviceOtaUpgradeDetailView: View {
             if showsSuccess {
                 resultView(
                     imageName: "android_ota_success",
-                    title: L10n.t("升级成功", "Update Successful"),
-                    subtitle: L10n.t("快去体验新版本吧！", "Enjoy the new version!")
+                    title: L10n.t("升级成功", "Update successful"),
+                    subtitle: L10n.t("快去体验新版本吧！", "Try the new version now!")
                 )
             } else if let unconfirmedMessage {
                 resultView(
@@ -113,8 +113,8 @@ struct DeviceOtaUpgradeDetailView: View {
             } else if let failureMessage {
                 resultView(
                     imageName: "android_ota_failure",
-                    title: L10n.t("升级失败", "Update Failed"),
-                    subtitle: L10n.t("很抱歉，本次更新未能成功。", "Sorry, this update was unsuccessful."),
+                    title: L10n.t("升级失败", "Update failed"),
+                    subtitle: L10n.t("很抱歉，本次更新未能成功。", "Sorry, the update could not be completed."),
                     detail: failureMessage
                 )
             } else {
@@ -188,7 +188,7 @@ struct DeviceOtaUpgradeDetailView: View {
             get: { batteryAlertMessage != nil },
             set: { if !$0 { batteryAlertMessage = nil } }
         )) {
-            Button(L10n.t("知道了", "Got It"), role: .cancel) {}
+            Button(L10n.t("知道了", "Got it"), role: .cancel) {}
         } message: {
             Text(batteryAlertMessage ?? "")
         }
@@ -271,7 +271,7 @@ struct DeviceOtaUpgradeDetailView: View {
 
     private var contentSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(L10n.t("\(kind.contentTitlePrefix)\(displayVersion(offer.serverInfo.version))更新内容：", "\(kind.contentTitlePrefix) \(displayVersion(offer.serverInfo.version)) What's New:"))
+            Text(L10n.t("\(kind.contentTitlePrefix)\(displayVersion(offer.serverInfo.version))更新内容：", "\(kind.contentTitlePrefix) \(displayVersion(offer.serverInfo.version)) Release notes:"))
                 .font(AppTheme.notoSansSC(size: 15, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -313,7 +313,7 @@ struct DeviceOtaUpgradeDetailView: View {
                     .resizable()
                     .scaledToFit()
                     .frame(width: 16, height: 16)
-                Text(L10n.t("更新过程中眼镜系统功能不可使用", "Glasses features are unavailable during the update"))
+                Text(L10n.t("更新过程中眼镜系统功能不可使用", "Glasses system features are unavailable during the update"))
                     .font(AppTheme.notoSansSC(size: 13, weight: .regular))
                     .foregroundStyle(AppTheme.primaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -329,7 +329,7 @@ struct DeviceOtaUpgradeDetailView: View {
             : L10n.t("OTA升级需要", "OTA update requires "))
         text.foregroundColor = .black
         if kind == .firmware {
-            var connection = AttributedString(L10n.t("Wi-Fi连接", "Wi-Fi"))
+            var connection = AttributedString(L10n.t("Wi-Fi连接", "Wi-Fi connection"))
             connection.foregroundColor = .red
             text.append(connection)
             text.append(AttributedString(L10n.t("和", " and ")))
@@ -375,7 +375,7 @@ struct DeviceOtaUpgradeDetailView: View {
 
     private var upgradeButton: some View {
         Button(action: startUpgrade) {
-            Text(L10n.t("立即升级", "Update Now"))
+            Text(L10n.t("立即升级", "Update now"))
                 .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
@@ -575,7 +575,7 @@ struct DeviceOtaUpgradeDetailView: View {
     private var currentVersionDisplay: String {
         if ble.isQueryingDeviceVersionsAndStorage,
            liveCurrentVersion?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
-            return L10n.t("加载中...", "Loading...")
+            return L10n.t("加载中...", "Loading…")
         }
         if let live = liveCurrentVersion?.trimmingCharacters(in: .whitespacesAndNewlines), !live.isEmpty {
             return displayVersion(live)

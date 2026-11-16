@@ -63,13 +63,13 @@ struct TranslationRecordListView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(selectionMode ? L10n.t("已选择\(selectedIds.count)项", "\(selectedIds.count) Selected") : L10n.t("同声传译记录", "Interpretation History"))
+            Text(selectionMode ? L10n.t("已选择\(selectedIds.count)项", "\(selectedIds.count) selected") : L10n.t("同声传译记录", "Interpretation History"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
             HStack {
                 if selectionMode {
-                    Button(allRecordsSelected ? L10n.t("取消全选", "Deselect All") : L10n.t("全选", "Select All")) {
+                    Button(allRecordsSelected ? L10n.t("取消全选", "Deselect all") : L10n.t("全选", "Select all")) {
                         toggleSelectAll()
                     }
                     .font(AppTheme.notoSansSC(size: 16, weight: .medium))

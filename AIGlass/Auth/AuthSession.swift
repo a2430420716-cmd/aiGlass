@@ -155,6 +155,7 @@ final class AuthSession: ObservableObject {
         if inFlightUserInfoToken == requestToken, isLoadingUserInfo {
             print("[Auth] refreshUserInfo join in-flight for same token")
             while isLoadingUserInfo, inFlightUserInfoToken == requestToken, token == requestToken {
+                guard !Task.isCancelled else { return }
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
             return
@@ -239,7 +240,7 @@ final class AuthSession: ObservableObject {
     func updateDeviceName(serialNumber: String, name: String) async throws {
         let newName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !newName.isEmpty else {
-            throw APIError.server(message: L10n.t("请输入设备名称", "Enter device name"), code: -1)
+            throw APIError.server(message: L10n.t("请输入设备名称", "Enter a device name"), code: -1)
         }
         guard isLoggedIn, let requestToken = token, !requestToken.isEmpty,
               let info = userInfo,

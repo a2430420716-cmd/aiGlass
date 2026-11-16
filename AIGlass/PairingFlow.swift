@@ -267,7 +267,7 @@ final class PairingCoordinator: ObservableObject {
 
     var pairingSheetLoadingText: String {
         if isBindingDevice {
-            return L10n.t("正在绑定设备...", "Binding device...")
+            return L10n.t("正在绑定设备...", "Pairing device...")
         }
         if userConfirmedPairingDevice {
             if let bindStatusMessage, isBindFailureOrAlreadyBound(bindStatusMessage) {
@@ -296,9 +296,9 @@ final class PairingCoordinator: ObservableObject {
             if case .bluetoothUnavailable(let message) = astraA1BleManager.connectionState {
                 return message
             }
-            return L10n.t("正在搜索设备", "Searching for devices")
+            return L10n.t("正在搜索设备", "Searching for devices…")
         case .none:
-            return L10n.t("正在搜索设备", "Searching for devices")
+            return L10n.t("正在搜索设备", "Searching for devices…")
         }
     }
 
@@ -604,7 +604,7 @@ final class PairingCoordinator: ObservableObject {
 
         hasStartedBind = true
         isBindingDevice = true
-        bindStatusMessage = L10n.t("正在绑定设备...", "Binding device...")
+        bindStatusMessage = L10n.t("正在绑定设备...", "Pairing device...")
         objectWillChange.send()
 
         print("[Pairing] bind request model_name=\(request.modelName) device_name=\(request.deviceName) sn=\(request.sn)")

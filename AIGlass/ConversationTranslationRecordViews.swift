@@ -62,13 +62,13 @@ struct ConversationTranslationRecordListView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(selectionMode ? L10n.t("已选择\(selectedIds.count)项", "\(selectedIds.count) Selected") : L10n.t("对话翻译记录", "Conversation Records"))
+            Text(selectionMode ? L10n.t("已选择\(selectedIds.count)项", "\(selectedIds.count) selected") : L10n.t("对话翻译记录", "Conversation Translation Records"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
             HStack {
                 if selectionMode {
-                    Button(allRecordsSelected ? L10n.t("取消全选", "Deselect All") : L10n.t("全选", "Select All")) {
+                    Button(allRecordsSelected ? L10n.t("取消全选", "Deselect all") : L10n.t("全选", "Select all")) {
                         selectedIds = allRecordsSelected ? [] : Set(records.map(\.id))
                     }
                     .font(AppTheme.notoSansSC(size: 16, weight: .medium))
@@ -192,7 +192,7 @@ struct ConversationTranslationRecordListView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy/MM/dd HH:mm"
         let languages = "\(TranslationLanguage.fromDisplayName(record.glassesLanguage).displayName)-\(TranslationLanguage.fromDisplayName(record.phoneLanguage).displayName)"
-        return L10n.t("语言：", "Languages: ") + languages + "  " + formatter.string(from: record.updatedAt)
+        return L10n.t("语言：", "Language: ") + languages + "  " + formatter.string(from: record.updatedAt)
     }
 
     private func previewText(for record: ConversationTranslationRecord) -> String {

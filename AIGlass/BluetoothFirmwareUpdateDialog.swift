@@ -28,7 +28,7 @@ struct BluetoothFirmwareUpdateDialog: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 8)
 
-                Text(L10n.t("欢迎使用MOCO AI Glasses，为了提升体验，我们推荐升级至此版本。", "Welcome to MOCO AI Glasses. We recommend updating to this version for a better experience."))
+                Text(L10n.t("欢迎使用MOCO AI Glasses，为了提升体验，我们推荐升级至此版本。", "Welcome to MOCO AI Glasses. To improve your experience, we recommend updating to this version."))
                     .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                     .foregroundStyle(AppTheme.primaryText)
                     .lineSpacing(4)
@@ -74,7 +74,7 @@ struct BluetoothFirmwareUpdateDialog: View {
     private var actionButtons: some View {
         HStack(spacing: 12) {
             Button(action: onCancel) {
-                Text(showsUpgradeButton ? L10n.t("取消", "Cancel") : L10n.t("知道了", "Got It"))
+                Text(showsUpgradeButton ? L10n.t("取消", "Cancel") : L10n.t("知道了", "Got it"))
                     .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                     .foregroundStyle(showsUpgradeButton ? AppTheme.primaryText : .white)
                     .frame(maxWidth: .infinity)
@@ -85,7 +85,7 @@ struct BluetoothFirmwareUpdateDialog: View {
 
             if showsUpgradeButton {
                 Button(action: onUpgrade) {
-                    Text(L10n.t("立即升级", "Update Now"))
+                    Text(L10n.t("立即升级", "Update now"))
                         .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)

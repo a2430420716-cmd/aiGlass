@@ -9,9 +9,9 @@ struct AccountManagementView: View {
         @MainActor
         var title: String {
             switch self {
-            case .changePassword: return L10n.t("修改密码", "Change Password")
-            case .thirdPartyBinding: return L10n.t("第三方账号绑定", "Third-party Account")
-            case .signOut: return L10n.t("注销账号", "Delete Account")
+            case .changePassword: return L10n.t("修改密码", "Change password")
+            case .thirdPartyBinding: return L10n.t("第三方账号绑定", "Linked accounts")
+            case .signOut: return L10n.t("注销账号", "Delete account")
             }
         }
     }
@@ -117,7 +117,7 @@ struct AccountManagementView: View {
                 onConfirm: performFinalSignOut
             )
         }
-        .alert(L10n.t("注销账号", "Delete Account"), isPresented: $showsSignOutConfirm) {
+        .alert(L10n.t("注销账号", "Delete account"), isPresented: $showsSignOutConfirm) {
             Button(L10n.t("保留账号", "Keep Account"), role: .cancel) {}
             Button(L10n.t("注销", "Delete"), role: .destructive) {
                 startSignOutAfterUnbindingDevices()
@@ -125,7 +125,7 @@ struct AccountManagementView: View {
         } message: {
             Text(L10n.t(
                 "确定要注销当前账号吗？注销后将无法恢复。",
-                "Are you sure you want to delete this account? This cannot be undone."
+                "Delete the current account? This action cannot be undone."
             ))
         }
         .alert(
@@ -140,7 +140,7 @@ struct AccountManagementView: View {
             Button(L10n.t("取消", "Cancel"), role: .cancel) {
                 cancelSignOutFlow()
             }
-            Button(L10n.t("强制解绑", "Force Unbind"), role: .destructive) {
+            Button(L10n.t("强制解绑", "Force unbind"), role: .destructive) {
                 performPendingDeviceUnbind(force: true)
             }
         } message: {
@@ -172,7 +172,7 @@ struct AccountManagementView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("账号管理", "Account"))
+            Text(L10n.t("账号管理", "Account management"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -409,7 +409,7 @@ private struct AccountSignOutConfirmView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("注销账号", "Delete Account"))
+            Text(L10n.t("注销账号", "Delete account"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -478,7 +478,7 @@ private struct WeChatAccountBindingView: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
-                Text(L10n.t("第三方账号绑定", "Third-party Account"))
+                Text(L10n.t("第三方账号绑定", "Linked accounts"))
                     .font(AppTheme.notoSansSC(size: 18, weight: .bold))
 
                 HStack {
@@ -533,7 +533,7 @@ private struct WeChatAccountBindingView: View {
             Button(L10n.t("取消", "Cancel"), role: .cancel) {}
             Button(L10n.t("确定", "OK"), role: .destructive) { unbind() }
         } message: {
-            Text(L10n.t("解除后将无法使用该微信账号登录当前账号，确定要解除关联吗？", "After unlinking, this WeChat account can no longer sign in to the current account."))
+            Text(L10n.t("解除后将无法使用该微信账号登录当前账号，确定要解除关联吗？", "After unlinking, this WeChat account can no longer be used to sign in to the current account. Continue?"))
         }
         .alert(L10n.t("提示", "Notice"), isPresented: Binding(
             get: { alertMessage != nil },

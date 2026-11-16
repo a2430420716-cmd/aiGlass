@@ -192,7 +192,7 @@ final class NewbieGuideController: ObservableObject {
 
     private func enterGuideMode() {
         guard let ble, ble.isDeviceAvailable else {
-            showToast(L10n.t("设备未连接", "Not connected"))
+            showToast(L10n.t("设备未连接", "Device not connected"))
             return
         }
         if gen1TargetID != nil {
@@ -203,7 +203,7 @@ final class NewbieGuideController: ObservableObject {
             ? ble.setGuideStep(stepIndex + 1)
             : ble.setGuideModeEnabled(true)
         if !guideModeEnabled {
-            showToast(L10n.t("设备未连接", "Not connected"))
+            showToast(L10n.t("设备未连接", "Device not connected"))
         }
         logGuide("引导模式请求", detail: "queued=\(guideModeEnabled); queued_is_not_device_ack")
         armWaitDiagnostic()
@@ -238,7 +238,7 @@ final class NewbieGuideController: ObservableObject {
         let expected = expectedEvents[stepIndex]
         print("[NewbieGuide] event=\(eventType) expected=\(expected) step=\(stepIndex + 1)")
         if eventType != expected {
-            showToast(L10n.t("请按当前提示操作", "Follow the current prompt"))
+            showToast(L10n.t("请按当前提示操作", "Please follow the current prompt"))
             return
         }
         // 对齐 Android：先执行本步音乐动作，再推进步骤
@@ -538,7 +538,7 @@ struct NewbieGuideView: View {
                             .padding(.horizontal, 20)
                             .padding(.bottom, 12)
 
-                        Text(L10n.t("请跟随引导完成操作", "Please follow the guide to complete the operation"))
+                        Text(L10n.t("请跟随引导完成操作", "Follow the steps to finish"))
                             .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                             .foregroundStyle(.white)
                             .padding(.bottom, 24)
@@ -730,12 +730,12 @@ struct NewbieGuideView: View {
         VStack(spacing: 12) {
             tipRow(
                 icon: "android_guide_volume_up",
-                text: L10n.t("前滑调大音量", "Swipe forward: Volume +"),
+                text: L10n.t("前滑调大音量", "Swipe forward : Volume +"),
                 trailing: "android_guide_right_arrows"
             )
             tipRow(
                 icon: "android_guide_volume_down",
-                text: L10n.t("后滑调小音量", "Swipe back: Volume -"),
+                text: L10n.t("后滑调小音量", "Swipe backward : Volume -"),
                 trailing: "android_guide_left_arrows"
             )
         }
@@ -834,9 +834,9 @@ struct NewbieGuideView: View {
 
     private var captureTipText: String {
         if controller.stepIndex == 1 {
-            return L10n.t("录像时，眼镜外侧指示灯将会常亮", "The outer LED stays on while recording")
+            return L10n.t("录像时，眼镜外侧指示灯将会常亮", "Capture LED stays solid when recording")
         }
-        return L10n.t("拍照时，眼镜外侧指示灯将闪烁一次", "The outer LED flashes once when taking a photo")
+        return L10n.t("拍照时，眼镜外侧指示灯将闪烁一次", "Capture LED flashes when taking a photo")
     }
 
     private var stepIconName: String? {
@@ -874,7 +874,7 @@ struct NewbieGuideView: View {
                         .scaledToFit()
                         .frame(width: proxy.size.width * 0.90, height: proxy.size.height * (compactLayout ? 0.14 : 0.15))
 
-                    Text(L10n.t("恭喜你完成新手引导", "Newbie guide complete"))
+                    Text(L10n.t("恭喜你完成新手引导", "You’re all set!"))
                         .font(AppTheme.notoSansSC(size: 24, weight: .bold))
                         .foregroundStyle(
                             LinearGradient(
@@ -888,7 +888,7 @@ struct NewbieGuideView: View {
                         .padding(.horizontal, 20)
                         .padding(.top, proxy.size.height * (compactLayout ? 0.05 : 0.08))
 
-                    Text(L10n.t("你可以随时在“APP首页-新手引导”\n中重新开始", "You can restart anytime from\nHome - Newbie Guide"))
+                    Text(L10n.t("你可以随时在“APP首页-新手引导”\n中重新开始", "You can restart it anytime from “Home - Tutorial”"))
                         .font(AppTheme.notoSansSC(size: 15, weight: .regular))
                         .foregroundStyle(Color(red: 0.72, green: 0.72, blue: 0.72))
                         .multilineTextAlignment(.center)
@@ -899,7 +899,7 @@ struct NewbieGuideView: View {
 
                     Spacer(minLength: compactLayout ? 12 : 20)
 
-                    Button(L10n.t("开始使用眼镜", "Start Using Glasses")) {
+                    Button(L10n.t("开始使用眼镜", "Start using glasses")) {
                         closeGuide()
                     }
                     .font(AppTheme.notoSansSC(size: 18, weight: .regular))
@@ -910,7 +910,7 @@ struct NewbieGuideView: View {
 
                     Spacer(minLength: compactLayout ? 12 : 24)
 
-                    Button(L10n.t("再看一遍", "View Again")) {
+                    Button(L10n.t("再看一遍", "Replay tutorial")) {
                         controller.restart()
                     }
                     .font(AppTheme.notoSansSC(size: 14, weight: .regular))

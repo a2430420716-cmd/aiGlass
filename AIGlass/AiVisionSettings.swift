@@ -17,9 +17,9 @@ enum AiVisionSettings {
         var title: String {
             switch self {
             case .fast: return L10n.t("极速", "Fast")
-            case .normal: return L10n.t("普通", "Normal")
-            case .detail: return L10n.t("细节", "Detail")
-            case .hd: return L10n.t("高清", "HD")
+            case .normal: return L10n.t("普通", "Standard")
+            case .detail: return L10n.t("细节", "Detailed")
+            case .hd: return L10n.t("高清", "Ultra")
             }
         }
     }

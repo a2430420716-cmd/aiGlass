@@ -19,7 +19,7 @@ struct PairDeviceView: View {
             Button {
                 pairingCoordinator.goToPreparation()
             } label: {
-                Text(L10n.t("去配对", "Start Pairing"))
+                Text(L10n.t("去配对", "Go to Pair"))
                     .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)

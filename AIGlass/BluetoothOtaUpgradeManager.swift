@@ -92,24 +92,24 @@ enum OtaUpgradeKind {
     @MainActor
     var pageTitle: String {
         switch self {
-        case .bluetooth: L10n.t("眼镜蓝牙升级", "Glasses Bluetooth Update")
-        case .firmware: L10n.t("眼镜固件升级", "Glasses Firmware Update")
+        case .bluetooth: L10n.t("眼镜蓝牙升级", "Glasses Bluetooth update")
+        case .firmware: L10n.t("眼镜固件升级", "Glasses firmware upgrade")
         }
     }
 
     @MainActor
     var currentVersionTitle: String {
         switch self {
-        case .bluetooth: L10n.t("当前蓝牙版本", "Current Bluetooth Version")
-        case .firmware: L10n.t("当前固件版本", "Current Firmware Version")
+        case .bluetooth: L10n.t("当前蓝牙版本", "Current Bluetooth version")
+        case .firmware: L10n.t("当前固件版本", "Current firmware version")
         }
     }
 
     @MainActor
     var contentTitlePrefix: String {
         switch self {
-        case .bluetooth: L10n.t("蓝牙版本", "Bluetooth Version")
-        case .firmware: L10n.t("固件版本", "Firmware Version")
+        case .bluetooth: L10n.t("蓝牙版本", "Bluetooth version")
+        case .firmware: L10n.t("固件版本", "Firmware version")
         }
     }
 
@@ -205,7 +205,7 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
         }
         if let gen1FirmwarePhase {
             switch gen1FirmwarePhase {
-            case .checkingBattery: return L10n.t("正在检查眼镜电量...", "Checking glasses battery...")
+            case .checkingBattery: return L10n.t("正在检查眼镜电量...", "Checking the glasses battery...")
             case .provisioningWifi(let attempt): return L10n.t("正在为眼镜连接 Wi-Fi（\(attempt)/2）...", "Connecting glasses to Wi-Fi (\(attempt)/2)...")
             case .diagnosingWifi: return L10n.t("正在读取眼镜配网结果...", "Reading glasses Wi-Fi diagnostics...")
             case .awaitingWifiConfirmation: return L10n.t("Wi-Fi 配网成功，请确认后开始升级", "Wi-Fi configured. Confirm to start the update")

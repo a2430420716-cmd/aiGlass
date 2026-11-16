@@ -19,7 +19,7 @@ enum DeviceCommandAvailabilityPolicyTests {
 
     private static func discoverySurvivesMissingDeviceCard() {
         for name in ["getdevinfo", "hasnewfile", "getdevstat", "geteqmode0", "getvidres0",
-                     "getweardet", "getaivsil0", "getwakeup0", "getalgoinf", "getworkpat"] {
+                     "getweardet", "getaivsil0", "getwakeup0", "getalgoinf", "getworkpat", "getledbri0"] {
             check(!DeviceCommandAvailabilityPolicy.requiresAvailableDevice(sharedCommand: name, payload: Data()),
                   "\(name) must remain available for binding and recovery")
         }
@@ -35,6 +35,8 @@ enum DeviceCommandAvailabilityPolicyTests {
     }
 
     private static func businessCommandsCannotBypassTheGate() {
+        check(DeviceCommandAvailabilityPolicy.requiresAvailableDevice(
+            sharedCommand: "setledbri0", payload: Data([1])), "Brightness SET still requires an available bound device")
         for name in ["takephoto0", "startvideo", "toopenwifi", "otaupload0", "otaupload1", "dllupload0",
                      "deletefile", "recordtime", "setvidres0", "setweardet", "seteqmode0", "setaivsil0",
                      "setwakeup0", "imgrecset0", "imgreccap0", "factreset0", "synctime00", "aivlisten0", "unknown000"] {

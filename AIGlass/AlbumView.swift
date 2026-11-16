@@ -147,7 +147,7 @@ struct AlbumView: View {
                 } else if let notice = importManager.completionNotice {
                     importNoticeMessage = notice
                 } else if imported == 0 {
-                    importNoticeMessage = L10n.t("眼镜中暂无可导入的照片或视频", "No photos or videos to import from the glasses")
+                    importNoticeMessage = L10n.t("眼镜中暂无可导入的照片或视频", "No photos or videos to import")
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     importManager.resetStatus()
@@ -158,7 +158,7 @@ struct AlbumView: View {
                 importManager.resetStatus()
             }
         }
-        .alert(L10n.t("导入失败", "Import Failed"), isPresented: $showImportPartialFailureDialog) {
+        .alert(L10n.t("导入失败", "Import failed"), isPresented: $showImportPartialFailureDialog) {
             Button(L10n.t("复制错误日志", "Copy Error Log")) {
                 UIPasteboard.general.string = importManager.lastFailureReport?.formattedLog ?? ""
             }
@@ -168,7 +168,7 @@ struct AlbumView: View {
         } message: {
             Text(importPartialFailureMessage)
         }
-        .alert(L10n.t("导入失败", "Import Failed"), isPresented: Binding(
+        .alert(L10n.t("导入失败", "Import failed"), isPresented: Binding(
             get: { importErrorMessage != nil },
             set: { if !$0 { importErrorMessage = nil } }
         )) {
@@ -244,7 +244,7 @@ struct AlbumView: View {
                 .resizable()
                 .scaledToFit()
                 .frame(width: 100, height: 80)
-            Text(L10n.t("暂无照片和视频", "No photos or videos"))
+            Text(L10n.t("暂无照片和视频", "No photos or videos yet"))
                 .font(AppTheme.notoSansSC(size: 15, weight: .regular))
                 .foregroundStyle(AppTheme.secondaryText)
             if pendingImportCount > 0 {
@@ -259,7 +259,7 @@ struct AlbumView: View {
 
     private var header: some View {
         HStack {
-            Text(L10n.t("相册", "Album"))
+            Text(L10n.t("相册", "Gallery"))
                 .font(AppTheme.notoSansSC(size: HomeLayout.screenTitleSize, weight: .bold))
                 .tracking(0)
                 .foregroundStyle(AppTheme.primaryText)
@@ -294,7 +294,7 @@ struct AlbumView: View {
 
     private var selectionHeader: some View {
         ZStack {
-            Text(L10n.t("已选择\(selectedItemIDs.count)项", "\(selectedItemIDs.count) Selected"))
+            Text(L10n.t("已选择\(selectedItemIDs.count)项", "\(selectedItemIDs.count) selected"))
                 .font(AppTheme.notoSansSC(size: 16, weight: .semibold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -306,7 +306,7 @@ struct AlbumView: View {
                         selectAll()
                     }
                 } label: {
-                    Text(isAllVisibleSelected ? L10n.t("取消全选", "Deselect All") : L10n.t("全选", "Select All"))
+                    Text(isAllVisibleSelected ? L10n.t("取消全选", "Deselect all") : L10n.t("全选", "Select all"))
                         .font(AppTheme.notoSansSC(size: 15, weight: .regular))
                         .foregroundStyle(AppTheme.primaryText)
                 }
@@ -401,7 +401,7 @@ struct AlbumView: View {
 
             Text(importManager.pendingGen1RecoveryCount > 0
                  ? L10n.t("\(importManager.pendingGen1RecoveryCount)项原件可从手机恢复", "\(importManager.pendingGen1RecoveryCount) original(s) can be recovered from this phone")
-                 : L10n.t("\(pendingImportCount)项照片和视频可导入手机", "\(pendingImportCount) photo(s)/video(s) ready to import"))
+                 : L10n.t("\(pendingImportCount)项照片和视频可导入手机", "\(pendingImportCount) photos or videos can be imported to your phone"))
                 .font(AppTheme.notoSansSC(size: 15, weight: .regular))
                 .foregroundStyle(AppTheme.primaryText)
                 .lineLimit(1)

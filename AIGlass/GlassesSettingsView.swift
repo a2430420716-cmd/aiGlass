@@ -22,6 +22,8 @@ struct GlassesSettingsView: View {
     @State private var recordDurationSeconds = DeviceMediaSettings.defaultRecordDurationSeconds
     @State private var videoResolutionProfile = DeviceMediaSettings.defaultVideoResolution
     @State private var showRecordDurationOptions = false
+    @State private var showIndicatorBrightnessOptions = false
+    @State private var waitingForIndicatorBrightnessOptions = false
     @State private var showVideoResolutionOptions = false
     @State private var showAIVisionOptions = false
     @State private var showListeningDurationOptions = false
@@ -119,14 +121,26 @@ struct GlassesSettingsView: View {
         return GlassDeviceModel(modelName: modelName) == .luminaL1
     }
 
-    private var hidesIndicatorBrightness: Bool {
-        if isGen1SettingsDevice { return true }
+    private var showsIndicatorBrightness: Bool {
+        if isGen1SettingsDevice { return false }
         let ble = pairingCoordinator.astraA1BleManager
         if isGlassesConnected, ble.deviceGeneration != .unknown {
             return ble.deviceGeneration == .gen2
         }
         let modelName = device?.modelName ?? boundDevice?.modelName ?? ""
         return GlassDeviceModel(modelName: modelName) == .astraA1
+    }
+
+    private var indicatorBrightnessSummary: String {
+        guard isGlassesConnected else { return L10n.t("未连接", "Not connected") }
+        let state = pairingCoordinator.astraA1BleManager.indicatorBrightness
+        if let pending = state.pending {
+            if case .set = pending.request { return L10n.t("设置中…", "Setting…") }
+            return L10n.t("读取中…", "Reading…")
+        }
+        if let level = state.level { return indicatorBrightnessTitle(level) }
+        if state.result?.failure != nil { return L10n.t("暂不可用", "Unavailable") }
+        return L10n.t("未读取", "Not read")
     }
 
     private var supportedRecordDurations: [Int] {
@@ -221,7 +235,12 @@ struct GlassesSettingsView: View {
             } else {
                 voiceWakeUpState.reset()
                 pendingListeningDurationSeconds = nil
+                waitingForIndicatorBrightnessOptions = false
+                showIndicatorBrightnessOptions = false
             }
+        }
+        .onChangeCompat(of: pairingCoordinator.astraA1BleManager.indicatorBrightness.result) { result in
+            handleIndicatorBrightnessResult(result)
         }
         .onChangeCompat(of: pairingCoordinator.astraA1BleManager.deviceRuntimeStatus) { status in
             if isSettingsVisible, status == .standby {
@@ -230,6 +249,8 @@ struct GlassesSettingsView: View {
         }
         .onChangeCompat(of: pairingCoordinator.astraA1BleManager.deviceBluetoothIdentifier) { _ in
             voiceWakeUpState.reset()
+            waitingForIndicatorBrightnessOptions = false
+            showIndicatorBrightnessOptions = false
             if isSettingsVisible { queryDocumentedSettings() }
         }
         .onChangeCompat(of: scenePhase) { phase in
@@ -259,7 +280,7 @@ struct GlassesSettingsView: View {
             case .confirmed(let seconds):
                 recordDurationSeconds = seconds
                 DeviceMediaSettings.setRecordDurationSeconds(seconds, userId: authSession.phoneNumber, deviceKey: mediaSettingsDeviceKey)
-                guideAlertMessage = L10n.t("录像时长设置成功", "Video duration set")
+                guideAlertMessage = L10n.t("录像时长设置成功", "Recording duration set")
             case .different(_, let actual):
                 guideAlertMessage = L10n.t("录像时长未设置成功，眼镜当前为\(recordDurationTitle(actual))，请重试", "Video duration was not applied. Glasses report \(recordDurationTitle(actual)). Please try again.")
             case .unconfirmed:
@@ -298,9 +319,23 @@ struct GlassesSettingsView: View {
         .onDisappear {
             isSettingsVisible = false
             voiceWakeUpState.reset()
+            waitingForIndicatorBrightnessOptions = false
+            showIndicatorBrightnessOptions = false
         }
         .confirmationDialog(
-            L10n.t("短视频时间长度", "Short Video Length"),
+            L10n.t("指示灯亮度", "Notification LED brightness"),
+            isPresented: $showIndicatorBrightnessOptions,
+            titleVisibility: .visible
+        ) {
+            ForEach(IndicatorBrightnessLevel.allCases, id: \.rawValue) { level in
+                Button(indicatorBrightnessOptionTitle(level)) {
+                    applyIndicatorBrightness(level)
+                }
+            }
+            Button(L10n.t("取消", "Cancel"), role: .cancel) {}
+        }
+        .confirmationDialog(
+            L10n.t("短视频时间长度", "Video clip duration"),
             isPresented: $showRecordDurationOptions,
             titleVisibility: .visible
         ) {
@@ -312,7 +347,7 @@ struct GlassesSettingsView: View {
             Button(L10n.t("取消", "Cancel"), role: .cancel) {}
         }
         .confirmationDialog(
-            L10n.t("视频分辨率", "Video Resolution"),
+            L10n.t("视频分辨率", "Video resolution"),
             isPresented: $showVideoResolutionOptions,
             titleVisibility: .visible
         ) {
@@ -322,7 +357,7 @@ struct GlassesSettingsView: View {
             Button(L10n.t("取消", "Cancel"), role: .cancel) {}
         }
         .confirmationDialog(
-            L10n.t("智能识别模式", "Smart Recognition Mode"),
+            L10n.t("智能识别模式", "AI vision mode"),
             isPresented: $showAIVisionOptions,
             titleVisibility: .visible
         ) {
@@ -332,7 +367,7 @@ struct GlassesSettingsView: View {
             Button(L10n.t("取消", "Cancel"), role: .cancel) {}
         }
         .confirmationDialog(
-            L10n.t("连续对话时长", "Continuous Conversation Duration"),
+            L10n.t("连续对话时长", "Listening duration"),
             isPresented: $showListeningDurationOptions,
             titleVisibility: .visible
         ) {
@@ -343,19 +378,19 @@ struct GlassesSettingsView: View {
             }
             Button(L10n.t("取消", "Cancel"), role: .cancel) {}
         }
-        .alert(L10n.t("恢复出厂设置", "Factory Reset"), isPresented: $showFactoryResetConfirmation) {
+        .alert(L10n.t("恢复出厂设置", "Factory reset"), isPresented: $showFactoryResetConfirmation) {
             Button(L10n.t("取消", "Cancel"), role: .cancel) {}
-            Button(L10n.t("确认恢复", "Confirm Reset"), role: .destructive) {
+            Button(L10n.t("确认恢复", "Confirm reset"), role: .destructive) {
                 sendFactoryResetCommand()
             }
         } message: {
             Text(L10n.t(
                 "该操作将清除眼镜中未导入的照片、视频及音频数据，建议先将媒体文件导入至手机进行备份。是否确认继续恢复出厂设置？",
-                "This will erase photos, videos, and audio files not yet imported from the glasses. Back up media first. Continue?"
+                "This will erase photos, videos, and audio files that have not been imported from the glasses. We recommend importing media to your phone first. Continue with factory reset?"
             ))
         }
-        .alert(L10n.t("恢复出厂设置", "Factory Reset"), isPresented: $showFactoryResetGuide) {
-            Button(L10n.t("知道了", "Got It"), role: .cancel) {}
+        .alert(L10n.t("恢复出厂设置", "Factory reset"), isPresented: $showFactoryResetGuide) {
+            Button(L10n.t("知道了", "Got it"), role: .cancel) {}
         } message: {
             Text(L10n.t(
                 "第一步：连续短按3次电源键，内侧绿色指示灯连续闪烁\n\n第二步：再连续短按3次拍摄按钮，内侧白色指示灯连续闪烁\n\n完成后蓝色指示灯闪烁，进入配对状态",
@@ -407,7 +442,7 @@ struct GlassesSettingsView: View {
         } message: {
             Text(guideAlertMessage ?? "")
         }
-        .alert(L10n.t("自动保存", "Auto-Save"), isPresented: Binding(
+        .alert(L10n.t("自动保存", "Auto save"), isPresented: Binding(
             get: { autoSaveAlertMessage != nil },
             set: { if !$0 { autoSaveAlertMessage = nil } }
         )) {
@@ -437,7 +472,7 @@ struct GlassesSettingsView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("眼镜设置", "Glasses Settings"))
+            Text(L10n.t("眼镜设置", "Glasses settings"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -464,15 +499,20 @@ struct GlassesSettingsView: View {
             SettingsSectionHeader(title: L10n.t("通用", "General"))
 
             SettingsCard {
-                if !hidesIndicatorBrightness {
-                    SettingsNavigationRow(title: L10n.t("指示灯亮度", "Indicator Brightness"), value: L10n.t("中", "Medium"))
+                if showsIndicatorBrightness {
+                    SettingsNavigationRow(
+                        title: L10n.t("指示灯亮度", "Notification LED brightness"),
+                        value: indicatorBrightnessSummary,
+                        action: openIndicatorBrightnessOptions
+                    )
+                    .disabled(pairingCoordinator.astraA1BleManager.indicatorBrightness.isPending)
                     if showsCapability(\.wearingDetection) {
                         SettingsDivider()
                     }
                 }
                 if showsCapability(\.wearingDetection) {
                     SettingsToggleRow(
-                        title: L10n.t("摘下休眠", "Sleep When Removed"),
+                        title: L10n.t("摘下休眠", "Sleep when removed"),
                         subtitle: L10n.t("开启后，摘下眼镜进入休眠状态，摘下后 180 秒进入休眠", "When on, glasses sleep after removal. Sleep starts 180 seconds after removal."),
                         isOn: Binding(
                             get: { sleepWhenRemoved },
@@ -486,12 +526,12 @@ struct GlassesSettingsView: View {
 
     private var photoVideoSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SettingsSectionHeader(title: L10n.t("照片和视频", "Photos & Videos"))
+            SettingsSectionHeader(title: L10n.t("照片和视频", "Photos and videos"))
 
             SettingsCard {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsToggleRow(
-                        title: L10n.t("选择图片水印样式", "Photo Watermark Style"),
+                        title: L10n.t("选择图片水印样式", "Photo watermark style"),
                         isOn: $imageWatermarkEnabled,
                         showsDivider: false
                     )
@@ -516,7 +556,7 @@ struct GlassesSettingsView: View {
                 SettingsDivider()
                 if showsCapability(\.recordDuration) {
                     SettingsNavigationRow(
-                        title: L10n.t("短视频时间长度", "Short Video Length"),
+                        title: L10n.t("短视频时间长度", "Video clip duration"),
                         value: pairingCoordinator.astraA1BleManager.isRecordDurationSettingPending
                             ? L10n.t("设置中…", "Setting…") : recordDurationTitle(recordDurationSeconds),
                         subtitle: L10n.t("设置视频录制时长，达到设定时间后自动停止", "Set recording duration; recording stops automatically at the limit"),
@@ -527,15 +567,15 @@ struct GlassesSettingsView: View {
                 }
                 if showsCapability(\.videoResolution) {
                     SettingsNavigationRow(
-                        title: L10n.t("视频分辨率", "Video Resolution"),
+                        title: L10n.t("视频分辨率", "Video resolution"),
                         value: videoResolutionTitle,
                         action: { showVideoResolutionOptions = true }
                     )
                     SettingsDivider()
                 }
                 SettingsToggleRow(
-                    title: L10n.t("自动保存", "Auto-Save"),
-                    subtitle: L10n.t("照片和视频同步到 APP 后，自动保存到手机系统相册", "Automatically save synced photos and videos to the system Photos app"),
+                    title: L10n.t("自动保存", "Auto save"),
+                    subtitle: L10n.t("照片和视频同步到 APP 后，自动保存到手机系统相册", "Automatically save photos and videos to your phone's album when synced to the app."),
                     isOn: Binding(
                         get: { autoSave },
                         set: { updateAutoSave($0) }
@@ -604,11 +644,74 @@ struct GlassesSettingsView: View {
             refreshVoiceWakeUpState()
         }
         if ble.deviceCapabilities.recordDuration { _ = ble.queryRecordDuration() }
+        if showsIndicatorBrightness { _ = ble.queryIndicatorBrightness() }
+    }
+
+    private func indicatorBrightnessTitle(_ level: IndicatorBrightnessLevel) -> String {
+        switch level {
+        case .low: return L10n.t("低", "Low")
+        case .medium: return L10n.t("中", "Medium")
+        case .high: return L10n.t("高", "High")
+        }
+    }
+
+    private func indicatorBrightnessOptionTitle(_ level: IndicatorBrightnessLevel) -> String {
+        let title = indicatorBrightnessTitle(level)
+        guard pairingCoordinator.astraA1BleManager.indicatorBrightness.level == level else { return title }
+        return title + L10n.t("（当前）", " (Current)")
+    }
+
+    private func openIndicatorBrightnessOptions() {
+        guard isGlassesConnected, showsIndicatorBrightness else { return }
+        let ble = pairingCoordinator.astraA1BleManager
+        guard !ble.indicatorBrightness.isPending else { return }
+        if ble.indicatorBrightness.level != nil {
+            showIndicatorBrightnessOptions = true
+            return
+        }
+        waitingForIndicatorBrightnessOptions = true
+        if !ble.queryIndicatorBrightness() {
+            waitingForIndicatorBrightnessOptions = false
+            guideAlertMessage = L10n.t("暂时无法读取指示灯亮度，请稍后重试", "Unable to read indicator brightness. Please try again shortly.")
+        }
+    }
+
+    private func applyIndicatorBrightness(_ level: IndicatorBrightnessLevel) {
+        guard isGlassesConnected, showsIndicatorBrightness else { return }
+        let ble = pairingCoordinator.astraA1BleManager
+        guard !ble.indicatorBrightness.isPending else { return }
+        guard ble.setIndicatorBrightness(level: level) else {
+            guideAlertMessage = L10n.t("指示灯亮度同步失败，请重试", "Failed to sync indicator brightness. Please try again.")
+            return
+        }
+    }
+
+    private func handleIndicatorBrightnessResult(_ result: Gen2IndicatorBrightnessState.Result?) {
+        guard isSettingsVisible, isGlassesConnected, let result else { return }
+        let openOptions = waitingForIndicatorBrightnessOptions
+        let userSet: Bool
+        if case .set = result.request { userSet = true } else { userSet = false }
+        guard openOptions || userSet else { return }
+        waitingForIndicatorBrightnessOptions = false
+        guard let failure = result.failure else {
+            if openOptions { showIndicatorBrightnessOptions = true }
+            return
+        }
+        switch failure {
+        case .invalidParameter:
+            guideAlertMessage = L10n.t("指示灯亮度参数错误，请重试", "Invalid indicator brightness level. Please try again.")
+        case .storageFailed, .sendFailed, .rejected:
+            guideAlertMessage = L10n.t("指示灯亮度同步失败，请重试", "Failed to sync indicator brightness. Please try again.")
+        case .differentLevel:
+            guideAlertMessage = L10n.t("设备未应用所选亮度，已显示当前档位，请重试", "The selected brightness was not applied. The current level is shown. Please try again.")
+        case .timeout:
+            guideAlertMessage = L10n.t("设备未响应，当前固件可能不支持指示灯亮度调节，请重试", "The glasses did not respond. This firmware may not support indicator brightness. Please try again.")
+        }
     }
 
     private func recordDurationTitle(_ seconds: Int) -> String {
         if seconds < 60 {
-            return L10n.t("\(seconds)秒", "\(seconds)s")
+            return L10n.t("\(seconds)秒", "\(seconds) sec")
         }
         let minutes = seconds / 60
         return L10n.t("\(minutes)分钟", "\(minutes) min")
@@ -632,14 +735,14 @@ struct GlassesSettingsView: View {
             return
         }
         guard ble.setRecordTime(seconds: seconds) else {
-            guideAlertMessage = L10n.t("录像时长设置失败", "Failed to set video duration")
+            guideAlertMessage = L10n.t("录像时长设置失败", "Failed to set recording duration")
             return
         }
         // Gen1 persists and reports success only after the separate device query.
         guard ble.deviceGeneration != .gen1G5K61 else { return }
         recordDurationSeconds = seconds
         DeviceMediaSettings.setRecordDurationSeconds(seconds, userId: authSession.phoneNumber, deviceKey: mediaSettingsDeviceKey)
-        guideAlertMessage = L10n.t("录像时长设置成功", "Video duration set")
+        guideAlertMessage = L10n.t("录像时长设置成功", "Recording duration set")
     }
 
     private func applyVideoResolution(_ profile: UInt8) {
@@ -695,7 +798,7 @@ struct GlassesSettingsView: View {
         guard isGlassesConnected else { return }
         AiVisionSettings.level = level
         if pairingCoordinator.astraA1BleManager.syncAIVisionLevel(level) {
-            guideAlertMessage = L10n.t("智能识别模式已保存", "Recognition mode saved")
+            guideAlertMessage = L10n.t("智能识别模式已保存", "AI vision mode saved")
         } else {
             guideAlertMessage = L10n.t("智能识别模式同步失败", "Failed to sync recognition mode")
         }
@@ -750,7 +853,7 @@ struct GlassesSettingsView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                 guard isCurrentVoiceWakeUpRequest(generation, peripheralID: peripheralID),
                       voiceWakeUpState.setTimedOut(generation: generation) else { return }
-                guideAlertMessage = L10n.t("语音唤醒设置失败", "Failed to set voice wake-up")
+                guideAlertMessage = L10n.t("语音唤醒设置失败", "Failed to update voice wake-up setting")
                 scheduleVoiceWakeUpQuery(delay: 0.25)
             }
         } else if allowRetry {
@@ -760,7 +863,7 @@ struct GlassesSettingsView: View {
                 sendVoiceWakeUpCommand(enabled, generation: generation, allowRetry: false)
             }
         } else if voiceWakeUpState.sendFailed(generation: generation) {
-            guideAlertMessage = L10n.t("语音唤醒设置失败", "Failed to set voice wake-up")
+            guideAlertMessage = L10n.t("语音唤醒设置失败", "Failed to update voice wake-up setting")
         }
     }
 
@@ -807,7 +910,7 @@ struct GlassesSettingsView: View {
             case 4:
                 guideAlertMessage = L10n.t("语音唤醒资源缺失，暂时无法开启", "Voice wake-up resources are unavailable")
             default:
-                guideAlertMessage = L10n.t("语音唤醒设置失败", "Failed to set voice wake-up")
+                guideAlertMessage = L10n.t("语音唤醒设置失败", "Failed to update voice wake-up setting")
             }
         }
     }
@@ -816,8 +919,8 @@ struct GlassesSettingsView: View {
     private var voiceWakeUpRow: some View {
         if voiceWakeUpState.phase == .ready || voiceWakeUpState.phase == .setting {
             SettingsToggleRow(
-                title: L10n.t("语音唤醒", "Voice Wake"),
-                subtitle: L10n.t("开启后，说“Hi MOCO”可唤醒语音助手", "When enabled, say \"Hi MOCO\" to wake the voice assistant"),
+                title: L10n.t("语音唤醒", "Voice wake-up"),
+                subtitle: L10n.t("开启后，说“Hi MOCO”可唤醒语音助手", "When enabled, say \"Hi MOCO\" to wake up the voice assistant."),
                 isOn: Binding(
                     get: { voiceWakeUpState.enabled ?? false },
                     set: { updateVoiceWakeUp($0) }
@@ -827,7 +930,7 @@ struct GlassesSettingsView: View {
         } else {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(L10n.t("语音唤醒", "Voice Wake"))
+                    Text(L10n.t("语音唤醒", "Voice wake-up"))
                         .font(AppTheme.notoSansSC(size: 15, weight: .regular))
                         .foregroundStyle(AppTheme.primaryText)
                     Text(!isGlassesConnected
@@ -846,7 +949,7 @@ struct GlassesSettingsView: View {
                 } else if isGlassesConnected {
                     ProgressView()
                 } else {
-                    Text(L10n.t("未连接", "Disconnected"))
+                    Text(L10n.t("未连接", "Not connected"))
                         .font(AppTheme.notoSansSC(size: 12, weight: .regular))
                         .foregroundStyle(AppTheme.secondaryText)
                 }
@@ -862,7 +965,7 @@ struct GlassesSettingsView: View {
         pendingListeningDurationSeconds = seconds
         guard pairingCoordinator.astraA1BleManager.setAIVoiceListeningDuration(seconds: seconds) else {
             pendingListeningDurationSeconds = nil
-            guideAlertMessage = L10n.t("连续对话时长设置失败", "Failed to set continuous conversation duration")
+            guideAlertMessage = L10n.t("连续对话时长设置失败", "Failed to update Listening duration")
             return
         }
     }
@@ -880,11 +983,11 @@ struct GlassesSettingsView: View {
 
         switch response.status {
         case 0:
-            guideAlertMessage = L10n.t("连续对话时长设置成功", "Continuous conversation duration updated")
+            guideAlertMessage = L10n.t("连续对话时长设置成功", "Listening duration updated")
         case 2:
-            guideAlertMessage = L10n.t("设备保存连续对话时长失败", "The glasses failed to save the continuous conversation duration")
+            guideAlertMessage = L10n.t("设备保存连续对话时长失败", "The glasses failed to save the Listening duration")
         default:
-            guideAlertMessage = L10n.t("连续对话时长设置失败", "Failed to set continuous conversation duration")
+            guideAlertMessage = L10n.t("连续对话时长设置失败", "Failed to update Listening duration")
         }
     }
 
@@ -904,17 +1007,17 @@ struct GlassesSettingsView: View {
                 NavigationLink {
                     VoiceCommandsView()
                 } label: {
-                    SettingsNavigationLinkLabel(title: L10n.t("语音指令", "Voice Commands"))
+                    SettingsNavigationLinkLabel(title: L10n.t("语音指令", "Voice commands"))
                 }
                 .buttonStyle(.plain)
                 SettingsDivider()
                 if showsCapability(\.voiceWakeupSetting) {
                     SettingsNavigationRow(
-                        title: L10n.t("连续对话时长", "Continuous conversation duration"),
+                        title: L10n.t("连续对话时长", "Listening duration"),
                         value: listeningDurationOptionTitle(listeningDurationSeconds),
                         subtitle: L10n.t(
                             "对话后 MOCO 将继续聆听一段时间，期间可直接说出下个指令，无需再次唤醒。",
-                            "After a conversation, MOCO keeps listening briefly so you can say the next command without waking it again."
+                            "After speaking, the MOCO assistant will keep listening for a short period so you can give your next command without waking it up again."
                         ),
                         action: { showListeningDurationOptions = true }
                     )
@@ -923,9 +1026,9 @@ struct GlassesSettingsView: View {
                 }
                 if showsCapability(\.aiImageRecognition) {
                     SettingsNavigationRow(
-                        title: L10n.t("智能识别模式", "Smart Recognition Mode"),
+                        title: L10n.t("智能识别模式", "AI vision mode"),
                         value: AiVisionSettings.levelTitle,
-                        subtitle: L10n.t("平衡图像识别速度与图像清晰度", "Balance recognition speed and image clarity"),
+                        subtitle: L10n.t("平衡图像识别速度与图像清晰度", "Balance recognition speed and image clarity."),
                         action: { showAIVisionOptions = true }
                     )
                     SettingsDivider()
@@ -950,7 +1053,7 @@ struct GlassesSettingsView: View {
                     GlassesFirmwareUpgradeView(ble: pairingCoordinator.astraA1BleManager)
                 } label: {
                     SettingsNavigationLinkLabel(
-                        title: L10n.t("眼镜固件升级", "Glasses Firmware Update"),
+                        title: L10n.t("眼镜固件升级", "Glasses firmware upgrade"),
                         showsUpdateBadge: updateCoordinator.hasAnyUpdate
                     )
                 }
@@ -958,7 +1061,7 @@ struct GlassesSettingsView: View {
                 Button {
                     openNewbieGuide()
                 } label: {
-                    SettingsNavigationLinkLabel(title: L10n.t("新手引导", "Getting Started"))
+                    SettingsNavigationLinkLabel(title: L10n.t("新手引导", "Tutorial"))
                 }
                 .buttonStyle(.plain)
                 .background {
@@ -984,12 +1087,12 @@ struct GlassesSettingsView: View {
                     )
                         .environmentObject(authSession)
                 } label: {
-                    SettingsNavigationLinkLabel(title: L10n.t("关于设备", "About Device"))
+                    SettingsNavigationLinkLabel(title: L10n.t("关于设备", "About device"))
                 }
                 if !isGen1SettingsDevice {
                     SettingsDivider()
                     SettingsNavigationRow(
-                        title: L10n.t("恢复出厂设置", "Factory Reset"),
+                        title: L10n.t("恢复出厂设置", "Factory reset"),
                         action: { prepareFactoryReset() }
                     )
                 }

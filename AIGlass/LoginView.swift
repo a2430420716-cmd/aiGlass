@@ -58,14 +58,14 @@ struct LoginView: View {
         if loginMode == .password {
             return L10n.t("请输入账号/手机号/邮箱", "Enter username, phone number or email")
         }
-        return isChinaIP ? L10n.t("请输入手机号", "Enter phone number") : L10n.t("请输入邮箱", "Enter email")
+        return isChinaIP ? L10n.t("请输入手机号", "Phone number") : L10n.t("请输入邮箱", "Email")
     }
 
     private var accountErrorText: String {
         if loginMode == .password {
             return L10n.t("请输入有效账号，不能包含空格", "Enter a valid account without spaces")
         }
-        return isChinaIP ? L10n.t("请输入正确的手机号", "Enter a valid phone number") : L10n.t("请输入正确的邮箱", "Enter a valid email")
+        return isChinaIP ? L10n.t("请输入正确的手机号", "Enter a valid phone number") : L10n.t("请输入正确的邮箱", "Please enter a valid email")
     }
 
     private var isAccountValid: Bool {
@@ -184,16 +184,16 @@ struct LoginView: View {
         } message: {
             Text(alertMessage ?? "")
         }
-        .alert(L10n.t("用户协议及隐私政策", "User Agreement & Privacy Policy"), isPresented: $showsAgreementDialog) {
+        .alert(L10n.t("用户协议及隐私政策", "Terms of Service & Privacy Policy"), isPresented: $showsAgreementDialog) {
             Button(L10n.t("不同意", "Disagree"), role: .cancel) {}
-            Button(L10n.t("同意并继续", "Agree and Continue")) {
+            Button(L10n.t("同意并继续", "Agree and continue")) {
                 agreedToTerms = true
                 performLogin()
             }
         } message: {
             Text(L10n.t(
                 "点击“同意并继续”，即表示您已阅读并理解《用户协议》和《隐私政策》。为更好地保护您的权益并遵守适用法律，协议说明了我们如何收集、存储、保护和使用您的信息。",
-                "By tapping Agree and Continue, you confirm that you have read and understood the User Agreement and Privacy Policy. To protect your rights and comply with applicable laws, these explain how we collect, store, protect, and use your information."
+                "By tapping \"Agree and Continue\", you confirm that you have read and understood the Terms of Service and Privacy Policy. To better protect your rights and comply with applicable laws, the agreement explains how we collect, store, protect, and use your information."
             ))
         }
         .environment(\.openURL, OpenURLAction { url in
@@ -278,7 +278,7 @@ struct LoginView: View {
             TextField(
                 "",
                 text: $verificationCode,
-                prompt: Text(L10n.t("请输入验证码", "Enter code"))
+                prompt: Text(L10n.t("请输入验证码", "Code"))
                     .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                     .foregroundColor(placeholderColor)
             )
@@ -309,7 +309,7 @@ struct LoginView: View {
                         .foregroundStyle(placeholderColor)
                         .frame(minWidth: 88)
                 } else {
-                    Text(L10n.t("发送验证码", "Send Code"))
+                    Text(L10n.t("发送验证码", "Send code"))
                         .font(AppTheme.notoSansSC(size: 15, weight: .medium))
                         .foregroundStyle(canSendCode ? AppTheme.primaryText : placeholderColor)
                         .frame(minWidth: 88)
@@ -330,7 +330,7 @@ struct LoginView: View {
                     TextField(
                         "",
                         text: $password,
-                        prompt: Text(L10n.t("请输入密码", "Enter password"))
+                        prompt: Text(L10n.t("请输入密码", "Password"))
                             .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                             .foregroundColor(placeholderColor)
                     )
@@ -338,7 +338,7 @@ struct LoginView: View {
                     SecureField(
                         "",
                         text: $password,
-                        prompt: Text(L10n.t("请输入密码", "Enter password"))
+                        prompt: Text(L10n.t("请输入密码", "Password"))
                             .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                             .foregroundColor(placeholderColor)
                     )
@@ -369,7 +369,7 @@ struct LoginView: View {
             Button {
                 switchToSMSLogin()
             } label: {
-                Text(L10n.t("验证码登陆", "Code Login"))
+                Text(L10n.t("验证码登陆", "Code log in"))
                     .font(AppTheme.notoSansSC(size: 14, weight: .medium))
                     .foregroundStyle(AppTheme.primaryText)
             }
@@ -380,7 +380,7 @@ struct LoginView: View {
             Button {
                 openForgotPassword()
             } label: {
-                Text(L10n.t("忘记密码?", "Forgot password?"))
+                Text(L10n.t("忘记密码?", "forget password?"))
                     .font(AppTheme.notoSansSC(size: 14, weight: .medium))
                     .foregroundStyle(AppTheme.primaryText)
                     .frame(minHeight: 44)
@@ -396,7 +396,7 @@ struct LoginView: View {
                 Button {
                     switchToPasswordLogin()
                 } label: {
-                    Text(L10n.t("密码登陆", "Password Login"))
+                    Text(L10n.t("密码登陆", "Password log in"))
                         .font(AppTheme.notoSansSC(size: 14, weight: .medium))
                         .foregroundStyle(AppTheme.primaryText)
                 }
@@ -433,11 +433,11 @@ struct LoginView: View {
     private var agreementAttributedText: AttributedString {
         var text = AttributedString(L10n.t(
             "我已阅读并同意《用户协议》和《隐私政策》，首次登录会自动注册账号",
-            "I have read and agree to the User Agreement and Privacy Policy. First login will auto-register an account"
+            "I have read and agree to the Terms of Service and Privacy Policy. First login will automatically create an account."
         ))
         text.foregroundColor = AppTheme.secondaryText
 
-        if let range = text.range(of: L10n.t("《用户协议》", "User Agreement")) {
+        if let range = text.range(of: L10n.t("《用户协议》", "Terms of Service")) {
             text[range].foregroundColor = AppTheme.primaryText
             text[range].link = Self.agreementServiceURL
             text[range].underlineStyle = nil
@@ -476,7 +476,7 @@ struct LoginView: View {
             login()
         } label: {
             ZStack {
-                Text(L10n.t("登陆", "Log In"))
+                Text(L10n.t("登陆", "Log in"))
                     .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                     .foregroundStyle(.white)
                     .opacity(isLoggingIn ? 0 : 1)
@@ -497,7 +497,7 @@ struct LoginView: View {
     private var thirdPartySection: some View {
         // 第三方登录入口跟随 App 语言，与服务器及账号输入类型无关。
         VStack(spacing: 20) {
-            Text(L10n.t("使用第三方账号登录", "Sign in with"))
+            Text(L10n.t("使用第三方账号登录", "Log in with Linked accounts"))
                 .font(AppTheme.notoSansSC(size: 13, weight: .regular))
                 .foregroundStyle(AppTheme.secondaryText)
 
@@ -550,7 +550,7 @@ struct LoginView: View {
                     .onTapGesture {
                         alertMessage = L10n.t(
                             "请先阅读并同意《用户协议》和《隐私政策》",
-                            "Please read and agree to the User Agreement and Privacy Policy"
+                            "Please read and agree to the Terms of Service and Privacy Policy"
                         )
                     }
             }
@@ -617,7 +617,7 @@ struct LoginView: View {
 
     private func sendVerificationCode() {
         guard accountModeResolved else {
-            alertMessage = L10n.t("正在检测登录方式，请稍候", "Detecting sign-in method…")
+            alertMessage = L10n.t("正在检测登录方式，请稍候", "Checking login method, please wait")
             return
         }
         guard canSendCode else {
@@ -654,7 +654,7 @@ struct LoginView: View {
 
     private func login() {
         guard accountModeResolved else {
-            alertMessage = L10n.t("正在检测登录方式，请稍候", "Detecting sign-in method…")
+            alertMessage = L10n.t("正在检测登录方式，请稍候", "Checking login method, please wait")
             return
         }
 
@@ -662,9 +662,9 @@ struct LoginView: View {
             if !isAccountValid {
                 alertMessage = accountErrorText
             } else if loginMode == .sms {
-                alertMessage = L10n.t("请输入验证码", "Enter verification code")
+                alertMessage = L10n.t("请输入验证码", "Enter the verification code")
             } else {
-                alertMessage = L10n.t("请输入密码", "Enter password")
+                alertMessage = L10n.t("请输入密码", "Please enter password!")
             }
             return
         }
@@ -693,7 +693,7 @@ struct LoginView: View {
                     guard !code.isEmpty else {
                         await MainActor.run {
                             isLoggingIn = false
-                            alertMessage = L10n.t("请输入验证码", "Enter verification code")
+                            alertMessage = L10n.t("请输入验证码", "Enter the verification code")
                         }
                         return
                     }
@@ -707,7 +707,7 @@ struct LoginView: View {
                     guard !pwd.isEmpty else {
                         await MainActor.run {
                             isLoggingIn = false
-                            alertMessage = L10n.t("请输入密码", "Enter password")
+                            alertMessage = L10n.t("请输入密码", "Please enter password!")
                         }
                         return
                     }
@@ -737,7 +737,7 @@ struct LoginView: View {
             dismissKeyboard()
             alertMessage = L10n.t(
                 "请先阅读并同意《用户协议》和《隐私政策》",
-                "Please read and agree to the User Agreement and Privacy Policy"
+                "Please read and agree to the Terms of Service and Privacy Policy"
             )
             return
         }
@@ -779,7 +779,7 @@ struct LoginView: View {
                 await MainActor.run {
                     isWeChatLoggingIn = false
                     guard let result else {
-                        alertMessage = L10n.t("微信登录失败", "WeChat sign-in failed")
+                        alertMessage = L10n.t("微信登录失败", "WeChat login failed")
                         return
                     }
                     if let token = result.resolvedToken {

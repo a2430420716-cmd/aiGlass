@@ -89,7 +89,7 @@ final class AiVisionTransferManager: ObservableObject {
             logGen1Vision("capture-request", detail: "level=\(level) command=0x70 sent=\(sent)")
         }
         if !sent {
-            fail(L10n.t("发送识图命令失败", "Failed to send recognize command"))
+            fail(L10n.t("发送识图命令失败", "Failed to send recognition command"))
             return false
         }
         if ble.deviceGeneration == .gen1G5K61 { scheduleGen1Timeout(seconds: 10) }

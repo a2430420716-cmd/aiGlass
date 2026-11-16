@@ -97,7 +97,7 @@ struct AIChatView: View {
     }
 
     private var emptyHint: some View {
-        Text(L10n.t("对眼镜说话；也可在首页开始智能图像识别", "Speak to the glasses, or start image recognition from Home"))
+        Text(L10n.t("对眼镜说话；也可在首页开始智能图像识别", "Speak to the glasses, or start AI Vision from Home"))
             .font(AppTheme.notoSansSC(size: 14, weight: .regular))
             .foregroundStyle(AppTheme.secondaryText)
             .multilineTextAlignment(.center)
@@ -129,7 +129,7 @@ struct AIChatView: View {
 
     private var header: some View {
         HStack {
-            Text(L10n.t("AI对话记录", "AI Chat History"))
+            Text(L10n.t("AI对话记录", "AI chat history"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 

@@ -25,9 +25,9 @@ enum SoundEffectMode: UInt8, CaseIterable, Identifiable {
 
     var cardTitle: String {
         switch self {
-        case .standard: L10n.t("标准音效", "Standard Sound")
-        case .powerful: L10n.t("澎湃音效", "Powerful Sound")
-        case .quiet: L10n.t("静谧音效", "Quiet Sound")
+        case .standard: L10n.t("标准音效", "Standard")
+        case .powerful: L10n.t("澎湃音效", "Dynamic")
+        case .quiet: L10n.t("静谧音效", "Quiet")
         }
     }
 
@@ -47,7 +47,7 @@ struct SoundEffectModeSheet: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            Text(L10n.t("音效模式", "Sound Mode"))
+            Text(L10n.t("音效模式", "Sound mode"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .semibold))
                 .foregroundStyle(AppTheme.primaryText)
 

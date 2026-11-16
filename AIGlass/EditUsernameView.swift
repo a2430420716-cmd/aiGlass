@@ -5,7 +5,7 @@ enum UsernameValidator {
     static var hint: String {
         L10n.t(
             "2-20位字符，支持中英文、数字、下划线，空格，不包含特殊字符",
-            "2–20 characters: Chinese, letters, numbers, underscore, spaces; no special characters"
+            "2-20 characters, supports Chinese and English, numbers, underscores, spaces, does not contain special characters"
         )
     }
     private static let pattern = #"^[\u4e00-\u9fa5a-zA-Z0-9_ ]{2,20}$"#
@@ -102,7 +102,7 @@ struct EditUsernameView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("修改用户名", "Edit Username"))
+            Text(L10n.t("修改用户名", "Modify username"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 

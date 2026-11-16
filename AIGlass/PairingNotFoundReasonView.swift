@@ -10,18 +10,18 @@ struct PairingNotFoundReasonView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 32) {
                     preparationSection(
-                        title: L10n.t("一、将眼镜开机", "1. Power on the glasses"),
+                        title: L10n.t("一、将眼镜开机", "1. Turn on the glasses"),
                         imageName: "pairing_power_on_1",
                         description: L10n.t(
                             "拨动电源键开机，内侧指示灯会开始闪烁。开机完成时，指示灯熄灭且听到语音提示(若无反应，请先尝试为眼镜充电)。",
-                            "Slide the power switch to turn on. The inner LED will blink. When ready, the LED turns off and you hear a voice prompt (if no response, try charging first)."
+                            "Toggle the power switch to turn on the device; the notification LED on the inside will begin to flash. When the device has booted up, the notification LED will turn off and you will hear a voice prompt (if there is no response, please try charging the glasses first)."
                         )
                     )
 
                     preparationSection(
-                        title: L10n.t("二、确认内侧指示灯闪烁", "2. Confirm the inner LED is blinking"),
+                        title: L10n.t("二、确认内侧指示灯闪烁", "2. Check that the notification LED is flashing"),
                         imageName: "pairing_inner_indicator",
-                        description: L10n.t("指示灯闪烁说明进入配对状态", "A blinking LED means pairing mode is active")
+                        description: L10n.t("指示灯闪烁说明进入配对状态", "The flashing notification LED indicates that the device is in pairing mode.")
                     )
 
                     troubleshootingSection

@@ -54,7 +54,7 @@ struct TranslationLanguageSelectView: View {
 
     private var searchBar: some View {
         HStack(spacing: 12) {
-            TextField(L10n.t("请输入搜索内容", "Search"), text: $keyword)
+            TextField(L10n.t("请输入搜索内容", "Search language"), text: $keyword)
                 .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                 .foregroundStyle(AppTheme.primaryText)
 

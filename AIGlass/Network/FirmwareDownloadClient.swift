@@ -74,7 +74,8 @@ enum FirmwareDownloadClient {
             guard let http = downloadTask.response as? HTTPURLResponse,
                   (200...299).contains(http.statusCode) else { return }
             guard totalBytesExpectedToWrite > 0 else { return }
-            let percent = min(100, Int(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) * 100))
+            // Reserve completion for a payload which has passed content validation.
+            let percent = min(99, Int(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) * 100))
             onProgress?(percent)
         }
 
@@ -98,8 +99,21 @@ enum FirmwareDownloadClient {
 
             do {
                 let data = try Data(contentsOf: location)
-                guard !data.isEmpty else {
-                    finish(.failure(FirmwareDownloadError.emptyFile))
+                do {
+                    try FirmwareDownloadValidation.validate(data, response: response)
+                } catch let error as FirmwareDownloadValidation.ValidationError {
+                    DebugLogStore.logHTTPReceived(
+                        method: "GET",
+                        url: downloadTask.originalRequest?.url?.absoluteString ?? "",
+                        statusCode: response.statusCode,
+                        body: "<firmware download rejected before transfer to glasses: bytes=\(data.count) reason=\(error)>",
+                        headers: DebugLogStore.headerFields(from: response)
+                    )
+                    switch error {
+                    case .emptyFile: finish(.failure(FirmwareDownloadError.emptyFile))
+                    case .documentResponse: finish(.failure(FirmwareDownloadError.invalidFile))
+                    case .lengthMismatch: finish(.failure(FirmwareDownloadError.incompleteFile))
+                    }
                     return
                 }
                 print("\(FirmwareDownloadClient.logTag) done status=\(response.statusCode) bytes=\(data.count)")
@@ -143,6 +157,8 @@ enum FirmwareDownloadError: LocalizedError {
     case badResponse
     case httpStatus(Int)
     case emptyFile
+    case invalidFile
+    case incompleteFile
 
     var errorDescription: String? {
         switch self {
@@ -152,6 +168,10 @@ enum FirmwareDownloadError: LocalizedError {
             return L10n.t("固件下载失败(\(code))", "Firmware download failed (\(code))")
         case .emptyFile:
             return L10n.t("固件文件为空", "Firmware file is empty")
+        case .invalidFile:
+            return L10n.t("下载内容不是有效固件，请更换网络后重试", "The download is not valid firmware. Try another network and retry")
+        case .incompleteFile:
+            return L10n.t("固件下载不完整，请重新下载", "Firmware download is incomplete. Please download it again")
         }
     }
 }

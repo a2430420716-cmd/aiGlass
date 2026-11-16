@@ -73,7 +73,7 @@ struct AboutView: View {
         }
         .overlay(alignment: .bottom) {
             if showsLatestVersionToast {
-                Text(L10n.t("当前已是最新版本", "You're on the latest version"))
+                Text(L10n.t("当前已是最新版本", "You are already on the latest version"))
                     .font(AppTheme.notoSansSC(size: 14, weight: .medium))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 20)
@@ -136,7 +136,7 @@ struct AboutView: View {
                 AppUpdateView()
             } label: {
                 AboutMenuRowContent(
-                    title: L10n.t("检测应用更新", "Check for Updates"),
+                    title: L10n.t("检测应用更新", "APP update"),
                     showsUpdateBadge: true,
                     showsChevron: true
                 )
@@ -151,7 +151,7 @@ struct AboutView: View {
                 showLatestVersionToast()
             } label: {
                 AboutMenuRowContent(
-                    title: L10n.t("检测应用更新", "Check for Updates"),
+                    title: L10n.t("检测应用更新", "APP update"),
                     showsUpdateBadge: false,
                     showsChevron: true
                 )
@@ -181,7 +181,7 @@ struct AboutView: View {
                 NavigationLink {
                     AgreementDetailView(type: .service)
                 } label: {
-                    Text(L10n.t("用户协议", "User Agreement"))
+                    Text(L10n.t("用户协议", "Terms of Service"))
                         .font(AppTheme.notoSansSC(size: 12, weight: .regular))
                         .foregroundStyle(AppTheme.primaryText)
                 }

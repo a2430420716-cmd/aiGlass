@@ -131,19 +131,19 @@ struct PairingPreparationView: View {
         ScrollView(showsIndicators: true) {
             VStack(alignment: .leading, spacing: 28) {
                 fallbackStep(
-                    title: L10n.t("一、将眼镜开机", "1. Power on the glasses"),
+                    title: L10n.t("一、将眼镜开机", "1. Turn on the glasses"),
                     imageName: "pairing_power_on_1",
                     description: L10n.t(
                         "拨动电源键开机，内侧指示灯会开始闪烁。开机完成时，指示灯熄灭且听到语音提示(若无反应，请先尝试为眼镜充电)。",
-                        "Slide the power switch to turn on the glasses. The inner LED blinks while starting, then turns off when startup completes. If nothing happens, charge the glasses first."
+                        "Toggle the power switch to turn on the device; the notification LED on the inside will begin to flash. When the device has booted up, the notification LED will turn off and you will hear a voice prompt (if there is no response, please try charging the glasses first)."
                     )
                 )
                 fallbackStep(
-                    title: L10n.t("二、确认内侧指示灯闪烁", "2. Confirm the inner LED is blinking"),
+                    title: L10n.t("二、确认内侧指示灯闪烁", "2. Check that the notification LED is flashing"),
                     imageName: "pairing_inner_indicator",
                     description: L10n.t(
                         "指示灯闪烁说明进入配对状态。",
-                        "A blinking LED means the glasses are in pairing mode."
+                        "The flashing notification LED indicates that the device is in pairing mode."
                     )
                 )
             }
@@ -181,7 +181,7 @@ struct PairingPreparationView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("眼镜配对准备", "Glasses Pairing Preparation"))
+            Text(L10n.t("眼镜配对准备", "Pairing preparation"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -207,7 +207,7 @@ struct PairingPreparationView: View {
         Button {
             pairingCoordinator.startPairing()
         } label: {
-            Text(L10n.t("开始配对", "Start Pairing"))
+            Text(L10n.t("开始配对", "Start pairing"))
                 .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)

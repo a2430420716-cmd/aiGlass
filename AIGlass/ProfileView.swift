@@ -26,9 +26,9 @@ struct ProfileView: View {
         .onChangeCompat(of: tabBarSuppressionCount) { _ in
             updateTabBarVisibility()
         }
-        .alert(L10n.t("退出登录", "Log Out"), isPresented: $showLogoutConfirm) {
+        .alert(L10n.t("退出登录", "Log out"), isPresented: $showLogoutConfirm) {
             Button(L10n.t("取消", "Cancel"), role: .cancel) {}
-            Button(L10n.t("退出", "Log Out"), role: .destructive) {
+            Button(L10n.t("退出", "Log out"), role: .destructive) {
                 performLogout()
             }
         } message: {
@@ -116,7 +116,7 @@ struct ProfileView: View {
                 PersonalInfoView()
                     .environmentObject(authSession)
             } label: {
-                Text(L10n.t("编辑资料", "Edit Profile"))
+                Text(L10n.t("编辑资料", "Edit profile"))
                     .font(AppTheme.notoSansSC(size: 13, weight: .regular))
                     .foregroundStyle(AppTheme.secondaryText)
                     .padding(.horizontal, 14)
@@ -143,7 +143,7 @@ struct ProfileView: View {
         Button {
             showLogoutConfirm = true
         } label: {
-            Text(L10n.t("退出账号", "Log Out"))
+            Text(L10n.t("退出账号", "Log out"))
                 .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
@@ -188,7 +188,7 @@ private struct ProfileMenuRowContent: View {
     @MainActor
     static func localizedTitle(_ title: String) -> String {
         switch title {
-        case "账号管理": return L10n.t("账号管理", "Account")
+        case "账号管理": return L10n.t("账号管理", "Account management")
         case "问题反馈": return L10n.t("问题反馈", "Feedback")
         case "关于": return L10n.t("关于", "About")
         default: return title

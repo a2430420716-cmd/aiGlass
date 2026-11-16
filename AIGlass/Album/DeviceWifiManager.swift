@@ -12,7 +12,7 @@ enum DeviceWifiError: LocalizedError {
         case .userDenied:
             return L10n.t("已取消加入眼镜 Wi-Fi", "Cancelled joining glasses Wi-Fi")
         case .joinFailed(let detail):
-            return L10n.t("连接眼镜 Wi-Fi 失败：\(detail)", "Failed to join glasses Wi-Fi: \(detail)")
+            return L10n.t("连接眼镜 Wi-Fi 失败：\(detail)", "Failed to connect glasses Wi-Fi: \(detail)")
         case .unreachable:
             return L10n.t("未能连接眼镜热点，请确认眼镜热点已开启", "Could not connect to glasses Wi-Fi. Confirm the glasses hotspot is enabled")
         case .hotspotStopped:

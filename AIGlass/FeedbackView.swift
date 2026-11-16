@@ -105,7 +105,7 @@ struct FeedbackView: View {
             FeedbackFormView()
                 .environmentObject(authSession)
         } label: {
-            Text(L10n.t("填写问题", "Submit Feedback"))
+            Text(L10n.t("填写问题", "Describe the issue"))
                 .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                 .foregroundStyle(AppTheme.primaryText)
                 .frame(maxWidth: .infinity)

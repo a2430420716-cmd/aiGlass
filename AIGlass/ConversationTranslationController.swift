@@ -202,7 +202,7 @@ final class ConversationTranslationController: ObservableObject {
         beginTranslationTurn()
         glassesState.begin()
         glassesConnecting = true
-        statusText = L10n.t("正在连接翻译服务…", "Connecting to translation service…")
+        statusText = L10n.t("正在连接翻译服务…", "Connecting translation service...")
         connectManager(
             source: glassesLanguage,
             target: phoneLanguage
@@ -240,8 +240,8 @@ final class ConversationTranslationController: ObservableObject {
             guard isActive, permissionGeneration == permissionRequest else { return }
             logRecordingLifecycle("phone microphone permission granted=\(granted)")
             guard granted else {
-                alertMessage = L10n.t("请开启麦克风权限后重试", "Enable microphone access and try again")
-                statusText = L10n.t("请开启麦克风权限后重试", "Enable microphone access and try again")
+                alertMessage = L10n.t("请开启麦克风权限后重试", "Enable microphone permission and try again")
+                statusText = L10n.t("请开启麦克风权限后重试", "Enable microphone permission and try again")
                 return
             }
             startPhoneRecording()
@@ -257,7 +257,7 @@ final class ConversationTranslationController: ObservableObject {
         let played: Bool
         if message.side == .glasses {
             played = manager?.replaySpeechOnPhone(data) ?? false
-            statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
+            statusText = L10n.t("正在播放译文语音…", "Playing translated speech")
         } else {
             played = manager?.replaySpeechOnGlasses(data) ?? false
         }
@@ -345,7 +345,7 @@ final class ConversationTranslationController: ObservableObject {
         activeSide = .phone
         beginTranslationTurn()
         waitingPhoneSocketReady = true
-        statusText = L10n.t("正在连接翻译服务…", "Connecting to translation service…")
+        statusText = L10n.t("正在连接翻译服务…", "Connecting translation service...")
         // 手机侧：源/目标语言对调（安卓 connect(target, source)）。
         connectManager(source: phoneLanguage, target: glassesLanguage)
     }
@@ -355,13 +355,13 @@ final class ConversationTranslationController: ObservableObject {
         guard manager?.markLocalRecordingStarted() == true else {
             waitingPhoneSocketReady = false
             phoneRecording = false
-            statusText = L10n.t("正在连接翻译服务…", "Connecting to translation service…")
+            statusText = L10n.t("正在连接翻译服务…", "Connecting translation service...")
             print("[ConversationTranslation] phone record start blocked by input gate")
             return
         }
         waitingPhoneSocketReady = false
         phoneRecording = true
-        statusText = L10n.t("正在录音…", "Recording…")
+        statusText = L10n.t("正在录音…", "Recording...")
         schedulePhoneAutoStop()
         do {
             manager?.setPhoneMicrophoneCaptureEnabled(true)
@@ -520,7 +520,7 @@ final class ConversationTranslationController: ObservableObject {
         glassesRecording = true
         glassesInputStartedAt = ProcessInfo.processInfo.systemUptime
         if resetDecoder { glassesOpusDecoder.reset() }
-        statusText = L10n.t("正在录音…", "Recording…")
+        statusText = L10n.t("正在录音…", "Recording...")
         logGlassesAudio("input confirmed reason=\(reason)")
         print("[ConversationTranslation] glasses input started reason=\(reason)")
         return true
@@ -642,7 +642,7 @@ final class ConversationTranslationController: ObservableObject {
         guard !chunks.isEmpty else { return }
         cancelProcessingStatusFallback()
         for data in chunks { manager?.playSpeechOnPhone(data) }
-        statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
+        statusText = L10n.t("正在播放译文语音…", "Playing translated speech")
     }
 
     private func beginGlassesStopMonitor() {
@@ -1008,8 +1008,8 @@ extension ConversationTranslationController: RealtimeTranslationManager.Callback
         guard isActive else { return }
         cancelSocketReadyTimeout()
         statusText = glassesRecording || phoneRecording
-            ? L10n.t("正在录音…", "Recording…")
-            : L10n.t("翻译服务已就绪", "Translation service ready")
+            ? L10n.t("正在录音…", "Recording...")
+            : L10n.t("翻译服务已就绪", "Translation service is ready")
         if activeSide == .glasses, glassesConnecting, !glassesRecording, glassesState.shouldSendStart {
             startGlassesCommand()
         } else if activeSide == .phone, waitingPhoneSocketReady {
@@ -1056,7 +1056,7 @@ extension ConversationTranslationController: RealtimeTranslationManager.Callback
                 statusText = L10n.t("正在录音，译文将在停止后播报", "Recording. Translation audio will play after you stop.")
             case .playNow:
                 manager?.playSpeechOnPhone(data)
-                statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
+                statusText = L10n.t("正在播放译文语音…", "Playing translated speech")
             case .overflow:
                 if !wasOverflowed {
                     DebugLogStore.logTranslation("glasses deferred speech limit", detail: "bytes=\(deferredGlassesSpeech.byteCount) pcmUploadContinues=true")
@@ -1081,7 +1081,7 @@ extension ConversationTranslationController: RealtimeTranslationManager.Callback
         case .waiting:
             statusText = L10n.t("正在等待眼镜音频连接…", "Waiting for glasses audio…")
         case .playing:
-            statusText = L10n.t("正在播放译文语音…", "Playing translation audio…")
+            statusText = L10n.t("正在播放译文语音…", "Playing translated speech")
         case .unavailable:
             statusText = L10n.t("眼镜音频不可用", "Glasses audio unavailable")
             alertMessage = L10n.t("无法通过眼镜播放译文，请连接系统蓝牙音频，并在音频输出中选择眼镜后重试", "Translation audio could not play through the glasses. Connect Bluetooth audio, select the glasses as the audio output, and try again.")

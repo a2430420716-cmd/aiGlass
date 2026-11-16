@@ -31,7 +31,7 @@ enum APIError: LocalizedError {
         case .network:
             return L10n.t(
                 "网络连接异常，请检查网络后重试",
-                "Network connection error. Check your network and try again."
+                "There is a network connection error. Check your network connection and try again."
             )
         }
     }

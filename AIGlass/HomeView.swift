@@ -385,7 +385,7 @@ struct HomeView: View {
             Text(mediaActionAlertMessage ?? "")
         }
         .alert(
-            L10n.t("连接失败", "Connection Failed"),
+            L10n.t("连接失败", "Connection failed"),
             isPresented: $showHardReconnectFailureAlert
         ) {
             Button(L10n.t("确定", "OK"), role: .cancel) {}
@@ -399,7 +399,7 @@ struct HomeView: View {
             get: { pairingCoordinator.classicAudioTipMessage != nil },
             set: { if !$0 { pairingCoordinator.classicAudioTipMessage = nil } }
         )) {
-            Button(L10n.t("知道了", "Got It"), role: .cancel) {}
+            Button(L10n.t("知道了", "Got it"), role: .cancel) {}
         } message: {
             Text(pairingCoordinator.classicAudioTipMessage ?? "")
         }
@@ -533,7 +533,7 @@ struct HomeView: View {
     private var photoButtonTitle: String {
         if ble.photoCompleted { return L10n.t("拍照完成", "Photo taken") }
         if ble.isTakingPhoto { return L10n.t("拍照中...", "Taking photo...") }
-        return L10n.t("拍照", "Photo")
+        return L10n.t("拍照", "Capture")
     }
 
     private var videoButtonTitle: String {
@@ -543,7 +543,7 @@ struct HomeView: View {
         if ble.deviceRuntimeStatus == .videoRecording || ble.isVideoRecording {
             return L10n.t("结束录像", "Stop Video")
         }
-        return L10n.t("录像", "Video")
+        return L10n.t("录像", "Record")
     }
 
     private func takePhoto() {
@@ -841,7 +841,7 @@ struct HomeView: View {
 
     private var header: some View {
         HStack {
-            Text(L10n.t("设备", "Devices"))
+            Text(L10n.t("设备", "Device"))
                 .font(AppTheme.notoSansSC(size: HomeLayout.screenTitleSize, weight: .bold))
                 .tracking(0)
                 .lineSpacing(0)
@@ -865,7 +865,7 @@ struct HomeView: View {
 
     private var volumeSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(L10n.t("系统音量", "System Volume"))
+            Text(L10n.t("系统音量", "System volume"))
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -937,7 +937,7 @@ struct HomeView: View {
                     } label: {
                         FeatureActionCardView(
                             title: L10n.t("AI录音", "AI Recording"),
-                            subtitle: L10n.t("随时记录，AI转写总结", "Record anytime, AI transcription & summary"),
+                            subtitle: L10n.t("随时记录，AI转写总结", "Record anytime. AI-powered transcription & summary."),
                             iconName: "android_home_recording"
                         )
                     }
@@ -961,8 +961,8 @@ struct HomeView: View {
                         openAITranslation()
                     } label: {
                         FeatureActionCardView(
-                            title: L10n.t("AI翻译", "AI Translation"),
-                            subtitle: L10n.t("支持多种语言，让对话交流更顺畅自然", "Multi-language support for smoother conversations"),
+                            title: L10n.t("AI翻译", "Translation"),
+                            subtitle: L10n.t("支持多种语言，让对话交流更顺畅自然", "Multi-language support for smooth, natural conversations."),
                             iconName: "android_home_translation"
                         )
                     }
@@ -988,8 +988,8 @@ struct HomeView: View {
                         startSmartImageRecognition()
                     } label: {
                         FeatureActionCardView(
-                            title: L10n.t("智能图像识别", "Smart Image Recognition"),
-                            subtitle: L10n.t("第一人称视觉助手，识别眼前万物，并解说信息", "First-person vision assistant that recognizes and explains what you see"),
+                            title: L10n.t("智能图像识别", "AI Vision"),
+                            subtitle: L10n.t("第一人称视觉助手，识别眼前万物，并解说信息", "Your POV assistant. Identifies and explains what you see."),
                             iconName: "android_home_recognition"
                         )
                     }
@@ -1004,7 +1004,7 @@ struct HomeView: View {
                     } label: {
                         FeatureActionCardView(
                             title: selectedSoundMode.cardTitle,
-                            subtitle: L10n.t("音效模式", "Sound Mode"),
+                            subtitle: L10n.t("音效模式", "Sound mode"),
                             iconName: selectedSoundMode.cardIconName
                         )
                     }
@@ -1020,8 +1020,8 @@ struct HomeView: View {
                         openNewbieGuide()
                     } label: {
                         GuideActionCardView(
-                            title: L10n.t("新手引导", "Newbie Guide"),
-                            subtitle: L10n.t("快速掌握基础操作", "Learn the basics quickly"),
+                            title: L10n.t("新手引导", "Tutorial"),
+                            subtitle: L10n.t("快速掌握基础操作", "Quickly learn basic controls"),
                             iconName: "android_home_newbie"
                         )
                     }
@@ -1049,8 +1049,8 @@ struct HomeView: View {
                     openOperationGuide()
                 } label: {
                     GuideActionCardView(
-                        title: L10n.t("操作指南", "Operation Guide"),
-                        subtitle: L10n.t("按键及触控板操作", "Buttons and touchpad"),
+                        title: L10n.t("操作指南", "User Guide"),
+                        subtitle: L10n.t("按键及触控板操作", "Button & touchpad controls"),
                         iconName: "android_home_operation"
                     )
                 }
@@ -1307,8 +1307,8 @@ enum DeviceReconnectPhase {
     var statusText: String? {
         switch self {
         case .none: return nil
-        case .searching: return L10n.t("正在搜索设备", "Searching for devices")
-        case .connecting: return L10n.t("正在连接", "Connecting")
+        case .searching: return L10n.t("正在搜索设备", "Searching for devices…")
+        case .connecting: return L10n.t("正在连接", "Connecting…")
         case .notFound: return L10n.t("未找到设备", "Device not found")
         case .failed: return L10n.t("设备连接失败", "Connection failed")
         case .hardRetryRequired: return L10n.t("连接失败，请点击重试", "Connection failed. Tap to retry.")
@@ -1360,7 +1360,7 @@ private struct DeviceCardView: View {
 
     private var disconnectedStatusText: String {
         if let text = reconnectPhase.statusText { return text }
-        return isConnecting ? L10n.t("正在连接...", "Connecting...") : L10n.t("设备未连接", "Not connected")
+        return isConnecting ? L10n.t("正在连接...", "Connecting…") : L10n.t("设备未连接", "Device not connected")
     }
 
     private var brandName: String {
@@ -1492,11 +1492,11 @@ private struct DeviceNameEditSheet: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            Text(L10n.t("修改设备名称", "Edit Device Name"))
+            Text(L10n.t("修改设备名称", "Edit device name"))
                 .font(AppTheme.notoSansSC(size: 17, weight: .semibold))
                 .foregroundStyle(AppTheme.primaryText)
 
-            TextField(L10n.t("请输入设备名称", "Enter device name"), text: $draftName)
+            TextField(L10n.t("请输入设备名称", "Enter a device name"), text: $draftName)
                 .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                 .foregroundStyle(AppTheme.primaryText)
                 .focused($isNameFocused)

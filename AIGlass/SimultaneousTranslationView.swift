@@ -38,7 +38,7 @@ struct SimultaneousTranslationView: View {
                     translationPanel(
                         language: controller.sourceLanguage,
                         text: controller.sourceText,
-                        placeholder: controller.isConnecting ? controller.socketStatus : (controller.isRecording ? L10n.t("正在识别原文…", "Recognizing source…") : L10n.t("此处显示原文", "Source text appears here")),
+                        placeholder: controller.isConnecting ? controller.socketStatus : (controller.isRecording ? L10n.t("正在识别原文…", "Recognizing source…") : L10n.t("此处显示原文", "Original text appears here")),
                         showsRecordButton: false
                     )
                     .frame(height: sourceHeight)
@@ -96,7 +96,7 @@ struct SimultaneousTranslationView: View {
                 controller.prepareExitThen { dismiss() }
             }
         } message: {
-            Text(L10n.t("当前正在录音，是否保存并退出？", "Recording in progress. Save and exit?"))
+            Text(L10n.t("当前正在录音，是否保存并退出？", "Recording is in progress. Save and exit?"))
         }
     }
 
@@ -160,7 +160,7 @@ struct SimultaneousTranslationView: View {
     private var languagePanel: some View {
         HStack(spacing: 14) {
             languageSelector(
-                label: L10n.t("源语言", "Source"),
+                label: L10n.t("源语言", "Source language"),
                 language: controller.sourceLanguage,
                 alignment: .leading
             ) {
@@ -183,7 +183,7 @@ struct SimultaneousTranslationView: View {
             .accessibilityLabel(L10n.t("互换语言", "Swap Languages"))
 
             languageSelector(
-                label: L10n.t("目标语言", "Target"),
+                label: L10n.t("目标语言", "Target language"),
                 language: controller.targetLanguage,
                 alignment: .trailing
             ) {
@@ -278,7 +278,7 @@ struct SimultaneousTranslationView: View {
                         }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(controller.isConnecting ? L10n.t("取消连接", "Cancel connection") : (controller.isRecording ? L10n.t("停止录音", "Stop Recording") : L10n.t("开始录音", "Start Recording")))
+                    .accessibilityLabel(controller.isConnecting ? L10n.t("取消连接", "Cancel connection") : (controller.isRecording ? L10n.t("停止录音", "Stop recording") : L10n.t("开始录音", "Start recording")))
                     .padding(.bottom, 38)
                 }
             }

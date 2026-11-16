@@ -9,7 +9,7 @@ final class SimultaneousTranslationController: ObservableObject {
     @Published var targetLanguage = "英文"
     @Published var sourceText = ""
     @Published var targetText = ""
-    @Published var socketStatus = L10n.t("正在连接翻译服务...", "Connecting to translation service...")
+    @Published var socketStatus = L10n.t("正在连接翻译服务...", "Connecting translation service...")
     @Published var isRecording = false
     @Published private(set) var isConnecting = false
     var hasActiveRecordingRequest: Bool { isRecording || isConnecting }
@@ -75,8 +75,8 @@ final class SimultaneousTranslationController: ObservableObject {
         SimultaneousTranslationRecordStore.glassesSoundEnabled = glassesSoundEnabled
         translationManager?.setSpeechPlaybackEnabled(glassesSoundEnabled)
         alertMessage = glassesSoundEnabled
-            ? L10n.t("声音开关打开，可以通过眼镜听到译文", "Sound on — hear translations through glasses")
-            : L10n.t("声音开关关闭，无法通过眼镜听到译文", "Sound off — cannot hear translations through glasses")
+            ? L10n.t("声音开关打开，可以通过眼镜听到译文", "Sound is on. Translation can be heard through the glasses.")
+            : L10n.t("声音开关关闭，无法通过眼镜听到译文", "Sound is off. Translation cannot be heard through the glasses.")
     }
 
     func swapLanguages() {
@@ -154,7 +154,7 @@ final class SimultaneousTranslationController: ObservableObject {
             let granted = await requestMicrophonePermission()
             guard isActive, permissionGeneration == permissionRequest else { return }
             guard granted else {
-                alertMessage = L10n.t("请开启麦克风权限后重试", "Enable microphone access and try again")
+                alertMessage = L10n.t("请开启麦克风权限后重试", "Enable microphone permission and try again")
                 return
             }
             guard !hasActiveRecordingRequest else { return }
@@ -173,7 +173,7 @@ final class SimultaneousTranslationController: ObservableObject {
             translationManager?.setSpeechPlaybackEnabled(glassesSoundEnabled)
 
             if !socketReady {
-                socketStatus = L10n.t("正在连接翻译服务...", "Connecting to translation service...")
+                socketStatus = L10n.t("正在连接翻译服务...", "Connecting translation service...")
                 // Page entry may already be fetching the URL or awaiting ready.
                 // Keep that attempt and its deadline when the user taps Start.
                 if translationManager?.isConnecting != true {
@@ -278,7 +278,7 @@ final class SimultaneousTranslationController: ObservableObject {
             return
         }
         guard !socketReady, !waitingSocketReady, !pendingStartRecord else { return }
-        socketStatus = L10n.t("正在连接翻译服务...", "Connecting to translation service...")
+        socketStatus = L10n.t("正在连接翻译服务...", "Connecting translation service...")
         translationManager?.connect(
             sourceLanguage: TranslationLanguage.code(forDisplayName: sourceLanguage),
             targetLanguage: TranslationLanguage.code(forDisplayName: targetLanguage),
@@ -467,7 +467,7 @@ extension SimultaneousTranslationController: RealtimeTranslationManager.Callback
         guard isActive else { return }
         socketReady = true
         // 录音中再次 ready 表示上一轮处理完毕，别把提示退回「点击开始录音」。
-        socketStatus = isRecording ? L10n.t("正在录音翻译…", "Recording & translating…") : L10n.t("翻译服务已就绪，点击下方按钮开始录音", "Ready — tap below to start recording")
+        socketStatus = isRecording ? L10n.t("正在录音翻译…", "Recording & translating…") : L10n.t("翻译服务已就绪，点击下方按钮开始录音", "Translation service is ready. Tap the button below to start recording.")
         if pendingStartRecord, isConnecting, !microphoneCapture.isCapturing {
             waitingSocketReady = false
             pendingStartRecord = false
@@ -483,7 +483,7 @@ extension SimultaneousTranslationController: RealtimeTranslationManager.Callback
         case .waiting:
             socketStatus = L10n.t("正在等待眼镜音频连接…", "Waiting for glasses audio…")
         case .playing:
-            socketStatus = isRecording ? L10n.t("正在录音翻译…", "Recording & translating…") : L10n.t("正在播放译文语音…", "Playing translation audio…")
+            socketStatus = isRecording ? L10n.t("正在录音翻译…", "Recording & translating…") : L10n.t("正在播放译文语音…", "Playing translated speech")
         case .unavailable:
             glassesSoundEnabled = false
             SimultaneousTranslationRecordStore.glassesSoundEnabled = false

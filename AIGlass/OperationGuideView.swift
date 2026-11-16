@@ -76,7 +76,7 @@ struct OperationGuideView: View {
     /// 与眼镜设置、关于设备等二级页统一；避免系统 toolbar 在新版 iOS 自动添加玻璃圆形背景。
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("操作指南", "Operation Guide"))
+            Text(L10n.t("操作指南", "User Guide"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 

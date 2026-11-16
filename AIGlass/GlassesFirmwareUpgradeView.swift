@@ -36,6 +36,11 @@ struct GlassesFirmwareUpgradeView: View {
             ble.ensureConnected(reason: "firmwareUpgrade")
             refreshVersionsFromBLE()
         }
+        .task {
+            await authSession.refreshUserInfo()
+            guard !Task.isCancelled else { return }
+            refreshState()
+        }
         .onChangeCompat(of: ble.isDeviceAvailable) { available in
             if available { refreshVersionsFromBLE() }
             else { refreshState() }
@@ -47,8 +52,8 @@ struct GlassesFirmwareUpgradeView: View {
             if !isQuerying { refreshState() }
         }
         .onChangeCompat(of: ble.deviceVersionQueryFailed) { _ in refreshState() }
-        .onChangeCompat(of: authSession.userInfo?.bluetoothBySerialNumber.count ?? 0) { _ in refreshState() }
-        .onChangeCompat(of: authSession.userInfo?.firmwareBySerialNumber.count ?? 0) { _ in refreshState() }
+        .onChangeCompat(of: authSession.userInfo?.bluetoothBySerialNumber) { _ in refreshState() }
+        .onChangeCompat(of: authSession.userInfo?.firmwareBySerialNumber) { _ in refreshState() }
         .onChangeCompat(of: otaManager.state) { newState in
             if newState.isTerminal {
                 refreshState()
@@ -58,7 +63,7 @@ struct GlassesFirmwareUpgradeView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("眼镜固件升级", "Glasses Firmware Update"))
+            Text(L10n.t("眼镜固件升级", "Glasses firmware upgrade"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -117,7 +122,7 @@ struct GlassesFirmwareUpgradeView: View {
                 DeviceOtaUpgradeDetailView(kind: .bluetooth, offer: offer, ble: ble)
             } label: {
                 versionRowLabel(
-                    title: L10n.t("蓝牙版本", "Bluetooth Version"),
+                    title: L10n.t("蓝牙版本", "Bluetooth version"),
                     version: displayVersion(ble.deviceVersion2800),
                     hasUpdate: !ble.deviceVersionQueryFailed || offer.isGen1BluetoothRecovery
                 )
@@ -127,7 +132,7 @@ struct GlassesFirmwareUpgradeView: View {
                       || (ble.deviceVersionQueryFailed && !offer.isGen1BluetoothRecovery))
         } else {
             versionRowLabel(
-                title: L10n.t("蓝牙版本", "Bluetooth Version"),
+                title: L10n.t("蓝牙版本", "Bluetooth version"),
                 version: displayVersion(ble.deviceVersion2800),
                 hasUpdate: false
             )
@@ -141,7 +146,7 @@ struct GlassesFirmwareUpgradeView: View {
                 DeviceOtaUpgradeDetailView(kind: .firmware, offer: offer, ble: ble)
             } label: {
                 versionRowLabel(
-                    title: L10n.t("固件版本", "Firmware Version"),
+                    title: L10n.t("固件版本", "Firmware version"),
                     version: displayVersion(ble.deviceVersion6350),
                     hasUpdate: !ble.deviceVersionQueryFailed
                 )
@@ -150,7 +155,7 @@ struct GlassesFirmwareUpgradeView: View {
             .disabled(!ble.isDeviceAvailable || ble.deviceVersionQueryFailed)
         } else {
             versionRowLabel(
-                title: L10n.t("固件版本", "Firmware Version"),
+                title: L10n.t("固件版本", "Firmware version"),
                 version: displayVersion(ble.deviceVersion6350),
                 hasUpdate: false
             )
@@ -199,7 +204,7 @@ struct GlassesFirmwareUpgradeView: View {
     private func displayVersion(_ raw: String?) -> String {
         if ble.isQueryingDeviceVersionsAndStorage,
            raw?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
-            return L10n.t("加载中...", "Loading...")
+            return L10n.t("加载中...", "Loading…")
         }
         let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else {

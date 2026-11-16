@@ -94,7 +94,7 @@ struct WeChatBindView: View {
         TextField(
             "",
             text: $phoneNumber,
-            prompt: Text(L10n.t("请输入手机号", "Enter phone number"))
+            prompt: Text(L10n.t("请输入手机号", "Phone number"))
                 .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                 .foregroundColor(placeholderColor)
         )
@@ -121,7 +121,7 @@ struct WeChatBindView: View {
             TextField(
                 "",
                 text: $verificationCode,
-                prompt: Text(L10n.t("请输入验证码", "Enter code"))
+                prompt: Text(L10n.t("请输入验证码", "Code"))
                     .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                     .foregroundColor(placeholderColor)
             )
@@ -151,7 +151,7 @@ struct WeChatBindView: View {
                         .foregroundStyle(placeholderColor)
                         .frame(minWidth: 88)
                 } else {
-                    Text(L10n.t("发送验证码", "Send Code"))
+                    Text(L10n.t("发送验证码", "Send code"))
                         .font(AppTheme.notoSansSC(size: 15, weight: .medium))
                         .foregroundStyle(canSendCode ? AppTheme.primaryText : placeholderColor)
                         .frame(minWidth: 88)

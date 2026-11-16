@@ -70,7 +70,7 @@ struct DeviceSelectionView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("选择配对设备", "Select Device"))
+            Text(L10n.t("选择配对设备", "Select a device to pair"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 

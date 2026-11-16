@@ -133,7 +133,7 @@ struct ChangePasswordView: View {
         .navigationBarHidden(true)
         .overlay(alignment: .bottom) {
             if showsSuccessToast {
-                Text(L10n.t("密码修改成功", "Password updated"))
+                Text(L10n.t("密码修改成功", "Password changed successfully"))
                     .font(AppTheme.notoSansSC(size: 14, weight: .medium))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 20)
@@ -160,7 +160,7 @@ struct ChangePasswordView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("修改密码", "Change Password"))
+            Text(L10n.t("修改密码", "Change password"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -200,7 +200,7 @@ struct ChangePasswordView: View {
                 TextField(
                     "",
                     text: $verificationCode,
-                    prompt: Text(L10n.t("请输入验证码", "Enter verification code"))
+                    prompt: Text(L10n.t("请输入验证码", "Code"))
                         .foregroundColor(AppTheme.secondaryText.opacity(0.55))
                 )
                 .keyboardType(.numberPad)
@@ -223,7 +223,7 @@ struct ChangePasswordView: View {
                     } else {
                         Text(countdown > 0
                              ? L10n.t("重新发送（\(countdown)s）", "Resend (\(countdown)s)")
-                             : L10n.t("发送验证码", "Send Code"))
+                             : L10n.t("发送验证码", "Send code"))
                             .font(AppTheme.notoSansSC(size: 15, weight: .medium))
                             .foregroundStyle(
                                 canSendCode
@@ -241,7 +241,7 @@ struct ChangePasswordView: View {
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
             passwordField(
-                placeholder: L10n.t("至少输入8位新密码", "At least 8 characters"),
+                placeholder: L10n.t("至少输入8位新密码", "New password (8+ characters)"),
                 text: $password,
                 isVisible: $showsPassword,
                 field: .password,
@@ -317,7 +317,7 @@ struct ChangePasswordView: View {
     private var passwordHint: some View {
         Text(L10n.t(
             "请输入8-18位密码，支持英文、数字、符号，至少包含其中两种，不能包含空格",
-            "Enter an 8–18 character password with letters, numbers, or symbols. Include at least two types. No spaces."
+            "8-18 characters. Must contain at least two of the following: letters, numbers, or symbols. No spaces allowed."
         ))
             .font(AppTheme.notoSansSC(size: 14, weight: .regular))
             .foregroundStyle(AppTheme.secondaryText)
@@ -329,7 +329,7 @@ struct ChangePasswordView: View {
             changePassword()
         } label: {
             ZStack {
-                Text(L10n.t("修改密码", "Change Password"))
+                Text(L10n.t("修改密码", "Change password"))
                     .font(AppTheme.notoSansSC(size: 18, weight: .medium))
                     .foregroundStyle(.white)
                     .opacity(isSubmitting ? 0 : 1)
@@ -403,13 +403,13 @@ struct ChangePasswordView: View {
 
         guard isAccountValid else {
             alertMessage = accountValue.contains("@")
-                ? L10n.t("请输入正确的邮箱", "Enter a valid email")
+                ? L10n.t("请输入正确的邮箱", "Please enter a valid email")
                 : L10n.t("请输入正确的手机号", "Enter a valid phone number")
             return
         }
 
         guard !code.isEmpty else {
-            alertMessage = L10n.t("请输入验证码", "Enter verification code")
+            alertMessage = L10n.t("请输入验证码", "Enter the verification code")
             return
         }
 

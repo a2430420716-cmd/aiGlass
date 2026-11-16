@@ -9,7 +9,7 @@ enum AppLanguageOption: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .system: L10n.t("跟随手机系统", "Follow System")
+        case .system: L10n.t("跟随手机系统", "System default")
         case .simplifiedChinese: "简体中文"
         case .englishUS: "English (US)"
         }
@@ -41,8 +41,8 @@ enum DataStorageRegion: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .usa: L10n.t("美国", "United States")
-        case .europeAmerica: L10n.t("欧美地区", "Europe & Americas")
-        case .asiaPacific: L10n.t("亚太地区", "Asia Pacific")
+        case .europeAmerica: L10n.t("欧美地区", "Europe and the Americas")
+        case .asiaPacific: L10n.t("亚太地区", "Asia-Pacific")
         case .mainlandChina: L10n.t("中国大陆", "Mainland China")
         }
     }

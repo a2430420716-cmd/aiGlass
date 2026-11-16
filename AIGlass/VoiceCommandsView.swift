@@ -27,7 +27,7 @@ struct VoiceCommandsView: View {
 
     private var navigationBar: some View {
         ZStack {
-            Text(L10n.t("语音指令", "Voice Commands"))
+            Text(L10n.t("语音指令", "Voice commands"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .bold))
                 .foregroundStyle(AppTheme.primaryText)
 
@@ -55,39 +55,39 @@ struct VoiceCommandsView: View {
     private func commandTable(labelWidth: CGFloat) -> some View {
         VStack(spacing: 0) {
             commandGroup(
-                title: L10n.t("唤醒词", "Wake Words"),
-                phrases: [L10n.t("嗨，眸刻 / 嘿，眸刻", "Hi MOCO / Hey MOCO")],
+                title: L10n.t("唤醒词", "Wake word"),
+                phrases: [L10n.t("嗨，眸刻 / 嘿，眸刻", "Hi Moco / Hey Moco")],
                 labelWidth: labelWidth,
                 shaded: true
             )
             gridLine
             commandGroup(
-                title: L10n.t("拍摄指令", "Camera Commands"),
+                title: L10n.t("拍摄指令", "Capture command"),
                 phrases: [
                     L10n.t("开始拍照", "Take a photo"),
-                    L10n.t("开始录像", "Start recording")
+                    L10n.t("开始录像", "Take a video")
                 ],
                 labelWidth: labelWidth
             )
             gridLine
             commandGroup(
-                title: L10n.t("播放指令", "Playback Commands"),
+                title: L10n.t("播放指令", "Playback command"),
                 phrases: [
                     L10n.t("播放音乐", "Play music"),
-                    L10n.t("停止播放（音乐）", "Stop playing music"),
-                    L10n.t("播放下一曲 / 下一首", "Play the next track"),
-                    L10n.t("播放上一曲 / 上一首", "Play the previous track"),
-                    L10n.t("调高音量 /（声音）音量大一点", "Turn up the volume / Louder"),
-                    L10n.t("调低音量 /（声音）音量小一点", "Turn down the volume / Quieter")
+                    L10n.t("停止播放（音乐）", "Stop playing"),
+                    L10n.t("播放下一曲 / 下一首", "Play next song/track"),
+                    L10n.t("播放上一曲 / 上一首", "Play previous song/track"),
+                    L10n.t("调高音量 /（声音）音量大一点", "Volume up"),
+                    L10n.t("调低音量 /（声音）音量小一点", "Volume down")
                 ],
                 labelWidth: labelWidth,
                 shaded: true
             )
             gridLine
             commandGroup(
-                title: L10n.t("通话指令", "Call Commands"),
+                title: L10n.t("通话指令", "Call command"),
                 phrases: [
-                    L10n.t("接听电话", "Answer the call"),
+                    L10n.t("接听电话", "Answer the phone"),
                     L10n.t("拒接电话", "Reject the call"),
                     L10n.t("挂断电话", "Hang up")
                 ],

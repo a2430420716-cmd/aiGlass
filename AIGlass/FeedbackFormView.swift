@@ -129,7 +129,7 @@ struct FeedbackFormView: View {
                                 .foregroundStyle(.white)
                         }
 
-                        Text(L10n.t("反馈完成", "Feedback Complete"))
+                        Text(L10n.t("反馈完成", "Feedback submitted"))
                             .font(AppTheme.notoSansSC(size: 24, weight: .bold))
                             .foregroundStyle(AppTheme.primaryText)
                     }
@@ -326,7 +326,7 @@ struct FeedbackFormView: View {
                 }
                 .frame(minHeight: 140)
 
-                Text(L10n.t("\(feedbackText.count)/\(maxCharacters)字", "\(feedbackText.count)/\(maxCharacters)"))
+                Text(L10n.t("\(feedbackText.count)/\(maxCharacters)字", "\(feedbackText.count)/\(maxCharacters) characters"))
                     .font(AppTheme.notoSansSC(size: 12, weight: .regular))
                     .foregroundStyle(AppTheme.secondaryText)
                     .padding(.trailing, 16)
@@ -386,7 +386,7 @@ struct FeedbackFormView: View {
 
     private var mediaUploadSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            FormSectionTitle(title: L10n.t("上传图片或者视频", "Upload Photos or Videos"))
+            FormSectionTitle(title: L10n.t("上传图片或者视频", "Upload photos or videos"))
 
             FeedbackCategoryFlowLayout(spacing: 10) {
                 ForEach(mediaItems) { item in
@@ -414,7 +414,7 @@ struct FeedbackFormView: View {
                 }
             }
 
-            Text(L10n.t("最多上传9张图片或者视频", "Up to 9 photos or videos"))
+            Text(L10n.t("最多上传9张图片或者视频", "Upload up to 9 photos or videos"))
                 .font(AppTheme.notoSansSC(size: 12, weight: .regular))
                 .foregroundStyle(AppTheme.secondaryText)
         }
@@ -422,12 +422,12 @@ struct FeedbackFormView: View {
 
     private var contactSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            FormSectionTitle(title: L10n.t("联系方式", "Contact"), required: true)
+            FormSectionTitle(title: L10n.t("联系方式", "Contact info"), required: true)
 
             TextField(
                 L10n.t(
                     "填写您的电话或者邮箱，方便我们联系到您",
-                    "Enter your phone or email so we can reach you"
+                    "Enter your phone or email so we can contact you"
                 ),
                 text: $contactInfo
             )
@@ -446,7 +446,7 @@ struct FeedbackFormView: View {
             submitFeedback()
         } label: {
             ZStack {
-                Text(L10n.t("提交反馈", "Submit"))
+                Text(L10n.t("提交反馈", "Submit Feedback"))
                     .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                     .foregroundStyle(.white)
                     .opacity(isSubmitting ? 0 : 1)

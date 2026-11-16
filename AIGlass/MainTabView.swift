@@ -11,7 +11,7 @@ enum TabItem: Int, CaseIterable {
         switch self {
         case .glasses: L10n.t("眼镜", "Glasses")
         case .ai: L10n.t("AI", "AI")
-        case .album: L10n.t("相册", "Album")
+        case .album: L10n.t("相册", "Gallery")
         case .profile: L10n.t("我的", "Me")
         }
     }
@@ -169,7 +169,7 @@ struct MainTabView: View {
         }
         .alert(L10n.t("需要重新升级蓝牙固件", "Bluetooth Firmware Recovery Required"), isPresented: $showsGen1RecoveryPrompt) {
             Button(L10n.t("稍后", "Later"), role: .cancel) {}
-            Button(L10n.t("立即升级", "Update Now")) {
+            Button(L10n.t("立即升级", "Update now")) {
                 guard let offer = deviceFirmwareUpdateCoordinator.bluetoothUpdate,
                       offer.isGen1BluetoothRecovery,
                       pairingCoordinator.astraA1BleManager.savedPeripheralUUIDString == offer.serialNumber else { return }

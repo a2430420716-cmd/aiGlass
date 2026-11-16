@@ -34,7 +34,7 @@ struct BluetoothOtaUpgradeProgressOverlay: View {
 
                 if showsDismissButton {
                     Button(action: onDismiss) {
-                        Text(L10n.t("知道了", "Got It"))
+                        Text(L10n.t("知道了", "Got it"))
                             .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
@@ -55,9 +55,9 @@ struct BluetoothOtaUpgradeProgressOverlay: View {
     private var title: String {
         switch state {
         case .completed:
-            return L10n.t("升级完成", "Update Complete")
+            return L10n.t("升级完成", "Update complete")
         case .failed:
-            return L10n.t("升级失败", "Update Failed")
+            return L10n.t("升级失败", "Update failed")
         case .versionUnconfirmed:
             return L10n.t("升级结果待确认", "Update Awaiting Confirmation")
         default:

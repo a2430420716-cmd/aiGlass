@@ -19,7 +19,7 @@ enum AstraNotificationFramer {
         "actionrsp0", "guideevt00", "eqmodersp0", "vidresrsp0", "weardetrsp",
         "testresult", "takephoto0", "startvideo", "stopvideo0", "imgrecdata",
         "imgrecrsp0", "aivoicests", "aivoicedat", "aivoicetur", "aivsilrsp0",
-        "wakeuprsp0", "trslatests", "trslatedat"
+        "wakeuprsp0", "trslatests", "trslatedat", "ledbrirsp0"
     ]
 
     static func frames(in data: Data) -> [Data] {

@@ -87,6 +87,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @Published private(set) var settingsWearDetectionEnabled: Bool?
     @Published private(set) var aiVoiceListeningDurationResponse: AIVoiceListeningDurationResponse?
     @Published private(set) var voiceWakeupResponse: VoiceWakeupResponse?
+    @Published private(set) var indicatorBrightness = Gen2IndicatorBrightnessState()
+    private var indicatorBrightnessTask: Task<Void, Never>?
+    private var indicatorBrightnessInitialQuery: Task<Void, Never>?
     /// factreset0 的 testresult：0=失败，1=成功，2=进行中。
     @Published private(set) var factoryResetResult: UInt8?
     private var unpairFactoryResetConfirmation: FactoryResetConfirmation?
@@ -2641,7 +2644,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
         var errorDescription: String? {
             switch self {
-            case .notReady: return L10n.t("设备未连接", "Not connected")
+            case .notReady: return L10n.t("设备未连接", "Device not connected")
             case .sendFailed: return L10n.t("发送命令失败", "Failed to send command")
             case .timeout: return L10n.t("等待设备响应超时", "Device response timed out")
             case .openWifiRejected: return L10n.t("眼镜开启热点失败", "Glasses failed to start hotspot")
@@ -3092,7 +3095,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @discardableResult
     func startAIRecord() -> Bool {
         guard ensureDeviceAvailable(for: "startAIRecord") else {
-            mediaActionAlertMessage = L10n.t("设备未连接", "Not connected")
+            mediaActionAlertMessage = L10n.t("设备未连接", "Device not connected")
             return false
         }
         guard !isBatteryTooLowForMedia else {
@@ -3112,7 +3115,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
             guard let self else { return }
             guard self.ensureDeviceAvailable(for: "startAIRecord-delayed"), self.deviceBluetoothIdentifier == recordingPeripheralID else {
-                self.mediaActionAlertMessage = L10n.t("设备未连接", "Not connected")
+                self.mediaActionAlertMessage = L10n.t("设备未连接", "Device not connected")
                 return
             }
             guard !self.isBatteryTooLowForMedia else {
@@ -3542,7 +3545,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         requiresAvailableDevice: Bool = true
     ) -> Bool {
         guard requiresAvailableDevice ? ensureDeviceAvailable(for: "home-media-action") : isReady else {
-            mediaActionAlertMessage = L10n.t("设备未连接", "Not connected")
+            mediaActionAlertMessage = L10n.t("设备未连接", "Device not connected")
             return false
         }
         if deviceGeneration == .gen1G5K61, let targetID = connectedPeripheral?.identifier,
@@ -3617,7 +3620,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             || (current == .unknown && homeVideoCapture.hasConfirmedRecording)
         isVideoStopping = homeVideoCapture.isStopPending
         if wasVideoStarting, current == .videoRecording {
-            mediaActionToastMessage = L10n.t("眼镜开始录像，请从相册中导入", "Recording started. Import it from Album.")
+            mediaActionToastMessage = L10n.t("眼镜开始录像，请从相册中导入", "Recording has started. \nPlease import the video from your gallery.")
         } else if wasVideoStarting, !isVideoStarting, !isVideoRecording {
             mediaActionToastMessage = current.busyMessage
         }
@@ -3664,7 +3667,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         isVideoRecording = false
         homeVideoCapture.reset()
         showVideoCompletedFeedback()
-        mediaActionToastMessage = L10n.t("眼镜结束录像，请从相册中导入", "Recording stopped. Import it from Album.")
+        mediaActionToastMessage = L10n.t("眼镜结束录像，请从相册中导入", "Recording stopped. \nPlease import the video from your gallery.")
         scheduleHomePhotoNewFileQuery()
         logVideoCapture("completed", detail: "confirmed=device_standby")
     }
@@ -4617,14 +4620,14 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         guard userPairingRetryCount < maxUserPairingRetries else {
             isUserInitiatedPairingConnect = false
             hasStartedConnect = false
-            updateState(.failed(L10n.t("连接失败，请重试", "Connection failed. Try again.")))
+            updateState(.failed(L10n.t("连接失败，请重试", "Connection failed, retry")))
             return
         }
         guard let targetID = userPairingTargetID,
               let peripheral = discoveredPeripherals[targetID] else {
             isUserInitiatedPairingConnect = false
             hasStartedConnect = false
-            updateState(.failed(L10n.t("连接失败，请重试", "Connection failed. Try again.")))
+            updateState(.failed(L10n.t("连接失败，请重试", "Connection failed, retry")))
             return
         }
 
@@ -4897,6 +4900,90 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     func syncAIVisionLevel(_ level: UInt8) -> Bool {
         guard ensureDeviceAvailable(for: "syncAIVisionLevel") else { return false }
         return sendCommand(AstraA1BleProtocol.buildAIVisionSetLevelCommand(level: level))
+    }
+
+    // MARK: - Gen2 indicator brightness
+
+    @discardableResult
+    func queryIndicatorBrightness() -> Bool {
+        startIndicatorBrightnessRequest(.query)
+    }
+
+    @discardableResult
+    func setIndicatorBrightness(level: IndicatorBrightnessLevel) -> Bool {
+        guard ensureDeviceAvailable(for: "setIndicatorBrightness") else { return false }
+        return startIndicatorBrightnessRequest(.set(level))
+    }
+
+    private func startIndicatorBrightnessRequest(_ request: Gen2IndicatorBrightnessState.Request) -> Bool {
+        guard deviceGeneration == .gen2, isReady, !isFirmwareUpgradeFlowBusy,
+              !isInitialDeviceInfoQueryInProgress, !isAIVisionTransferBusy,
+              let target = connectedPeripheral?.identifier,
+              let id = indicatorBrightness.begin(request) else { return false }
+        indicatorBrightnessTask?.cancel()
+        indicatorBrightnessTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for attempt in 1...Gen2IndicatorBrightnessState.maximumWriteAttempts {
+                guard !Task.isCancelled, self.indicatorBrightness.pending?.id == id else { return }
+                guard self.isReady, self.deviceGeneration == .gen2,
+                      self.connectedPeripheral?.identifier == target else {
+                    self.resetIndicatorBrightness()
+                    return
+                }
+                guard !self.isFirmwareUpgradeFlowBusy, !self.isAIVisionTransferBusy else {
+                    self.indicatorBrightness.finish(id: id, failure: .sendFailed)
+                    return
+                }
+                let sent = self.sendCommand(request.packet)
+                self.indicatorBrightness.recordWrite(id: id, accepted: sent)
+                DebugLogStore.logBLEEvent("indicator brightness write",
+                    detail: "request=\(id) operation=\(request) attempt=\(attempt) queued=\(sent); queued_is_not_device_ack")
+                if sent {
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(Gen2IndicatorBrightnessState.responseTimeout * 1_000_000_000))
+                    } catch { return }
+                    guard !Task.isCancelled, self.connectedPeripheral?.identifier == target else { return }
+                    if self.indicatorBrightness.finish(id: id, failure: .timeout) {
+                        DebugLogStore.logBLEEvent("indicator brightness reply timed out",
+                            detail: "request=\(id) operation=\(request) old_firmware_may_not_support_command=true")
+                    }
+                    return
+                }
+                if attempt < Gen2IndicatorBrightnessState.maximumWriteAttempts {
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(Gen2IndicatorBrightnessState.retryInterval * 1_000_000_000))
+                    } catch { return }
+                }
+            }
+            self.indicatorBrightness.finish(id: id, failure: .sendFailed)
+        }
+        return true
+    }
+
+    /// Initial device-info commands have a paced queue; query after it settles.
+    /// Also covers recovered connections that only refresh battery information.
+    private func scheduleIndicatorBrightnessQuery() {
+        indicatorBrightnessInitialQuery?.cancel()
+        guard deviceGeneration == .gen2, let target = connectedPeripheral?.identifier else { return }
+        indicatorBrightnessInitialQuery = Task { @MainActor [weak self] in
+            // markReady schedules its initial info queue after 150 ms.
+            do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
+            for _ in 0..<45 {
+                guard !Task.isCancelled, let self, self.isReady,
+                      self.deviceGeneration == .gen2, self.connectedPeripheral?.identifier == target else { return }
+                if self.indicatorBrightness.isPending || self.indicatorBrightness.level != nil { return }
+                if self.queryIndicatorBrightness() { return }
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+            }
+        }
+    }
+
+    private func resetIndicatorBrightness() {
+        indicatorBrightnessInitialQuery?.cancel()
+        indicatorBrightnessInitialQuery = nil
+        indicatorBrightnessTask?.cancel()
+        indicatorBrightnessTask = nil
+        indicatorBrightness.reset()
     }
 
     /// 恢复出厂设置（factreset0）。
@@ -5803,6 +5890,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func resetConnectionHandles(preserveFailedRecoveryBudget: Bool = false) {
+        resetIndicatorBrightness()
         pendingCharacteristicServices.removeAll()
         failedGATTContext = nil
         if !preserveFailedRecoveryBudget { failedGATTRetryGate.reset() }
@@ -6134,6 +6222,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }()
 
         connectionState = state
+        if previous == .ready, state != .ready {
+            resetIndicatorBrightness()
+        }
         switch state {
         case .idle:
             if boundReconnectScanTargetID != nil { stopScan() }
@@ -6180,6 +6271,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             startBatteryPolling()
             // 设备一进入就绪（刚连上/接管 GATT）就查询运行状态；等 notify 稳定后再发。
             if becameReady {
+                scheduleIndicatorBrightnessQuery()
                 if let peripheral = connectedPeripheral {
                     connectLog(
                         "BLE transport limits",
@@ -6245,7 +6337,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             case .idle, .scanning:
                 return L10n.t("查找设备中...", "Looking for devices...")
             case .connecting:
-                return L10n.t("正在连接设备...", "Connecting...")
+                return L10n.t("正在连接设备...", "Connecting to device...")
             case .discoveringServices:
                 return L10n.t("正在发现服务...", "Discovering services...")
             case .enablingNotifications:
@@ -6260,7 +6352,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             if let modelName = pairingModelNameFilter, !modelName.isEmpty {
                 return L10n.t("正在搜索 \(modelName) 设备...", "Searching for \(modelName)...")
             }
-            return L10n.t("正在搜索设备", "Searching for devices")
+            return L10n.t("正在搜索设备", "Searching for devices…")
         case .connecting, .discoveringServices, .enablingNotifications:
             return L10n.t("正在配对", "Pairing")
         default:
@@ -7231,6 +7323,21 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         DebugLogStore.logBLEReceived(data)
         print("\(logTag) notify command=\(command)")
 
+        if command == "ledbrirsp0" {
+            guard deviceGeneration == .gen2, isReady else { return }
+            guard let response = Gen2IndicatorBrightnessProtocol.parseResponse(data) else {
+                DebugLogStore.logBLEEvent("indicator brightness invalid response", detail: "bytes=\(data.count)")
+                return
+            }
+            if indicatorBrightness.receive(response) {
+                indicatorBrightnessTask?.cancel()
+                indicatorBrightnessTask = nil
+                DebugLogStore.logBLEEvent("indicator brightness confirmed",
+                    detail: "status=\(response.status) actualLevel=\(response.level.rawValue)")
+            }
+            return
+        }
+
         // Gen2连接启用通知后即上报一次，插拔充电器时继续上报。
         // 独立更新 Published 状态，让首页在电量百分比不变时也立即切换充电图标。
         if command == "chargestat" {
@@ -7304,6 +7411,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
         if command == "testresult" {
             if let response = AstraA1BleProtocol.parseFactoryResetResponse(data), response.testID == 0x13 {
+                if deviceGeneration == .gen2, response.result == 1, unpairFactoryResetConfirmation == nil {
+                    resetIndicatorBrightness()
+                    scheduleIndicatorBrightnessQuery()
+                }
                 if var confirmation = unpairFactoryResetConfirmation {
                     let accepted = confirmation.receive(response.result, from: connectedPeripheral?.identifier, now: ProcessInfo.processInfo.systemUptime)
                     unpairFactoryResetConfirmation = confirmation
