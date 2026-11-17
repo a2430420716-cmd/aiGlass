@@ -894,7 +894,6 @@ struct HomeView: View {
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius))
         .shadow(color: AppTheme.cardShadow, radius: 10, y: 4)
         .frame(maxWidth: .infinity)
-        .opacity(ble.isDeviceAvailable ? 1 : 0.5)
         .allowsHitTesting(ble.isDeviceAvailable)
     }
 
@@ -912,7 +911,6 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable || ble.isTakingPhoto || ble.photoCompleted)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                 }
 
                 if showsCapability(\.video) {
@@ -926,7 +924,6 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable || ble.isVideoStarting || ble.isVideoStopping || ble.videoCompleted)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                 }
             }
 
@@ -943,7 +940,6 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                     .background {
                         NavigationLink(
                             isActive: $navigateToAIRecording,
@@ -968,7 +964,6 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                     .background {
                         NavigationLink(
                             isActive: $navigateToAITranslation,
@@ -995,7 +990,6 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                 }
 
                 if showsCapability(\.eq) {
@@ -1010,7 +1004,6 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                 }
             }
 
@@ -1027,7 +1020,6 @@ struct HomeView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!ble.isDeviceAvailable)
-                    .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                     .background {
                         NavigationLink(
                             isActive: $navigateToNewbieGuide,
@@ -1056,7 +1048,6 @@ struct HomeView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!ble.isDeviceAvailable)
-                .opacity(ble.isDeviceAvailable ? 1 : 0.5)
                 .background {
                     NavigationLink(
                         isActive: $navigateToOperationGuide,

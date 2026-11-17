@@ -3464,7 +3464,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         // 旧固件不回 devstatus0/actionrsp0 时，也不能让本地 busy 永久卡住。
         scheduleHomePhotoNewFileQuery()
         scheduleMediaCompletionFallback(isPhoto: true)
-        mediaActionToastMessage = L10n.t("已发送拍照指令，等待眼镜确认", "Photo command sent. Waiting for glasses confirmation.")
+        mediaActionToastMessage = L10n.t("眼镜开始拍照，请从相册中导入", "Photo captured. \nPlease import it from your gallery.")
         print("\(logTag) takephoto0 sent, wait PHOTO_TAKING→STANDBY")
     }
 
@@ -3509,7 +3509,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         // recording -> standby reports complete this capture; no timed STOP.
         homeVideoCapture.startSent(at: ProcessInfo.processInfo.systemUptime)
         scheduleHomeVideoStartConfirmation()
-        mediaActionToastMessage = L10n.t("已发送录像指令，等待眼镜确认", "Video command sent. Waiting for glasses confirmation.")
+        mediaActionToastMessage = L10n.t("眼镜开始录像，请从相册中导入", "Recording has started. \nPlease import the video from your gallery.")
         logVideoCapture("start-sent", detail: "durationOwner=device automaticStopCommand=false minimumManualStopDuration=3s")
     }
 
@@ -3535,7 +3535,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         homeVideoCapture.stopSent()
         // Missing acknowledgements trigger a status query, never a fabricated success.
         scheduleMediaCompletionFallback(isPhoto: false)
-        mediaActionToastMessage = L10n.t("正在停止录像，请稍候", "Stopping recording. Please wait.")
+        mediaActionToastMessage = L10n.t("眼镜结束录像，请从相册中导入", "Recording stopped. \nPlease import the video from your gallery.")
         logVideoCapture("stop-sent", detail: "awaiting=device_standby")
     }
 

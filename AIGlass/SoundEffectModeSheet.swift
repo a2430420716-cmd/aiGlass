@@ -46,12 +46,12 @@ struct SoundEffectModeSheet: View {
     let onSelect: (SoundEffectMode) -> Void
 
     var body: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 20) {
             Text(L10n.t("音效模式", "Sound mode"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .semibold))
                 .foregroundStyle(AppTheme.primaryText)
 
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 ForEach(SoundEffectMode.allCases) { mode in
                     SoundEffectOptionView(
                         mode: mode,
@@ -76,9 +76,10 @@ struct SoundEffectModeSheet: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 24)
+        .padding(.top, 16)
         .padding(.bottom, 16)
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: 520)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(AppTheme.cardBackground)
     }
 }
@@ -94,14 +95,14 @@ private struct SoundEffectOptionView: View {
                 Image(mode.iconName)
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 44, height: 44)
+                    .frame(width: 60, height: 60)
 
                 Text(mode.title)
-                    .font(AppTheme.notoSansSC(size: 14, weight: .regular))
+                    .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                     .foregroundStyle(AppTheme.primaryText)
             }
             .frame(maxWidth: .infinity)
-            .aspectRatio(1, contentMode: .fit)
+            .frame(height: 124)
             .background(AppTheme.cardBackground)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay {
@@ -134,6 +135,7 @@ private struct SoundEffectOptionView: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 

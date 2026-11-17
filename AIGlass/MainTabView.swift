@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum TabItem: Int, CaseIterable {
     case glasses
@@ -40,6 +41,7 @@ enum TabBarLayout {
 }
 
 struct MainTabView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var authSession: AuthSession
     @ObservedObject private var languageManager = AppLanguageManager.shared
     @StateObject private var tabRouter = MainTabRouter()
@@ -54,8 +56,10 @@ struct MainTabView: View {
     @StateObject private var deviceFirmwareUpdateCoordinator = DeviceFirmwareUpdateCoordinator()
     @StateObject private var bluetoothOtaUpgradeManager = BluetoothOtaUpgradeManager()
     @State private var showsGen1RecoveryPrompt = false
-    @State private var gen1RecoverySheet: DeviceFirmwareUpdateCoordinator.UpdateOffer?
+    @State private var deviceUpgradeSheet: DeviceUpdatePresentation?
     @State private var promptedGen1RecoveryTarget: String?
+    @State private var deviceUpdatePrompt: DeviceUpdatePresentation?
+    @State private var didShowDeviceUpdateThisSession = false
 
     /// 眼镜 Tab 内 push / 沉浸页隐藏 TabBar；导航容器尺寸保持不变。
     private var hidesTabBarForNavigation: Bool {
@@ -85,6 +89,25 @@ struct MainTabView: View {
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .background(AppTheme.background.ignoresSafeArea())
+        .overlay {
+            if let presentation = deviceUpdatePrompt {
+                BluetoothFirmwareUpdateDialog(
+                    prompt: presentation.offer,
+                    title: presentation.kind == .bluetooth
+                        ? L10n.t("蓝牙固件升级", "Bluetooth Firmware Update")
+                        : L10n.t("眼镜固件升级", "Glasses Firmware Update"),
+                    onCancel: { deviceUpdatePrompt = nil },
+                    onUpgrade: {
+                        guard canPresentDeviceUpdate, isCurrentOrdinaryOffer(presentation) else {
+                            deviceUpdatePrompt = nil
+                            return
+                        }
+                        deviceUpdatePrompt = nil
+                        deviceUpgradeSheet = presentation
+                    }
+                )
+            }
+        }
         .animation(.none, value: showsTabBar)
         .animation(.none, value: pairingCoordinator.path.count)
         .animation(.none, value: tabRouter.immersiveCoverCount)
@@ -118,10 +141,10 @@ struct MainTabView: View {
             }
             recordingStore.updateCurrentUser(phone)
         }
-        .onChangeCompat(of: authSession.userInfo?.bluetoothBySerialNumber.count ?? 0) { _ in
+        .onChangeCompat(of: authSession.userInfo?.bluetoothBySerialNumber) { _ in
             scheduleFirmwareUpdateRefresh()
         }
-        .onChangeCompat(of: authSession.userInfo?.firmwareBySerialNumber.count ?? 0) { _ in
+        .onChangeCompat(of: authSession.userInfo?.firmwareBySerialNumber) { _ in
             scheduleFirmwareUpdateRefresh()
         }
         .onChangeCompat(of: pairingCoordinator.astraA1BleManager.isDeviceAvailable) { available in
@@ -130,6 +153,7 @@ struct MainTabView: View {
                 aiVoiceChat.resetAfterDisconnect()
                 promptedGen1RecoveryTarget = nil
                 showsGen1RecoveryPrompt = false
+                deviceUpdatePrompt = nil
             } else {
                 showGen1RecoveryPromptIfNeeded()
             }
@@ -141,6 +165,12 @@ struct MainTabView: View {
         }
         .onChangeCompat(of: pairingCoordinator.astraA1BleManager.deviceVersion6350) { _ in
             scheduleFirmwareUpdateRefresh()
+        }
+        .onChangeCompat(of: pairingCoordinator.astraA1BleManager.isQueryingDeviceVersionsAndStorage) { querying in
+            if !querying { scheduleFirmwareUpdateRefresh() }
+        }
+        .onChangeCompat(of: pairingCoordinator.astraA1BleManager.isQueryingAboutDeviceInfo) { querying in
+            if !querying { scheduleFirmwareUpdateRefresh() }
         }
         .onChangeCompat(of: pairingCoordinator.astraA1BleManager.deviceBluetoothIdentifier) { _ in
             promptedGen1RecoveryTarget = nil
@@ -159,6 +189,9 @@ struct MainTabView: View {
             guard !Task.isCancelled else { return }
             showGen1RecoveryPromptIfNeeded()
         }
+        .task(id: deviceUpdatePromptEvaluationKey) {
+            await showDeviceUpdatePromptIfNeeded()
+        }
         .onChangeCompat(of: bluetoothOtaUpgradeManager.state) { newState in
             if case .completed = newState {
                 Task { await authSession.refreshUserInfo() }
@@ -173,16 +206,16 @@ struct MainTabView: View {
                 guard let offer = deviceFirmwareUpdateCoordinator.bluetoothUpdate,
                       offer.isGen1BluetoothRecovery,
                       pairingCoordinator.astraA1BleManager.savedPeripheralUUIDString == offer.serialNumber else { return }
-                gen1RecoverySheet = offer
+                deviceUpgradeSheet = DeviceUpdatePresentation(kind: .bluetooth, offer: offer)
             }
         } message: {
             Text(L10n.t("这副眼镜上次蓝牙固件升级未完成，请重新升级。若暂不升级，下次连接时会再次提醒。", "The previous Bluetooth firmware update for these glasses did not finish. Update again to recover. If you choose Later, you will be reminded on the next connection."))
         }
-        .sheet(item: $gen1RecoverySheet, onDismiss: {
+        .sheet(item: $deviceUpgradeSheet, onDismiss: {
             bluetoothOtaUpgradeManager.resetCompletedState()
             scheduleFirmwareUpdateRefresh()
-        }) { offer in
-            DeviceOtaUpgradeDetailView(kind: .bluetooth, offer: offer, ble: pairingCoordinator.astraA1BleManager)
+        }) { presentation in
+            DeviceOtaUpgradeDetailView(kind: presentation.kind, offer: presentation.offer, ble: pairingCoordinator.astraA1BleManager)
                 .environmentObject(deviceFirmwareUpdateCoordinator)
                 .environmentObject(bluetoothOtaUpgradeManager)
                 .environmentObject(importManager)
@@ -249,15 +282,115 @@ struct MainTabView: View {
               ble.savedPeripheralUUIDString == offer.serialNumber,
               let targetID = UUID(uuidString: offer.serialNumber),
               Gen1BluetoothOtaRecoveryStore().record(for: targetID) != nil,
+              scenePhase == .active,
+              tabRouter.selectedTab == .glasses,
               pairingCoordinator.path.isEmpty,
               !pairingCoordinator.showSearchingSheet,
               !pairingCoordinator.userConfirmedPairingDevice,
               !pairingCoordinator.isBindingDevice,
               promptedGen1RecoveryTarget != offer.serialNumber,
-              gen1RecoverySheet == nil, !bluetoothOtaUpgradeManager.isUpgrading else { return }
+              deviceUpgradeSheet == nil, !bluetoothOtaUpgradeManager.isUpgrading else { return }
+        deviceUpdatePrompt = nil
         promptedGen1RecoveryTarget = offer.serialNumber
         showsGen1RecoveryPrompt = true
         DebugLogStore.logBLEEvent("Gen1 Bluetooth OTA recovery prompt", detail: "target=\(offer.serialNumber) targetVersion=\(offer.serverInfo.version) fresh_version_not_required")
+    }
+
+    private struct DeviceUpdatePresentation: Identifiable {
+        let kind: OtaUpgradeKind
+        let offer: DeviceFirmwareUpdateCoordinator.UpdateOffer
+        var id: String { "\(kind == .bluetooth ? "bluetooth" : "firmware")|\(offer.id)" }
+    }
+
+    private var canPresentDeviceUpdate: Bool {
+        let status = pairingCoordinator.astraA1BleManager.deviceRuntimeStatus
+        return scenePhase == .active && authSession.isLoggedIn
+            && (status == .standby || status == .unknown)
+            && tabRouter.selectedTab == .glasses && pairingCoordinator.path.isEmpty
+            && showsTabBar && !tabRouter.hidesTabBarForImmersiveCover
+            && !pairingCoordinator.showSearchingSheet
+            && !pairingCoordinator.userConfirmedPairingDevice && !pairingCoordinator.isBindingDevice
+            && !importManager.isImporting && !recordingImportManager.isImporting
+            && !bluetoothOtaUpgradeManager.isUpgrading && !bluetoothOtaUpgradeManager.state.isTerminal
+            && deviceUpgradeSheet == nil
+    }
+
+    /// Includes readiness so a deferred offer is reconsidered after pairing/navigation.
+    private struct DeviceUpdatePromptEvaluation: Equatable {
+        let bluetooth: DeviceFirmwareUpdateCoordinator.UpdateOffer?
+        let firmware: DeviceFirmwareUpdateCoordinator.UpdateOffer?
+        let readiness: String
+    }
+
+    private var deviceUpdatePromptEvaluationKey: DeviceUpdatePromptEvaluation {
+        let ble = pairingCoordinator.astraA1BleManager
+        let readiness = [
+            "\(canPresentDeviceUpdate)", "\(showsGen1RecoveryPrompt)",
+            ble.deviceBluetoothIdentifier ?? "", "\(ble.isDeviceAvailable)",
+            "\(ble.isQueryingDeviceVersionsAndStorage || ble.isQueryingAboutDeviceInfo)",
+            "\(ble.deviceVersionQueryFailed)", ble.deviceVersion2800 ?? "", ble.deviceVersion6350 ?? ""
+        ].joined(separator: "|")
+        return DeviceUpdatePromptEvaluation(
+            bluetooth: deviceFirmwareUpdateCoordinator.bluetoothUpdate,
+            firmware: deviceFirmwareUpdateCoordinator.firmwareUpdate,
+            readiness: readiness
+        )
+    }
+
+    private func isCurrentOrdinaryOffer(_ presentation: DeviceUpdatePresentation) -> Bool {
+        let ble = pairingCoordinator.astraA1BleManager
+        guard ble.isDeviceAvailable, !ble.deviceVersionQueryFailed,
+              !presentation.offer.isGen1BluetoothRecovery,
+              ble.matchesCurrentDevice(serialNumber: presentation.offer.serialNumber,
+                                       hardwareSN: presentation.offer.serialNumber) else { return false }
+        let latest = presentation.kind == .bluetooth
+            ? deviceFirmwareUpdateCoordinator.bluetoothUpdate : deviceFirmwareUpdateCoordinator.firmwareUpdate
+        let currentVersion = presentation.kind == .bluetooth ? ble.deviceVersion2800 : ble.deviceVersion6350
+        return latest == presentation.offer && currentVersion == presentation.offer.currentVersion
+    }
+
+    @MainActor
+    private func showDeviceUpdatePromptIfNeeded() async {
+        if deviceFirmwareUpdateCoordinator.bluetoothUpdate?.isGen1BluetoothRecovery == true {
+            deviceUpdatePrompt = nil
+            showGen1RecoveryPromptIfNeeded()
+            return
+        }
+        if let presented = deviceUpdatePrompt {
+            if !isCurrentOrdinaryOffer(presented) {
+                deviceUpdatePrompt = nil
+            } else if !canPresentDeviceUpdate {
+                deviceUpdatePrompt = nil
+                didShowDeviceUpdateThisSession = false
+            }
+            return
+        }
+        guard !didShowDeviceUpdateThisSession, canPresentDeviceUpdate,
+              !showsGen1RecoveryPrompt else { return }
+        let presentation: DeviceUpdatePresentation
+        if let offer = deviceFirmwareUpdateCoordinator.bluetoothUpdate {
+            presentation = DeviceUpdatePresentation(kind: .bluetooth, offer: offer)
+        } else if let offer = deviceFirmwareUpdateCoordinator.firmwareUpdate {
+            presentation = DeviceUpdatePresentation(kind: .firmware, offer: offer)
+        } else { return }
+        let ble = pairingCoordinator.astraA1BleManager
+        guard !ble.isQueryingDeviceVersionsAndStorage, !ble.isQueryingAboutDeviceInfo,
+              isCurrentOrdinaryOffer(presentation) else { return }
+
+        // Wait for transient home sheets/alerts to close before counting the prompt as shown.
+        // This task is cancelled when the target, offer or navigation readiness changes.
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled, canPresentDeviceUpdate, isCurrentOrdinaryOffer(presentation),
+                  !showsGen1RecoveryPrompt else { return }
+            let root = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .flatMap(\.windows).first(where: \.isKeyWindow)?.rootViewController
+            guard let root, root.presentedViewController == nil else { continue }
+            didShowDeviceUpdateThisSession = true
+            deviceUpdatePrompt = presentation
+            return
+        }
     }
 
     @ViewBuilder

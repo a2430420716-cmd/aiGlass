@@ -351,9 +351,9 @@ struct GlassesSettingsView: View {
             isPresented: $showVideoResolutionOptions,
             titleVisibility: .visible
         ) {
-            Button("2K") { applyVideoResolution(2) }
-            Button("1080p") { applyVideoResolution(1) }
-            Button("720p") { applyVideoResolution(0) }
+            Button("2K (2016×1512)") { applyVideoResolution(2) }
+            Button("1080p (1920×1080)") { applyVideoResolution(1) }
+            Button("720p (1280×720)") { applyVideoResolution(0) }
             Button(L10n.t("取消", "Cancel"), role: .cancel) {}
         }
         .confirmationDialog(

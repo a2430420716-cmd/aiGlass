@@ -32,6 +32,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
     private var reconnectReleaseTask: Task<Void, Never>?
     private var reconnectReleasePeripheral: CBPeripheral?
     private var nonconnectableTargets = Set<UUID>()
+    private var rejectedIdentityTargets = Set<UUID>()
     private var cancelGraceTask: Task<Void, Never>?
     private var finishingResult: Result<Void, Error>?
     private var onPhaseChanged: ((Gen1BluetoothOtaSessionState.Phase) -> Void)?
@@ -65,6 +66,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
         reconnectRequested = false
         connectionPolicy = Gen1BluetoothOtaConnectionPolicy()
         nonconnectableTargets.removeAll()
+        rejectedIdentityTargets.removeAll()
         self.recoveryRecord = recoveryRecord
         self.log = log
         self.onPhaseChanged = onPhaseChanged
@@ -349,6 +351,7 @@ final class Gen1BluetoothOtaTransport: NSObject {
         reconnectRequested = true
         connectionPolicy.begin(now: ProcessInfo.processInfo.systemUptime)
         nonconnectableTargets.removeAll()
+        rejectedIdentityTargets.removeAll()
         armTimeout(seconds: UInt64(Gen1BluetoothOtaConnectionPolicy.totalTimeout), message: "蓝牙升级重连超时，请重新连接眼镜后检查版本")
         releaseForReconnect()
     }
@@ -390,17 +393,25 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBCentralManagerDelegate {
         guard central === self.central, continuation != nil, finishingResult == nil,
               reconnectReleasePeripheral == nil,
               connectionPolicy.canAttempt(now: ProcessInfo.processInfo.systemUptime) else { return }
-        let matches: Bool
-        if requiresLoaderMode, !reconnectRequested,
-           peripheral.identifier == recoveryRecord?.otaPeripheralID {
-            matches = true
-        } else if let reconnectMAC {
-            guard let data = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data else { return }
-            matches = JLAdvParse.otaBleMacAddress(reconnectMAC, isEqualToCBAdvDataManufacturerData: data)
+        let manufacturer = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data ?? Data()
+        let matchesExpectedMAC: Bool
+        if let reconnectMAC, !manufacturer.isEmpty {
+            matchesExpectedMAC = JLAdvParse.otaBleMacAddress(reconnectMAC, isEqualToCBAdvDataManufacturerData: manufacturer)
         } else {
-            matches = peripheral.identifier == targetIdentifier
+            matchesExpectedMAC = false
         }
-        guard matches else { return }
+        let expectedUUID = requiresLoaderMode && !reconnectRequested
+            ? recoveryRecord?.otaPeripheralID : targetIdentifier
+        guard let match = Gen1BluetoothOtaTargetIdentity.match(
+            candidateID: peripheral.identifier, expectedUUID: expectedUUID,
+            expectedMAC: reconnectMAC, matchesExpectedMAC: matchesExpectedMAC
+        ) else {
+            if peripheral.identifier == expectedUUID, reconnectMAC != nil,
+               rejectedIdentityTargets.insert(peripheral.identifier).inserted {
+                log("RCSP saved UUID rejected: live OTA MAC does not match target=\(peripheral.identifier) expectedMAC=\(reconnectMAC ?? "none") manufacturerBytes=\(manufacturer.count); keep scanning")
+            }
+            return
+        }
         let isConnectable = (advertisementData[CBAdvertisementDataIsConnectable] as? NSNumber)?.boolValue ?? true
         guard isConnectable else {
             if nonconnectableTargets.insert(peripheral.identifier).inserted {
@@ -408,17 +419,11 @@ extension Gen1BluetoothOtaTransport: @preconcurrency CBCentralManagerDelegate {
             }
             return
         }
-        let manufacturer = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data ?? Data()
         let manufacturerHex = manufacturer.prefix(64).map { String(format: "%02X", $0) }.joined()
         let services = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []).map(\.uuidString).joined(separator: ",")
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name ?? "unknown"
         log("RCSP discovered matching target=\(peripheral.identifier) name=\(name.debugDescription) state=\(peripheral.state.rawValue) connectable=\(isConnectable) rssi=\(RSSI) expectedMAC=\(reconnectMAC ?? "none") services=[\(services)] manufacturerBytes=\(manufacturer.count) manufacturerHex=\(manufacturerHex)")
-        if reconnectMAC != nil, var record = recoveryRecord {
-            record.otaPeripheralID = peripheral.identifier
-            recoveryRecord = record
-            Gen1BluetoothOtaRecoveryStore().markImageSubmitted(record)
-        }
-        connect(peripheral, source: reconnectMAC == nil ? "advertised UUID" : "advertised OTA MAC")
+        connect(peripheral, source: match.rawValue)
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -574,7 +579,11 @@ extension Gen1BluetoothOtaTransport: JLHashHandlerDelegate, JL_OTAManagerDelegat
         // Persist before the SDK can write firmware, including an app termination
         // before its first progress callback. Connection/authentication failures
         // before this point neither create nor erase recovery evidence.
-        if let recoveryRecord {
+        if var recoveryRecord {
+            if reconnectMAC != nil {
+                recoveryRecord.otaPeripheralID = peripheral?.identifier
+                self.recoveryRecord = recoveryRecord
+            }
             Gen1BluetoothOtaRecoveryStore().markImageSubmitted(recoveryRecord)
             log("RCSP recovery marker persisted before submitting image")
         }

@@ -20,6 +20,7 @@ struct ChangePasswordView: View {
     @State private var isSendingCode = false
     @State private var isSubmitting = false
     @State private var alertMessage: String?
+    @State private var validationMessage: String?
     @State private var showsSuccessToast = false
     @State private var countdownTask: Task<Void, Never>?
     @State private var submitTask: Task<Void, Never>?
@@ -56,22 +57,11 @@ struct ChangePasswordView: View {
         verificationCode.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var normalizedPassword: String {
-        password.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var normalizedPasswordConfirmation: String {
-        passwordConfirmation.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private var canSubmit: Bool {
         !normalizedVerificationCode.isEmpty
-            && passwordValidationMessage(for: password) == nil
-            && !normalizedPasswordConfirmation.isEmpty
-            && password == passwordConfirmation
-            && !isSubmitting
-            && authSession.token?.isEmpty == false
-            && isAccountValid
+            && !password.isEmpty
+            && !passwordConfirmation.isEmpty
+            && !isSubmitting && !isSendingCode && !showsSuccessToast
     }
 
     private func passwordValidationMessage(for password: String) -> String? {
@@ -132,17 +122,26 @@ struct ChangePasswordView: View {
         .background(AppTheme.background.ignoresSafeArea())
         .navigationBarHidden(true)
         .overlay(alignment: .bottom) {
-            if showsSuccessToast {
-                Text(L10n.t("密码修改成功", "Password changed successfully"))
+            if let message = validationMessage ?? (showsSuccessToast ? L10n.t("密码修改成功", "Password changed successfully") : nil) {
+                Text(message)
                     .font(AppTheme.notoSansSC(size: 14, weight: .medium))
                     .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)
                     .background(Color.black.opacity(0.78))
-                    .clipShape(Capsule())
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .padding(.horizontal, 24)
                     .padding(.bottom, 72)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .allowsHitTesting(false)
             }
+        }
+        .task(id: validationMessage) {
+            guard validationMessage != nil else { return }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            validationMessage = nil
         }
         .alert(L10n.t("提示", "Notice"), isPresented: Binding(
             get: { alertMessage != nil },
@@ -392,45 +391,44 @@ struct ChangePasswordView: View {
     }
 
     private func changePassword() {
-        guard let token = authSession.token, !token.isEmpty else {
-            alertMessage = L10n.t("登录凭证缺失，请重新登录", "Session expired. Please sign in again")
-            return
-        }
-
+        guard !isSubmitting else { return }
+        focusedField = nil
         let code = normalizedVerificationCode
-        let newPassword = normalizedPassword
-        let confirmPassword = normalizedPasswordConfirmation
+        let newPassword = password
+        let confirmPassword = passwordConfirmation
 
         guard isAccountValid else {
-            alertMessage = accountValue.contains("@")
+            validationMessage = accountValue.contains("@")
                 ? L10n.t("请输入正确的邮箱", "Please enter a valid email")
                 : L10n.t("请输入正确的手机号", "Enter a valid phone number")
             return
         }
 
         guard !code.isEmpty else {
-            alertMessage = L10n.t("请输入验证码", "Enter the verification code")
+            validationMessage = L10n.t("请输入验证码", "Enter the verification code")
             return
         }
 
         guard !newPassword.isEmpty, !confirmPassword.isEmpty else {
-            alertMessage = L10n.t("请输入新密码", "Enter a new password")
+            validationMessage = L10n.t("请输入新密码", "Enter a new password")
             return
         }
 
         guard newPassword == confirmPassword else {
-            alertMessage = L10n.t("两次输入的密码不一致", "Passwords do not match")
+            validationMessage = L10n.t("两次密码不一致", "Passwords do not match")
             return
         }
 
         if let message = passwordValidationMessage(for: newPassword) {
-            alertMessage = message
+            validationMessage = message
             return
         }
 
-        guard !isSubmitting else { return }
-
-        focusedField = nil
+        guard let token = authSession.token, !token.isEmpty else {
+            alertMessage = L10n.t("登录凭证缺失，请重新登录", "Session expired. Please sign in again")
+            return
+        }
+        validationMessage = nil
         isSubmitting = true
 
         submitTask = Task {

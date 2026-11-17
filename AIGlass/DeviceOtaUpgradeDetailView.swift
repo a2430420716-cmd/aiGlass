@@ -129,19 +129,17 @@ struct DeviceOtaUpgradeDetailView: View {
                         if needsGen1Wifi, !isUpgradingForThisPage {
                             gen1WifiSection
                         }
-                        if isUpgradingForThisPage {
-                            warningSection
-                        }
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 12)
                     .padding(.bottom, 24)
                 }
 
+                warningSection
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 20)
+
                 if !isUpgradingForThisPage {
-                    warningSection
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 20)
                     upgradeButton
                         .padding(.horizontal, 20)
                         .padding(.bottom, 28)
@@ -236,6 +234,15 @@ struct DeviceOtaUpgradeDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
+    private var stayOnPageNotice: some View {
+        Text(L10n.t("升级中，请保持在此页面", "Updating… Please stay on this screen"))
+            .font(AppTheme.notoSansSC(size: 13, weight: .medium))
+            .foregroundStyle(.red)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     @ViewBuilder
     private var centerSection: some View {
         VStack(spacing: 16) {
@@ -319,6 +326,8 @@ struct DeviceOtaUpgradeDetailView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity)
+
+            stayOnPageNotice
         }
         .padding(.top, 8)
     }

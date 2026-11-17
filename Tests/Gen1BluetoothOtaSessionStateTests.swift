@@ -13,7 +13,38 @@ enum Gen1BluetoothOtaSessionStateTests {
         testReconnectDeadlineAndStaleCallbacks()
         testNativeTimeoutReplacesCentralAfterSuccessfulCancellation()
         testReleaseRecoveryLimitsAndStageOwnership()
+        testRecoveryTargetIdentity()
         print("Gen1 Bluetooth OTA stage tests passed")
+    }
+
+    private static func testRecoveryTargetIdentity() {
+        let normalTarget = UUID(uuidString: "005FD90D-44A0-1B14-B226-B9DF4CD3C8DA")!
+        let staleLoader = UUID(uuidString: "2F0E9BFA-657F-B4BE-78F2-6EFCFD2B43C4")!
+        let freshLoader = UUID()
+        typealias Identity = Gen1BluetoothOtaTargetIdentity
+
+        // November 16: L1 0079 matched the stored loader UUID for L1 0061.
+        // A stored UUID must never override conflicting or missing live MAC evidence.
+        precondition(Identity.match(candidateID: staleLoader, expectedUUID: staleLoader,
+                                    expectedMAC: "cc731542f70b", matchesExpectedMAC: false) == nil)
+        precondition(Identity.match(candidateID: normalTarget, expectedUUID: normalTarget,
+                                    expectedMAC: "cc731542f70b", matchesExpectedMAC: false) == nil)
+        precondition(Identity.match(candidateID: freshLoader, expectedUUID: staleLoader,
+                                    expectedMAC: "cc731542f70b", matchesExpectedMAC: true) == .otaMAC,
+                     "A fresh MAC match can identify the loader even when its UUID changes")
+        precondition(Identity.match(candidateID: staleLoader, expectedUUID: staleLoader,
+                                    expectedMAC: "cc731542f70b", matchesExpectedMAC: true) == .otaMAC)
+        precondition(Identity.match(candidateID: normalTarget, expectedUUID: normalTarget,
+                                    expectedMAC: nil, matchesExpectedMAC: false) == .uuid,
+                     "Normal first-stage discovery still requires the bound UUID")
+        precondition(Identity.match(candidateID: staleLoader, expectedUUID: staleLoader,
+                                    expectedMAC: nil, matchesExpectedMAC: false) == .uuid,
+                     "UUID-only recovery records retain their exact-identity fallback")
+        precondition(Identity.match(candidateID: freshLoader, expectedUUID: staleLoader,
+                                    expectedMAC: nil, matchesExpectedMAC: false) == nil)
+        precondition(Identity.match(candidateID: freshLoader, expectedUUID: nil,
+                                    expectedMAC: nil, matchesExpectedMAC: true) == nil,
+                     "No expected identity must never select an arbitrary nearby device")
     }
 
     private static func testTwoTransfers() {

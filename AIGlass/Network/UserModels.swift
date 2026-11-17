@@ -5,6 +5,7 @@ struct DeviceOTAInfo: Equatable {
     let version: String
     let downloadURL: String
     let content: String
+    var isForced = false
 }
 
 private struct DeviceOTAEntry: Decodable {
@@ -12,16 +13,33 @@ private struct DeviceOTAEntry: Decodable {
     let version: String
     let downloadURL: String
     let content: String
+    let isForced: Bool
 
     enum CodingKeys: String, CodingKey {
         case version
         case content
         case serialNumber = "serial_number"
         case downloadURL = "download_url"
+        case isForced = "is_forced"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        serialNumber = try container.decode(String.self, forKey: .serialNumber)
+        version = try container.decode(String.self, forKey: .version)
+        downloadURL = try container.decode(String.self, forKey: .downloadURL)
+        content = try container.decode(String.self, forKey: .content)
+        if let value = try? container.decode(Int.self, forKey: .isForced) {
+            isForced = value == 1
+        } else if let value = try? container.decode(String.self, forKey: .isForced) {
+            isForced = value == "1"
+        } else {
+            isForced = (try? container.decode(Bool.self, forKey: .isForced)) ?? false
+        }
     }
 
     var info: DeviceOTAInfo {
-        DeviceOTAInfo(version: version, downloadURL: downloadURL, content: content)
+        DeviceOTAInfo(version: version, downloadURL: downloadURL, content: content, isForced: isForced)
     }
 }
 

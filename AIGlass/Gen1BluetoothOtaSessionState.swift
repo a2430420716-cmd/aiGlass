@@ -79,6 +79,23 @@ struct Gen1BluetoothOtaSessionState {
     var canVerifyAfterReboot: Bool { phase == .awaitingResult }
 }
 
+/// A cached loader UUID is only a fallback when there is no expected OTA MAC.
+/// An expected address always requires evidence from the current advertisement.
+enum Gen1BluetoothOtaTargetIdentity {
+    enum Match: String {
+        case otaMAC = "advertised OTA MAC"
+        case uuid = "advertised UUID"
+    }
+
+    static func match(candidateID: UUID, expectedUUID: UUID?, expectedMAC: String?,
+                      matchesExpectedMAC: Bool) -> Match? {
+        if expectedMAC != nil {
+            return matchesExpectedMAC ? .otaMAC : nil
+        }
+        return candidateID == expectedUUID ? .uuid : nil
+    }
+}
+
 /// Bounds initial service acquisition and each SDK-requested loader reconnect.
 /// A stalled native connect must release before exact-target rediscovery.
 struct Gen1BluetoothOtaConnectionPolicy {

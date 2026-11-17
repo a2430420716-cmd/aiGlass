@@ -13,7 +13,9 @@ struct BluetoothFirmwareUpdateDialog: View {
         ZStack(alignment: .bottom) {
             Color.black.opacity(0.45)
                 .ignoresSafeArea()
-                .onTapGesture(perform: onCancel)
+                .onTapGesture {
+                    if canDismiss { onCancel() }
+                }
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(title ?? L10n.t("蓝牙固件升级", "Bluetooth Firmware Update"))
@@ -35,7 +37,7 @@ struct BluetoothFirmwareUpdateDialog: View {
                     .padding(.top, 16)
 
                 ScrollView(showsIndicators: false) {
-                    Text(HTMLPlainText.from(prompt.serverInfo.content))
+                    Text(releaseNotes)
                         .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                         .foregroundStyle(AppTheme.primaryText)
                         .lineSpacing(4)
@@ -49,11 +51,14 @@ struct BluetoothFirmwareUpdateDialog: View {
                     .padding(.bottom, 28)
             }
             .padding(.horizontal, 20)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: 520)
             .background(AppTheme.cardBackground)
+            .contentShape(Rectangle())
+            .onTapGesture {}
             .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
             .padding(.horizontal, 12)
             .padding(.bottom, 12)
+            .frame(maxWidth: .infinity)
         }
         .transition(.opacity)
         .task(id: prompt.serverInfo.downloadURL) {
@@ -73,14 +78,16 @@ struct BluetoothFirmwareUpdateDialog: View {
 
     private var actionButtons: some View {
         HStack(spacing: 12) {
-            Button(action: onCancel) {
-                Text(showsUpgradeButton ? L10n.t("取消", "Cancel") : L10n.t("知道了", "Got it"))
-                    .font(AppTheme.notoSansSC(size: 16, weight: .medium))
-                    .foregroundStyle(showsUpgradeButton ? AppTheme.primaryText : .white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(showsUpgradeButton ? Color(red: 0.92, green: 0.92, blue: 0.92) : Color(red: 0.20, green: 0.20, blue: 0.20))
-                    .clipShape(Capsule())
+            if canDismiss {
+                Button(action: onCancel) {
+                    Text(showsUpgradeButton ? L10n.t("取消", "Cancel") : L10n.t("知道了", "Got it"))
+                        .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                        .foregroundStyle(showsUpgradeButton ? AppTheme.primaryText : .white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(showsUpgradeButton ? Color(red: 0.92, green: 0.92, blue: 0.92) : Color(red: 0.20, green: 0.20, blue: 0.20))
+                        .clipShape(Capsule())
+                }
             }
 
             if showsUpgradeButton {
@@ -95,6 +102,13 @@ struct BluetoothFirmwareUpdateDialog: View {
                 }
             }
         }
+    }
+
+    private var canDismiss: Bool { !showsUpgradeButton || !prompt.serverInfo.isForced }
+
+    private var releaseNotes: String {
+        let text = HTMLPlainText.from(prompt.serverInfo.content).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? L10n.t("优化使用体验，修复已知问题。", "Improved experience and bug fixes.") : text
     }
 
     private func displayVersion(_ version: String) -> String {

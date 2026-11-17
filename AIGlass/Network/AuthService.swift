@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 enum SMSCodeType: String {
     case login = "1"
@@ -196,17 +197,20 @@ enum AuthService {
         return result
     }
 
-    /// 手机号忘记密码：共用 user/change_pwd，type=3，无需登录凭证。
+    /// 手机号忘记密码：POST login/forget_pwd，无需登录凭证。
     static func forgetPassword(
         phoneNumber: String,
         code: String,
         password: String
     ) async throws {
-        try await UserService.changePassword(
-            phoneNumber: phoneNumber,
-            code: code,
-            password: password,
-            type: .forgotPassword
+        _ = try await APIClient.post(
+            path: "login/forget_pwd",
+            body: [
+                "phonenum": phoneNumber,
+                "code": code,
+                "password": password
+            ],
+            as: EmptyResult.self
         )
     }
 
