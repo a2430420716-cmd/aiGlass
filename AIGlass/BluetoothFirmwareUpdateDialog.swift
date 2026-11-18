@@ -8,57 +8,68 @@ struct BluetoothFirmwareUpdateDialog: View {
     let onCancel: () -> Void
     let onUpgrade: () -> Void
     @State private var packageSizeText: String?
+    @State private var releaseNotesHeight: CGFloat = 0
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Color.black.opacity(0.45)
-                .ignoresSafeArea()
-                .onTapGesture {
-                    if canDismiss { onCancel() }
-                }
+        GeometryReader { geometry in
+            ZStack(alignment: .bottom) {
+                Color.black.opacity(0.45)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        if canDismiss { onCancel() }
+                    }
 
-            VStack(alignment: .leading, spacing: 0) {
-                Text(title ?? L10n.t("蓝牙固件升级", "Bluetooth Firmware Update"))
-                    .font(AppTheme.notoSansSC(size: 18, weight: .bold))
-                    .foregroundStyle(AppTheme.primaryText)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 24)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title ?? L10n.t("眼镜蓝牙升级", "Glasses Bluetooth update"))
+                        .font(AppTheme.notoSansSC(size: 17, weight: .bold))
+                        .foregroundStyle(AppTheme.primaryText)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 18)
 
-                Text(versionLine)
-                    .font(AppTheme.notoSansSC(size: 14, weight: .regular))
-                    .foregroundStyle(AppTheme.primaryText)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 8)
+                    Text(versionLine)
+                        .font(AppTheme.notoSansSC(size: 14, weight: .regular))
+                        .foregroundStyle(AppTheme.primaryText)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 6)
 
-                Text(L10n.t("欢迎使用MOCO AI Glasses，为了提升体验，我们推荐升级至此版本。", "Welcome to MOCO AI Glasses. To improve your experience, we recommend updating to this version."))
-                    .font(AppTheme.notoSansSC(size: 14, weight: .regular))
-                    .foregroundStyle(AppTheme.primaryText)
-                    .lineSpacing(4)
-                    .padding(.top, 16)
-
-                ScrollView(showsIndicators: false) {
-                    Text(releaseNotes)
+                    Text(L10n.t("欢迎使用MOCO AI Glasses，为了提升体验，我们推荐升级至此版本", "Welcome to MOCO AI Glasses. To improve your experience, we recommend updating to this version."))
                         .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                         .foregroundStyle(AppTheme.primaryText)
                         .lineSpacing(4)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: 180)
-                .padding(.top, 12)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 12)
 
-                actionButtons
-                    .padding(.top, 24)
-                    .padding(.bottom, 28)
+                    ScrollView(showsIndicators: false) {
+                        Text(releaseNotes)
+                            .font(AppTheme.notoSansSC(size: 14, weight: .regular))
+                            .foregroundStyle(AppTheme.primaryText)
+                            .lineSpacing(4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .background {
+                                GeometryReader { content in
+                                    Color.clear.preference(key: FirmwareUpdateNotesHeightKey.self, value: content.size.height)
+                                }
+                            }
+                    }
+                    .frame(height: min(max(20, releaseNotesHeight), min(180, geometry.size.height * 0.3)))
+                    .onPreferenceChange(FirmwareUpdateNotesHeightKey.self) { releaseNotesHeight = $0 }
+                    .padding(.top, 8)
+
+                    actionButtons
+                        .padding(.top, 16)
+                        .padding(.bottom, 18)
+                }
+                .padding(.horizontal, 20)
+                .frame(maxWidth: 420)
+                .background(AppTheme.cardBackground)
+                .contentShape(Rectangle())
+                .onTapGesture {}
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+                .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal, 20)
-            .frame(maxWidth: 520)
-            .background(AppTheme.cardBackground)
-            .contentShape(Rectangle())
-            .onTapGesture {}
-            .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
-            .padding(.horizontal, 12)
-            .padding(.bottom, 12)
-            .frame(maxWidth: .infinity)
         }
         .transition(.opacity)
         .task(id: prompt.serverInfo.downloadURL) {
@@ -84,7 +95,7 @@ struct BluetoothFirmwareUpdateDialog: View {
                         .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                         .foregroundStyle(showsUpgradeButton ? AppTheme.primaryText : .white)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 50)
+                        .frame(height: 46)
                         .background(showsUpgradeButton ? Color(red: 0.92, green: 0.92, blue: 0.92) : Color(red: 0.20, green: 0.20, blue: 0.20))
                         .clipShape(Capsule())
                 }
@@ -96,7 +107,7 @@ struct BluetoothFirmwareUpdateDialog: View {
                         .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 50)
+                        .frame(height: 46)
                         .background(Color(red: 0.20, green: 0.20, blue: 0.20))
                         .clipShape(Capsule())
                 }
@@ -107,8 +118,8 @@ struct BluetoothFirmwareUpdateDialog: View {
     private var canDismiss: Bool { !showsUpgradeButton || !prompt.serverInfo.isForced }
 
     private var releaseNotes: String {
-        let text = HTMLPlainText.from(prompt.serverInfo.content).trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? L10n.t("优化使用体验，修复已知问题。", "Improved experience and bug fixes.") : text
+        let text = HTMLPlainText.from(prompt.serverInfo.localizedContent).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? L10n.t("暂无更新内容", "No release notes") : text
     }
 
     private func displayVersion(_ version: String) -> String {
@@ -118,5 +129,12 @@ struct BluetoothFirmwareUpdateDialog: View {
             return trimmed
         }
         return "V\(trimmed)"
+    }
+}
+
+private struct FirmwareUpdateNotesHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }

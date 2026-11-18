@@ -81,6 +81,9 @@ struct AITranslationHomeView: View {
                 Text(title)
                     .font(AppTheme.notoSansSC(size: 18, weight: .regular))
                     .foregroundStyle(AppTheme.primaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 16)
             }
             .frame(maxWidth: .infinity)
             .frame(height: 194)

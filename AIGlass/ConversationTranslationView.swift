@@ -221,12 +221,15 @@ struct ConversationTranslationView: View {
                             // 眼镜消息回放走手机；手机消息回放走眼镜。
                             Image(message.side == .glasses
                                   ? "android_translation_phone_speaker"
-                                  : "android_translation_glasses_speaker")
+                                  : "android_translation_glasses_speaker_on")
                                 .resizable()
                                 .scaledToFit()
                                 .frame(width: 22, height: 22)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(message.side == .glasses
+                                            ? L10n.t("在手机播放译文", "Play translation on phone")
+                                            : L10n.t("在眼镜播放译文", "Play translation on glasses"))
                     }
                 }
             }
@@ -242,7 +245,7 @@ struct ConversationTranslationView: View {
     }
 
     private var recordControls: some View {
-        HStack {
+        HStack(spacing: 16) {
             recordButton(
                 title: controller.glassesStopping ? L10n.t("正在结束…", "Finishing…")
                     : (controller.glassesActive ? L10n.t("停止录音", "Stop recording") : L10n.t("眼镜录音", "Glasses record")),
@@ -258,8 +261,6 @@ struct ConversationTranslationView: View {
                 action: controller.toggleGlassesRecording
             )
 
-            Spacer()
-
             recordButton(
                 title: controller.phoneActive ? L10n.t("停止录音", "Stop recording") : L10n.t("手机录音", "Phone record"),
                 idleImage: "android_conversation_phone_record",
@@ -274,7 +275,7 @@ struct ConversationTranslationView: View {
                 action: controller.togglePhoneRecording
             )
         }
-        .padding(.horizontal, 58)
+        .padding(.horizontal, 24)
         .padding(.top, 8)
         .padding(.bottom, 20)
     }
@@ -301,7 +302,10 @@ struct ConversationTranslationView: View {
                 Text(title)
                     .font(AppTheme.notoSansSC(size: 17, weight: .regular))
                     .foregroundStyle(AppTheme.primaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
+            .frame(maxWidth: .infinity)
         }
         .buttonStyle(.plain)
         .opacity(isDisabled ? 0.45 : 1)

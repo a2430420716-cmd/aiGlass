@@ -17,9 +17,23 @@ enum AiVisionSettings {
         var title: String {
             switch self {
             case .fast: return L10n.t("极速", "Fast")
-            case .normal: return L10n.t("普通", "Standard")
-            case .detail: return L10n.t("细节", "Detailed")
-            case .hd: return L10n.t("高清", "Ultra")
+            case .normal: return L10n.t("标准", "Standard")
+            case .detail: return L10n.t("精细", "Detailed")
+            case .hd: return L10n.t("极致", "Ultra")
+            }
+        }
+
+        @MainActor
+        var subtitle: String {
+            switch self {
+            case .fast:
+                return L10n.t("瞬间秒出结果，适合识别轮廓清晰、简单的图像", "Returns results quickly for simple images with clear outlines.")
+            case .normal:
+                return L10n.t("兼顾速度与清晰度，适合日常大部分场景", "Balances speed and clarity for most daily scenarios.")
+            case .detail:
+                return L10n.t("画质更清晰，适合小字体或细节较多的图像", "Clearer image. Suitable for small text or more details.")
+            case .hd:
+                return L10n.t("最高清的画质和最准确的识别率，耗时较长", "Highest quality and accuracy, but takes longer.")
             }
         }
     }

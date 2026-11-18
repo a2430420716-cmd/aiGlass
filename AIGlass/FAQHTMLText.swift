@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import WebKit
 
-/// Preserve backend headings, colors, images and tables instead of flattening every run.
+/// Preserve rich content while fitting backend typography to the app's reading size.
 struct FAQHTMLContentView: View {
     let html: String
     @State private var contentHeight: CGFloat = 1
@@ -75,7 +75,7 @@ private struct FAQHTMLWebView: UIViewRepresentable {
           body {
             display: flow-root;
             font-family: -apple-system, "PingFang SC", sans-serif;
-            font-size: 15px; line-height: 1.5; color: #333;
+            font-size: 14px; line-height: 1.5; color: #333;
             overflow-wrap: anywhere; -webkit-text-size-adjust: 100%;
           }
           p { margin: 0 0 6px; }
@@ -91,6 +91,30 @@ private struct FAQHTMLWebView: UIViewRepresentable {
         #"""
         (() => {
           const body = document.body;
+          // Some answers are authored at 28/32/36px for Android's wider CSS
+          // viewport. Snapshot first so inherited font sizes are not scaled twice.
+          const typography = Array.from(body.querySelectorAll('*'))
+            .filter(el => !['SCRIPT', 'STYLE'].includes(el.tagName))
+            .map(el => ({el, size: parseFloat(getComputedStyle(el).fontSize)}));
+          const bodySizes = new Map();
+          const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            const node = walker.currentNode;
+            const parent = node.parentElement;
+            const length = node.textContent.trim().length;
+            if (!length || parent.closest('h1,h2,h3,h4,h5,h6,script,style') ||
+                !parent.getClientRects().length) continue;
+            const size = parseFloat(getComputedStyle(parent).fontSize);
+            if (Number.isFinite(size)) bodySizes.set(size, (bodySizes.get(size) || 0) + length);
+          }
+          const authoredBodySize = Array.from(bodySizes)
+            .sort((a, b) => b[1] - a[1])[0]?.[0] || 14;
+          const textScale = Math.min(1, 14 / authoredBodySize);
+          typography.forEach(({el, size}) => {
+            if (!Number.isFinite(size)) return;
+            const fitted = Math.min(20, Math.max(Math.min(size, 14), size * textScale));
+            el.style.setProperty('font-size', fitted + 'px', 'important');
+          });
           // Match Android: empty formatting blocks must not leave a large blank tail.
           body.querySelectorAll('p,h1,h2,h3,h4,h5,h6,div,section,li').forEach(el => {
             const text = (el.textContent || '').replace(/[\u00a0\u200b\s]/g, '');

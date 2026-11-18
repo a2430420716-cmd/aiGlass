@@ -176,7 +176,18 @@ struct GlassesSettingsView: View {
         }
         .background(AppTheme.background.ignoresSafeArea())
         .overlay {
-            if pairingCoordinator.isWaitingForUnpairFactoryReset { UnpairFactoryResetProgressView() }
+            if pairingCoordinator.isWaitingForUnpairFactoryReset {
+                UnpairFactoryResetProgressView()
+            } else if showAIVisionOptions {
+                AiVisionModeDialog(
+                    selectedLevel: AiVisionSettings.level,
+                    onCancel: { showAIVisionOptions = false },
+                    onSelect: { level in
+                        showAIVisionOptions = false
+                        applyAIVisionLevel(level.rawValue)
+                    }
+                )
+            }
         }
         .navigationBarHidden(true)
         .suppressTabBarOnAppear(enabled: suppressesTabBarOnAppear)
@@ -237,6 +248,7 @@ struct GlassesSettingsView: View {
                 pendingListeningDurationSeconds = nil
                 waitingForIndicatorBrightnessOptions = false
                 showIndicatorBrightnessOptions = false
+                showAIVisionOptions = false
             }
         }
         .onChangeCompat(of: pairingCoordinator.astraA1BleManager.indicatorBrightness.result) { result in
@@ -251,6 +263,7 @@ struct GlassesSettingsView: View {
             voiceWakeUpState.reset()
             waitingForIndicatorBrightnessOptions = false
             showIndicatorBrightnessOptions = false
+            showAIVisionOptions = false
             if isSettingsVisible { queryDocumentedSettings() }
         }
         .onChangeCompat(of: scenePhase) { phase in
@@ -321,6 +334,7 @@ struct GlassesSettingsView: View {
             voiceWakeUpState.reset()
             waitingForIndicatorBrightnessOptions = false
             showIndicatorBrightnessOptions = false
+            showAIVisionOptions = false
         }
         .confirmationDialog(
             L10n.t("指示灯亮度", "Notification LED brightness"),
@@ -354,16 +368,6 @@ struct GlassesSettingsView: View {
             Button("2K (2016×1512)") { applyVideoResolution(2) }
             Button("1080p (1920×1080)") { applyVideoResolution(1) }
             Button("720p (1280×720)") { applyVideoResolution(0) }
-            Button(L10n.t("取消", "Cancel"), role: .cancel) {}
-        }
-        .confirmationDialog(
-            L10n.t("智能识别模式", "AI vision mode"),
-            isPresented: $showAIVisionOptions,
-            titleVisibility: .visible
-        ) {
-            ForEach(AiVisionSettings.Level.allCases) { level in
-                Button(level.title) { applyAIVisionLevel(level.rawValue) }
-            }
             Button(L10n.t("取消", "Cancel"), role: .cancel) {}
         }
         .confirmationDialog(
@@ -1026,9 +1030,9 @@ struct GlassesSettingsView: View {
                 }
                 if showsCapability(\.aiImageRecognition) {
                     SettingsNavigationRow(
-                        title: L10n.t("智能识别模式", "AI vision mode"),
+                        title: L10n.t("智能图像识别模式", "AI vision mode"),
                         value: AiVisionSettings.levelTitle,
-                        subtitle: L10n.t("平衡图像识别速度与图像清晰度", "Balance recognition speed and image clarity."),
+                        subtitle: L10n.t("平衡识别速度与图像清晰度", "Balance recognition speed and image clarity."),
                         action: { showAIVisionOptions = true }
                     )
                     SettingsDivider()
@@ -1036,6 +1040,7 @@ struct GlassesSettingsView: View {
                 SettingsNavigationRow(
                     title: L10n.t("AI语音设置", "AI Voice Settings"),
                     value: L10n.t("眼镜系统语音", "Glasses System Voice"),
+                    showsChevron: false,
                     action: {
                         guideAlertMessage = L10n.t("当前使用眼镜系统语音", "Using glasses system voice")
                     }
@@ -1271,11 +1276,12 @@ private struct SettingsNavigationRow: View {
     let title: String
     var value: String?
     var subtitle: String?
+    var showsChevron = true
     var action: () -> Void = {}
 
     var body: some View {
         Button(action: action) {
-            SettingsNavigationLinkLabel(title: title, value: value, subtitle: subtitle)
+            SettingsNavigationLinkLabel(title: title, value: value, subtitle: subtitle, showsChevron: showsChevron)
         }
         .buttonStyle(.plain)
     }
@@ -1286,6 +1292,7 @@ private struct SettingsNavigationLinkLabel: View {
     var value: String?
     var subtitle: String?
     var showsUpdateBadge: Bool = false
+    var showsChevron = true
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -1318,9 +1325,11 @@ private struct SettingsNavigationLinkLabel: View {
                     .foregroundStyle(AppTheme.secondaryText)
             }
 
-            Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(AppTheme.secondaryText)
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(AppTheme.secondaryText)
+            }
         }
         .padding(.vertical, 12)
     }

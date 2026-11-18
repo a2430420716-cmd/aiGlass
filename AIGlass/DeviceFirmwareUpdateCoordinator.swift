@@ -167,7 +167,9 @@ final class DeviceFirmwareUpdateCoordinator: ObservableObject {
     ) -> UpdateOffer? {
         guard let serverInfo else { return nil }
         let serverVersion = serverInfo.version.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !serverVersion.isEmpty else { return nil }
+        guard !serverVersion.isEmpty,
+              !serverInfo.downloadURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !FirmwareVersionComparator.isPlaceholderVersion(currentVersion) else { return nil }
         // 对齐 Android UpgradeInfoManager：只有服务端版本严格更高才提示，
         // 同版本（含 V 前缀/构建后缀）及服务端旧版本均不生成升级入口。
         guard FirmwareVersionComparator.isServerVersionNewer(serverVersion, than: currentVersion) else {

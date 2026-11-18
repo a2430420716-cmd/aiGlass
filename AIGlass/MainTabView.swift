@@ -94,8 +94,8 @@ struct MainTabView: View {
                 BluetoothFirmwareUpdateDialog(
                     prompt: presentation.offer,
                     title: presentation.kind == .bluetooth
-                        ? L10n.t("蓝牙固件升级", "Bluetooth Firmware Update")
-                        : L10n.t("眼镜固件升级", "Glasses Firmware Update"),
+                        ? L10n.t("眼镜蓝牙升级", "Glasses Bluetooth update")
+                        : L10n.t("眼镜固件升级", "Firmware update"),
                     onCancel: { deviceUpdatePrompt = nil },
                     onUpgrade: {
                         guard canPresentDeviceUpdate, isCurrentOrdinaryOffer(presentation) else {
@@ -426,6 +426,8 @@ struct MainTabView: View {
                         Text(tab.title)
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(tabRouter.selectedTab == tab ? AppTheme.accent : AppTheme.secondaryText)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                     }
                     .frame(maxWidth: .infinity)
                 }

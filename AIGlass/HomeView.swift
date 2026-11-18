@@ -531,15 +531,15 @@ struct HomeView: View {
     }
 
     private var photoButtonTitle: String {
-        if ble.photoCompleted { return L10n.t("拍照完成", "Photo taken") }
-        if ble.isTakingPhoto { return L10n.t("拍照中...", "Taking photo...") }
+        if ble.photoCompleted { return L10n.t("拍照完成", "Captured") }
+        if ble.isTakingPhoto { return L10n.t("拍照中...", "Capturing…") }
         return L10n.t("拍照", "Capture")
     }
 
     private var videoButtonTitle: String {
-        if ble.videoCompleted { return L10n.t("录制完成", "Recording done") }
+        if ble.videoCompleted { return L10n.t("录制完成", "Recorded") }
         if ble.isVideoStopping { return L10n.t("停止中...", "Stopping...") }
-        if ble.isVideoStarting { return L10n.t("等待确认...", "Awaiting confirmation...") }
+        if ble.isVideoStarting { return L10n.t("等待确认...", "Starting…") }
         if ble.deviceRuntimeStatus == .videoRecording || ble.isVideoRecording {
             return L10n.t("结束录像", "Stop Video")
         }
@@ -909,7 +909,7 @@ struct HomeView: View {
                             iconName: "android_home_photo"
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(HomeActionButtonStyle())
                     .disabled(!ble.isDeviceAvailable || ble.isTakingPhoto || ble.photoCompleted)
                 }
 
@@ -922,7 +922,7 @@ struct HomeView: View {
                             iconName: "android_home_video"
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(HomeActionButtonStyle())
                     .disabled(!ble.isDeviceAvailable || ble.isVideoStarting || ble.isVideoStopping || ble.videoCompleted)
                 }
             }
@@ -938,7 +938,7 @@ struct HomeView: View {
                             iconName: "android_home_recording"
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(HomeActionButtonStyle())
                     .disabled(!ble.isDeviceAvailable)
                     .background {
                         NavigationLink(
@@ -962,7 +962,7 @@ struct HomeView: View {
                             iconName: "android_home_translation"
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(HomeActionButtonStyle())
                     .disabled(!ble.isDeviceAvailable)
                     .background {
                         NavigationLink(
@@ -988,7 +988,7 @@ struct HomeView: View {
                             iconName: "android_home_recognition"
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(HomeActionButtonStyle())
                     .disabled(!ble.isDeviceAvailable)
                 }
 
@@ -999,10 +999,11 @@ struct HomeView: View {
                         FeatureActionCardView(
                             title: selectedSoundMode.cardTitle,
                             subtitle: L10n.t("音效模式", "Sound mode"),
-                            iconName: selectedSoundMode.cardIconName
+                            iconName: selectedSoundMode.cardIconName,
+                            subtitleLineLimit: 1
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(HomeActionButtonStyle())
                     .disabled(!ble.isDeviceAvailable)
                 }
             }
@@ -1018,7 +1019,7 @@ struct HomeView: View {
                             iconName: "android_home_newbie"
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(HomeActionButtonStyle())
                     .disabled(!ble.isDeviceAvailable)
                     .background {
                         NavigationLink(
@@ -1046,7 +1047,7 @@ struct HomeView: View {
                         iconName: "android_home_operation"
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(HomeActionButtonStyle())
                 .disabled(!ble.isDeviceAvailable)
                 .background {
                     NavigationLink(
@@ -1367,6 +1368,8 @@ private struct DeviceCardView: View {
                         Text(L10n.t("查找您的设备", "Find your device"))
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(AppTheme.primaryText)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                     } else {
                         // Android item_glasses：品牌一行，设备名一行，电量/连接状态一行。
                         HStack(spacing: 3) {
@@ -1378,6 +1381,8 @@ private struct DeviceCardView: View {
                             Text(brandName)
                                 .font(.system(size: 15, weight: .bold))
                                 .foregroundStyle(AppTheme.primaryText)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
                         }
                         .frame(height: 22)
 
@@ -1424,6 +1429,8 @@ private struct DeviceCardView: View {
                             Text(disconnectedStatusText)
                                 .font(.system(size: 14))
                                 .foregroundStyle(Color(red: 184 / 255, green: 184 / 255, blue: 184 / 255))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
                         }
                     }
                 }
@@ -1615,24 +1622,39 @@ private struct VolumeSlider: View {
     }
 }
 
+/// Keep unavailable actions disabled without PlainButtonStyle's automatic dimming.
+/// Only the disconnected glasses image uses the requested 50% opacity.
+private struct HomeActionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.85 : 1)
+    }
+}
+
 private struct MediaActionCardView: View {
     let title: String
     let iconName: String
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(iconName)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 64, height: 64)
+        GeometryReader { geometry in
+            HStack(spacing: 8) {
+                Image(iconName)
+                    .resizable()
+                    .renderingMode(.original)
+                    .scaledToFit()
+                    .frame(width: geometry.size.width < 160 ? 40 : 48, height: 48)
 
-            Text(title)
-                .font(AppTheme.notoSansSC(size: 16, weight: .medium))
-                .foregroundStyle(AppTheme.primaryText)
-
-            Spacer(minLength: 0)
+                Text(title)
+                    .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                    .foregroundStyle(AppTheme.primaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
+            }
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 14)
         .frame(width: HomeLayout.actionCardWidth, height: HomeLayout.mediaActionCardHeight)
         .background(AppTheme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius))
@@ -1644,6 +1666,7 @@ private struct FeatureActionCardView: View {
     let title: String
     let subtitle: String
     let iconName: String
+    var subtitleLineLimit: Int = 3
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1652,11 +1675,13 @@ private struct FeatureActionCardView: View {
                     .font(AppTheme.notoSansSC(size: 15, weight: .semibold))
                     .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
-
-                Spacer(minLength: 4)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
 
                 Image(iconName)
                     .resizable()
+                    .renderingMode(.original)
                     .scaledToFit()
                     .frame(width: 32, height: 32)
             }
@@ -1664,7 +1689,8 @@ private struct FeatureActionCardView: View {
             Text(subtitle)
                 .font(AppTheme.notoSansSC(size: 11, weight: .regular))
                 .foregroundStyle(AppTheme.secondaryText)
-                .lineLimit(3)
+                .lineLimit(subtitleLineLimit)
+                .minimumScaleFactor(subtitleLineLimit == 1 ? 0.8 : 1)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.trailing, 4)
         }
@@ -1687,11 +1713,14 @@ private struct GuideActionCardView: View {
                 Text(title)
                     .font(AppTheme.notoSansSC(size: 15, weight: .semibold))
                     .foregroundStyle(AppTheme.primaryText)
-
-                Spacer(minLength: 4)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
 
                 Image(iconName)
                     .resizable()
+                    .renderingMode(.original)
                     .scaledToFit()
                     .frame(width: 36, height: 36)
             }

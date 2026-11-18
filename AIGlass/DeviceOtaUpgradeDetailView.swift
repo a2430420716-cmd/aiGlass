@@ -41,7 +41,7 @@ struct DeviceOtaUpgradeDetailView: View {
     }
 
     private var contentLines: [String] {
-        HTMLPlainText.from(offer.serverInfo.content)
+        HTMLPlainText.from(offer.serverInfo.localizedContent)
             .components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }

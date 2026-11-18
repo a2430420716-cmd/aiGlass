@@ -6,6 +6,11 @@ struct DeviceOTAInfo: Equatable {
     let downloadURL: String
     let content: String
     var isForced = false
+    var englishContent = ""
+
+    var localizedContent: String {
+        L10n.usesEnglish && !englishContent.isEmpty ? englishContent : content
+    }
 }
 
 private struct DeviceOTAEntry: Decodable {
@@ -13,11 +18,13 @@ private struct DeviceOTAEntry: Decodable {
     let version: String
     let downloadURL: String
     let content: String
+    let englishContent: String
     let isForced: Bool
 
     enum CodingKeys: String, CodingKey {
         case version
         case content
+        case englishContent = "en_content"
         case serialNumber = "serial_number"
         case downloadURL = "download_url"
         case isForced = "is_forced"
@@ -28,7 +35,8 @@ private struct DeviceOTAEntry: Decodable {
         serialNumber = try container.decode(String.self, forKey: .serialNumber)
         version = try container.decode(String.self, forKey: .version)
         downloadURL = try container.decode(String.self, forKey: .downloadURL)
-        content = try container.decode(String.self, forKey: .content)
+        content = try container.decodeIfPresent(String.self, forKey: .content) ?? ""
+        englishContent = try container.decodeIfPresent(String.self, forKey: .englishContent) ?? ""
         if let value = try? container.decode(Int.self, forKey: .isForced) {
             isForced = value == 1
         } else if let value = try? container.decode(String.self, forKey: .isForced) {
@@ -39,7 +47,7 @@ private struct DeviceOTAEntry: Decodable {
     }
 
     var info: DeviceOTAInfo {
-        DeviceOTAInfo(version: version, downloadURL: downloadURL, content: content, isForced: isForced)
+        DeviceOTAInfo(version: version, downloadURL: downloadURL, content: content, isForced: isForced, englishContent: englishContent)
     }
 }
 

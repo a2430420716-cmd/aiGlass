@@ -10,7 +10,7 @@ enum SoundEffectMode: UInt8, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .standard: L10n.t("标准", "Standard")
-        case .powerful: L10n.t("澎湃", "Powerful")
+        case .powerful: L10n.t("澎湃", "Dynamic")
         case .quiet: L10n.t("静谧", "Quiet")
         }
     }
@@ -50,6 +50,8 @@ struct SoundEffectModeSheet: View {
             Text(L10n.t("音效模式", "Sound mode"))
                 .font(AppTheme.notoSansSC(size: 18, weight: .semibold))
                 .foregroundStyle(AppTheme.primaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
 
             HStack(spacing: 12) {
                 ForEach(SoundEffectMode.allCases) { mode in
@@ -100,6 +102,8 @@ private struct SoundEffectOptionView: View {
                 Text(mode.title)
                     .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                     .foregroundStyle(AppTheme.primaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             .frame(maxWidth: .infinity)
             .frame(height: 124)

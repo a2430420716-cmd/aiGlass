@@ -33,6 +33,12 @@ enum FirmwareVersionComparator {
         return compare(serverParts, deviceParts) > 0
     }
 
+    /// Devices can report an all-zero version before their information is ready.
+    static func isPlaceholderVersion(_ version: String) -> Bool {
+        guard let parts = parseNumericVersion(version) else { return false }
+        return parts.allSatisfy { $0 == 0 }
+    }
+
     /// 数字版本是否不同；无法解析时不误报。
     static func areVersionsDifferent(_ local: String, _ server: String) -> Bool {
         guard let localParts = parseNumericVersion(local),
