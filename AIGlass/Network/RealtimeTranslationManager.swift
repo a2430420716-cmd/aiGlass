@@ -18,6 +18,7 @@ final class RealtimeTranslationManager: NSObject {
         /// 可恢复错误（如「上一轮仍在处理」）：会话仍有效，不应中断录音。
         func onRecoverableError(_ message: String)
         func onGlassesPlaybackStateChanged(_ state: GlassesPlaybackState)
+        func onFinished(waitTimedOut: Bool)
         func onClosed()
     }
 
@@ -89,6 +90,8 @@ final class RealtimeTranslationManager: NSObject {
     private let turnBusyRecoveryNs: UInt64 = 700_000_000
     private var pendingPCM = Data()
     private var turnBusyRecoveryTask: Task<Void, Never>?
+    private var finishState = TranslationFinishState()
+    private var finishTask: Task<Void, Never>?
 
     init(callback: Callback) {
         self.callback = callback
@@ -168,6 +171,7 @@ final class RealtimeTranslationManager: NSObject {
             return false
         }
         guard enqueueSend(chunk, kind: .pcm) else { return false }
+        finishState.inputQueued()
         pcmQueuedChunks += 1
         pcmQueuedBytes += chunk.count
         drainSendQueue(task: task)
@@ -177,7 +181,9 @@ final class RealtimeTranslationManager: NSObject {
 
     @discardableResult
     func markLocalRecordingStarted() -> Bool {
-        let allowed = inputState.start(opened: opened, ready: ready, now: Date())
+        let allowed = inputState.start(opened: opened,
+                                       ready: ready && !finishState.isFinishing && !finishState.stopSent,
+                                       now: Date())
         logFlow("input start", "allowed=\(allowed) \(gateDetail)")
         print("[RealtimeTranslation] record input opened allowed=\(allowed)")
         return allowed
@@ -277,7 +283,7 @@ final class RealtimeTranslationManager: NSObject {
         playPCM(data, route: .default)
     }
 
-    func finish() {
+    func finish(waitForTranslation: Bool = false) {
         logFlow("finish", "\(gateDetail) \(audioSummary)")
         // A stopped pending start must not open a socket or microphone later.
         if isConnecting {
@@ -288,12 +294,48 @@ final class RealtimeTranslationManager: NSObject {
         pendingPCM.removeAll(keepingCapacity: true)
         turnBusyRecoveryTask?.cancel()
         turnBusyRecoveryTask = nil
-        ready = false
         markInputClosing(reason: "finish")
-        if opened {
-            sendJSON(["type": "stop"])
-            print("[RealtimeTranslation] stop sent")
+        guard opened, let task = webSocketTask else { return }
+        if waitForTranslation {
+            guard finishState.begin(now: ProcessInfo.processInfo.systemUptime) else { return }
+            logFlow("finish waiting", "timeoutSeconds=\(TranslationFinishState.timeout) silenceMs=1000 \(audioSummary)")
+            let attempt = connectionAttempt.current
+            finishTask = Task { @MainActor [weak self, weak task] in
+                while !Task.isCancelled {
+                    guard let self, let task,
+                          self.connectionAttempt.isCurrent(attempt), self.webSocketTask === task,
+                          self.finishState.isFinishing else { return }
+                    switch self.finishState.nextAction(now: ProcessInfo.processInfo.systemUptime,
+                                                       sendsPending: !self.sendQueue.packets.isEmpty) {
+                    case .wait: break
+                    case .sendSilence:
+                        // Only generated silence bypasses the closed recording gate.
+                        // It follows the final microphone PCM in the same send queue.
+                        let silence = Data(repeating: 0, count: TranslationFinishState.silenceChunkBytes)
+                        guard self.enqueueSend(silence, kind: .pcm) else { return }
+                        self.pcmQueuedChunks += 1
+                        self.pcmQueuedBytes += silence.count
+                        self.drainSendQueue(task: task)
+                    case .stop(let timedOut):
+                        self.sendStop(waitTimedOut: timedOut)
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+            }
+        } else {
+            sendStop(waitTimedOut: false)
         }
+    }
+
+    private func sendStop(waitTimedOut: Bool) {
+        guard finishState.markStopSent() else { return }
+        finishTask?.cancel()
+        finishTask = nil
+        ready = false
+        logFlow("finish resolved", "timedOut=\(waitTimedOut) \(audioSummary)")
+        sendJSON(["type": "stop"])
+        callback?.onFinished(waitTimedOut: waitTimedOut)
     }
 
     func close() {
@@ -301,6 +343,9 @@ final class RealtimeTranslationManager: NSObject {
             logFlow("close", audioSummary)
         }
         connectionAttempt.cancel()
+        finishTask?.cancel()
+        finishTask = nil
+        finishState.reset()
         connectionReadyTimeoutTask?.cancel()
         connectionReadyTimeoutTask = nil
         connectionTask?.cancel()
@@ -415,6 +460,7 @@ final class RealtimeTranslationManager: NSObject {
                     case .string(let text):
                         self.handleTextMessage(text)
                     case .data(let data):
+                        self.finishState.resultReceived(now: ProcessInfo.processInfo.systemUptime)
                         self.logReceived("speech_binary", detail: "bytes=\(data.count)")
                         print("[RealtimeTranslation] speech binary received: bytes=\(data.count)")
                         self.callback?.onSpeech(data)
@@ -446,6 +492,8 @@ final class RealtimeTranslationManager: NSObject {
             sendInit()
         case "ready":
             finishConnectionStartup()
+            // A late ready must neither reopen capture nor replace finishing UI.
+            guard !finishState.isFinishing, !finishState.stopSent else { return }
             turnBusyRecoveryTask?.cancel()
             turnBusyRecoveryTask = nil
             ready = true
@@ -457,6 +505,7 @@ final class RealtimeTranslationManager: NSObject {
         case "task_started":
             callback?.onTaskStarted()
         case "speech_started":
+            finishState.speechStarted(now: ProcessInfo.processInfo.systemUptime)
             // Remote VAD can resume an existing local recording, never start a mic.
             markBackendTurnFinished(reason: "speech_started")
         case "speech_stopped":
@@ -464,9 +513,11 @@ final class RealtimeTranslationManager: NSObject {
             // next sentence; only an explicit busy notice should apply backoff.
             logFlow("speech boundary", "continueInput=true \(gateDetail)")
         case "transcript", "source_text":
+            finishState.resultReceived(now: ProcessInfo.processInfo.systemUptime)
             let value = Self.normalizeSocketText(stringValue(json["text"]))
             if !value.isEmpty { callback?.onTranscript(value) }
         case "transcript_done", "source_text_done":
+            finishState.resultReceived(now: ProcessInfo.processInfo.systemUptime)
             let value = Self.normalizeSocketText(stringValue(json["text"])).trimmingCharacters(in: .whitespacesAndNewlines)
             if !value.isEmpty { callback?.onTranscriptCompleted(value) }
         case "translation", "translation_done", "translation_text", "translated_text", "translated_text_delta", "translation_audio":
@@ -477,6 +528,7 @@ final class RealtimeTranslationManager: NSObject {
             let finalText = Self.normalizeSocketText(stringValue(json["text"])).trimmingCharacters(in: .whitespacesAndNewlines)
             if !finalText.isEmpty { callback?.onTranslationFinal(finalText) }
         case "translation_audio_done", "translation_completed":
+            finishState.speechCompleted(now: ProcessInfo.processInfo.systemUptime)
             if type == "translation_audio_done" {
                 markBackendTurnFinished(reason: "translation_audio_done")
             } else {
@@ -487,6 +539,13 @@ final class RealtimeTranslationManager: NSObject {
         case "stopped":
             ready = false
             markInputClosing(reason: "stopped")
+            if finishState.isFinishing {
+                // Unexpected remote stop cannot leave the conversation start gate stuck.
+                finishTask?.cancel()
+                finishTask = nil
+                finishState.markStopSent()
+                callback?.onFinished(waitTimedOut: true)
+            }
         case "warn", "error", "service_disconnected":
             let message = stringValue(json["message"]).ifBlank(text)
             logFlow("server notice", "type=\(type) message=\(String(stringValue(json["message"]).prefix(300))) \(audioSummary)")
@@ -507,6 +566,7 @@ final class RealtimeTranslationManager: NSObject {
     }
 
     private func handleTranslationMessage(_ json: [String: Any]) {
+        finishState.resultReceived(now: ProcessInfo.processInfo.systemUptime)
         let translation = Self.normalizeSocketText(
             stringValue(json["text"])
                 .ifBlank(stringValue(json["translation"]))
@@ -970,6 +1030,10 @@ final class RealtimeTranslationManager: NSObject {
     private static func normalizeSocketText(_ text: String) -> String {
         text
     }
+}
+
+extension RealtimeTranslationManager.Callback {
+    func onFinished(waitTimedOut: Bool) {}
 }
 
 private extension String {

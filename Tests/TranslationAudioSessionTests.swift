@@ -272,6 +272,87 @@ struct TranslationAudioSessionTests {
         glasses.commandSent()
         glasses.reset()
         check(!glasses.confirmStarted(), "ACK after startup timeout remains discarded")
+        var finishing = TranslationFinishState()
+        finishing.inputQueued()
+        check(finishing.begin(now: 100), "Start waiting for final TTS after local recording stops")
+        check(!finishing.begin(now: 101), "Duplicate stop cannot restart the finish deadline")
+        check(finishing.nextAction(now: 100, sendsPending: true) == .wait,
+              "Flush real microphone PCM before adding silence, without growing a blocked send queue")
+        for index in 0..<10 {
+            let at = 100 + Double(index) * 0.1
+            check(finishing.nextAction(now: at, sendsPending: false) == .sendSilence,
+                  "Append one second of paced silence to trigger server VAD")
+            check(finishing.nextAction(now: at + 0.05, sendsPending: false) == .wait,
+                  "Do not flood the socket with silence packets")
+        }
+        finishing.resultReceived(now: 101) // Final translated text, without TTS.
+        check(finishing.nextAction(now: 102, sendsPending: false) == .wait,
+              "Text alone must not terminate the task before speech arrives")
+        finishing.speechCompleted(now: 103)
+        check(finishing.nextAction(now: 103.2, sendsPending: false) == .wait,
+              "Allow final result events after audio completion")
+        check(finishing.nextAction(now: 103.4, sendsPending: true) == .wait,
+              "Never put stop ahead of queued audio")
+        check(finishing.nextAction(now: 103.4, sendsPending: false) == .stop(timedOut: false),
+              "Stop after final speech and all queued PCM have drained")
+        check(finishing.markStopSent() && !finishing.isFinishing, "Release finishing gate once")
+        check(!finishing.markStopSent() && !finishing.begin(now: 110), "Send stop at most once")
+
+        finishing.reset()
+        finishing.inputQueued()
+        finishing.speechCompleted(now: 199)
+        finishing.begin(now: 200)
+        for index in 0..<10 { _ = finishing.nextAction(now: 200 + Double(index) * 0.1, sendsPending: false) }
+        check(finishing.nextAction(now: 201.3, sendsPending: false) == .stop(timedOut: false),
+              "Already completed TTS does not wait for a second audio_done event")
+
+        finishing.reset()
+        finishing.inputQueued()
+        finishing.begin(now: 300)
+        for index in 0..<10 { _ = finishing.nextAction(now: 300 + Double(index) * 0.1, sendsPending: false) }
+        finishing.speechCompleted(now: 301)
+        finishing.speechStarted(now: 302)
+        check(finishing.nextAction(now: 314.9, sendsPending: false) == .wait,
+              "A previous sentence completion cannot end a newer sentence")
+        finishing.resultReceived(now: 314.99)
+        check(finishing.nextAction(now: 315, sendsPending: true) == .stop(timedOut: true),
+              "Missing final TTS has an absolute 15 second deadline despite further results")
+        finishing.reset()
+        check(!finishing.isFinishing && finishing.nextAction(now: 400, sendsPending: false) == .wait,
+              "Close/reconnect cancels all old finishing work")
+        finishing.begin(now: 400)
+        check(finishing.nextAction(now: 400, sendsPending: false) == .stop(timedOut: false),
+              "Empty capture needs neither synthetic audio nor a 15 second wait")
+        var replay = TranslationSpeechReplayBuffer()
+        let replayFirstSpeech = Data([1, 0, 2, 0])
+        let nextSpeech = Data([3, 0])
+        check(!replay.append(replayFirstSpeech), "Speech outside a recording cannot enter replay")
+        replay.begin()
+        check(!replay.append(Data()) && !replay.append(Data([1])), "Reject empty and unaligned PCM")
+        check(replay.append(replayFirstSpeech) && replay.append(nextSpeech), "Retain speech while playback is muted")
+        check(replay.chunks == [replayFirstSpeech, nextSpeech] && replay.byteCount == 6,
+              "Replay preserves the PCM sequence returned by the service")
+        let firstReplay = replay.chunks
+        check(replay.chunks == firstReplay, "Replaying does not consume speech needed after off/on or route failure")
+        replay.begin()
+        check(replay.chunks.isEmpty && replay.byteCount == 0, "New recording cannot replay the previous recording")
+        check(replay.append(nextSpeech) && replay.chunks == [nextSpeech], "Replacement recording accepts only its own speech")
+        replay.reset()
+        check(!replay.append(replayFirstSpeech) && replay.chunks.isEmpty, "Exit or language change discards late speech")
+        replay.begin()
+        check(replay.append(Data(count: TranslationSpeechReplayBuffer.maxBytes)), "Accept exactly the byte bound")
+        check(!replay.append(nextSpeech) && replay.overflowed, "Reject byte overflow without discarding the retained prefix")
+        check(replay.byteCount == TranslationSpeechReplayBuffer.maxBytes && replay.chunks.count == 1,
+              "Buffer memory stays bounded")
+        check(!replay.append(replayFirstSpeech), "Do not insert gaps after overflowing")
+        replay.begin()
+        check(!replay.overflowed && replay.byteCount == 0, "New recording resets the overflow budget")
+        for _ in 0..<TranslationSpeechReplayBuffer.maxChunks { _ = replay.append(nextSpeech) }
+        check(replay.chunks.count == TranslationSpeechReplayBuffer.maxChunks, "Accept the chunk limit")
+        check(!replay.append(nextSpeech) && replay.overflowed, "Bound per-chunk overhead as well as PCM bytes")
+        replay.begin()
+        check(!replay.append(Data(count: TranslationSpeechReplayBuffer.maxBytes + 2)) && replay.chunks.isEmpty,
+              "Reject a single oversized response without allocating another retained copy")
         print("TranslationAudioSessionTests: \(assertions) assertions passed")
     }
 }

@@ -547,6 +547,7 @@ struct HomeView: View {
     }
 
     private func takePhoto() {
+        guard requireConnectedDevice() else { return }
         guard !isAnyDeviceFileImportActive else {
             showMediaActionToast(L10n.t("正在导入文件，请稍后再试", "Import in progress, try again later"))
             return
@@ -555,6 +556,7 @@ struct HomeView: View {
     }
 
     private func toggleVideoRecording() {
+        guard requireConnectedDevice() else { return }
         guard !isAnyDeviceFileImportActive else {
             showMediaActionToast(L10n.t("正在导入文件，请稍后再试", "Import in progress, try again later"))
             return
@@ -568,10 +570,7 @@ struct HomeView: View {
 
     /// 首页入口：切到 AI Tab → 插 loading → 发 imgreccap0 → 收图后进聊天列表。
     private func startSmartImageRecognition() {
-        guard ble.isDeviceAvailable else {
-            mediaActionAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
-            return
-        }
+        guard requireConnectedDevice() else { return }
         guard !ble.isBatteryTooLowForMedia else {
             mediaActionAlertMessage = ble.lowBatteryMediaMessage
             return
@@ -588,6 +587,14 @@ struct HomeView: View {
         tabRouter.openAITab()
         AIChatSession.shared.beginImageRecognitionCapture()
         _ = aiVisionTransfer.startCapture()
+    }
+
+    private func requireConnectedDevice() -> Bool {
+        guard ble.isDeviceAvailable else {
+            mediaActionAlertMessage = L10n.t("设备未连接", "Device not connected")
+            return false
+        }
+        return true
     }
 
     private func showMediaActionToast(_ message: String) {
@@ -617,10 +624,7 @@ struct HomeView: View {
     }
 
     private func openNewbieGuide() {
-        guard ble.isDeviceAvailable else {
-            mediaActionAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
-            return
-        }
+        guard requireConnectedDevice() else { return }
         guard !navigateToNewbieGuide else { return }
         tabRouter.performPushAfterReleasingTabInset(blackBackdrop: true) {
             navigateToNewbieGuide = true
@@ -628,13 +632,10 @@ struct HomeView: View {
     }
 
     private func openAIRecording() {
+        guard requireConnectedDevice() else { return }
         // 与 Android 首页一致：Gen1设备按键录音单独处理，暂不开放手动录音入口。
         guard ble.deviceGeneration != .gen1G5K61 else {
             showMediaActionToast(L10n.t("设备录音功能暂未开放", "Recording is not available for this device yet"))
-            return
-        }
-        guard ble.isDeviceAvailable else {
-            mediaActionAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
             return
         }
         guard !navigateToAIRecording else { return }
@@ -644,10 +645,7 @@ struct HomeView: View {
     }
 
     private func openAITranslation() {
-        guard ble.isDeviceAvailable else {
-            mediaActionAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
-            return
-        }
+        guard requireConnectedDevice() else { return }
         guard !navigateToAITranslation else { return }
         tabRouter.performPushAfterReleasingTabInset {
             navigateToAITranslation = true
@@ -655,10 +653,7 @@ struct HomeView: View {
     }
 
     private func openOperationGuide() {
-        guard ble.isDeviceAvailable else {
-            mediaActionAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
-            return
-        }
+        guard requireConnectedDevice() else { return }
         guard !navigateToOperationGuide else { return }
         tabRouter.performPushAfterReleasingTabInset {
             navigateToOperationGuide = true
@@ -674,10 +669,7 @@ struct HomeView: View {
     }
 
     private func openSoundEffectMode() {
-        guard ble.isDeviceAvailable else {
-            mediaActionAlertMessage = L10n.t("当前没有可用设备，请先连接已绑定的眼镜", "No available device. Connect your bound glasses first")
-            return
-        }
+        guard requireConnectedDevice() else { return }
         _ = ble.querySoundEffectMode()
         showSoundEffectSheet = true
     }
@@ -910,7 +902,7 @@ struct HomeView: View {
                         )
                     }
                     .buttonStyle(HomeActionButtonStyle())
-                    .disabled(!ble.isDeviceAvailable || ble.isTakingPhoto || ble.photoCompleted)
+                    .disabled(ble.isDeviceAvailable && (ble.isTakingPhoto || ble.photoCompleted))
                 }
 
                 if showsCapability(\.video) {
@@ -923,7 +915,7 @@ struct HomeView: View {
                         )
                     }
                     .buttonStyle(HomeActionButtonStyle())
-                    .disabled(!ble.isDeviceAvailable || ble.isVideoStarting || ble.isVideoStopping || ble.videoCompleted)
+                    .disabled(ble.isDeviceAvailable && (ble.isVideoStarting || ble.isVideoStopping || ble.videoCompleted))
                 }
             }
 
@@ -939,7 +931,6 @@ struct HomeView: View {
                         )
                     }
                     .buttonStyle(HomeActionButtonStyle())
-                    .disabled(!ble.isDeviceAvailable)
                     .background {
                         NavigationLink(
                             isActive: $navigateToAIRecording,
@@ -963,7 +954,6 @@ struct HomeView: View {
                         )
                     }
                     .buttonStyle(HomeActionButtonStyle())
-                    .disabled(!ble.isDeviceAvailable)
                     .background {
                         NavigationLink(
                             isActive: $navigateToAITranslation,
@@ -989,7 +979,6 @@ struct HomeView: View {
                         )
                     }
                     .buttonStyle(HomeActionButtonStyle())
-                    .disabled(!ble.isDeviceAvailable)
                 }
 
                 if showsCapability(\.eq) {
@@ -1004,7 +993,6 @@ struct HomeView: View {
                         )
                     }
                     .buttonStyle(HomeActionButtonStyle())
-                    .disabled(!ble.isDeviceAvailable)
                 }
             }
 
@@ -1020,7 +1008,6 @@ struct HomeView: View {
                         )
                     }
                     .buttonStyle(HomeActionButtonStyle())
-                    .disabled(!ble.isDeviceAvailable)
                     .background {
                         NavigationLink(
                             isActive: $navigateToNewbieGuide,
@@ -1048,7 +1035,6 @@ struct HomeView: View {
                     )
                 }
                 .buttonStyle(HomeActionButtonStyle())
-                .disabled(!ble.isDeviceAvailable)
                 .background {
                     NavigationLink(
                         isActive: $navigateToOperationGuide,
@@ -1688,7 +1674,7 @@ private struct FeatureActionCardView: View {
 
             Text(subtitle)
                 .font(AppTheme.notoSansSC(size: 11, weight: .regular))
-                .foregroundStyle(AppTheme.secondaryText)
+                .foregroundStyle(AppTheme.homeCardSubtitleText)
                 .lineLimit(subtitleLineLimit)
                 .minimumScaleFactor(subtitleLineLimit == 1 ? 0.8 : 1)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1727,7 +1713,7 @@ private struct GuideActionCardView: View {
 
             Text(subtitle)
                 .font(AppTheme.notoSansSC(size: 11, weight: .regular))
-                .foregroundStyle(AppTheme.secondaryText)
+                .foregroundStyle(AppTheme.homeCardSubtitleText)
                 .lineLimit(2)
         }
         .padding(12)

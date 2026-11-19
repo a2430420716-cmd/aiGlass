@@ -106,7 +106,6 @@ final class AIVoiceChatManager: ObservableObject {
             recording = true
             phase = .waiting
             frames.removeAll(keepingCapacity: true)
-            prepareConversationAudio()
         }
         return sent
     }
@@ -142,7 +141,6 @@ final class AIVoiceChatManager: ObservableObject {
             recording = true
             phase = .waiting
             frames.removeAll(keepingCapacity: true)
-            prepareConversationAudio()
         } else {
             phase = .failed(ble.mediaActionAlertMessage ?? L10n.t("无法开启语音提问", "Unable to start voice ask"))
         }
@@ -320,6 +318,7 @@ final class AIVoiceChatManager: ObservableObject {
             beginTurn()
             if shouldInterrupt {
                 stopSpeech()
+                releasePlaybackAudioIfIdle(reason: "AI reply interrupted by listening")
             }
         case 3:
             finishUtterance()
@@ -346,7 +345,6 @@ final class AIVoiceChatManager: ObservableObject {
         recording = true
         phase = .listening
         frames.removeAll(keepingCapacity: true)
-        prepareConversationAudio()
         logAudioLifecycle(reason: "AI listening started")
     }
 
@@ -355,7 +353,6 @@ final class AIVoiceChatManager: ObservableObject {
         if !sessionActive {
             sessionActive = true
             isEnabled = true
-            prepareConversationAudio()
         }
         if state == .speaking || state == .thinking {
             generation += 1
@@ -372,6 +369,7 @@ final class AIVoiceChatManager: ObservableObject {
         print("[AIVoice] frames +\(newFrames.count), total=\(frames.count)")
         if shouldInterrupt {
             stopSpeech()
+            releasePlaybackAudioIfIdle(reason: "AI reply interrupted by voice data")
         }
     }
 
@@ -487,6 +485,7 @@ final class AIVoiceChatManager: ObservableObject {
         recording = true
         frames.removeAll(keepingCapacity: true)
         phase = .listening
+        releasePlaybackAudioIfIdle(reason: "AI reply completed, BLE listening continues")
         let sent = ble?.resumeAIVoiceListening() ?? false
         print("[AIVoice] AI reply finished, resume listen sent=\(sent)")
     }
@@ -771,14 +770,6 @@ final class AIVoiceChatManager: ObservableObject {
         if releaseAudio { releasePlaybackAudioIfIdle(reason: "voice bubble stopped") }
     }
 
-    private func prepareConversationAudio() {
-        do {
-            try activatePlaybackAudio(interruptOtherAudio: true)
-        } catch {
-            DebugLogStore.logConnect("AI audio activation failed", detail: error.localizedDescription)
-        }
-    }
-
     private func activatePlaybackAudio(interruptOtherAudio: Bool = false) throws {
         try GlassesAudioRouteController.activate(interruptOtherAudio ? .aiVoicePlayback : .playback)
         playbackAudioActivation = GlassesAudioRouteController.activationGeneration
@@ -786,8 +777,9 @@ final class AIVoiceChatManager: ObservableObject {
     }
 
     private func releasePlaybackAudioIfIdle(reason: String) {
-        guard !sessionActive, !recording,
-              remotePlayer == nil, localPlayer == nil, drainPlayer == nil, bubblePlayer == nil,
+        // Glasses capture arrives over BLE and does not use the phone audio
+        // session. Only actual playback (including its tail drain) owns it.
+        guard remotePlayer == nil, localPlayer == nil, drainPlayer == nil, bubblePlayer == nil,
               let activation = playbackAudioActivation else { return }
         playbackAudioActivation = nil
         GlassesAudioRouteController.deactivateIfCurrent(activation: activation, reason: reason)

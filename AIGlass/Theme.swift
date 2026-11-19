@@ -6,6 +6,7 @@ enum AppTheme {
     static let cardBackground = Color.white
     static let primaryText = Color.black
     static let secondaryText = Color(red: 0.55, green: 0.55, blue: 0.55)
+    static let homeCardSubtitleText = Color(red: 95.0 / 255, green: 95.0 / 255, blue: 95.0 / 255)
     static let cardCornerRadius: CGFloat = 20
     static let cardShadow = Color.black.opacity(0.04)
 }

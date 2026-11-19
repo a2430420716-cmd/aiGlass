@@ -72,6 +72,7 @@ final class ConversationTranslationController: ObservableObject {
     private var latestTranscript = ""
     private var latestTranslation = ""
     private var lastBackendErrorMessage = ""
+    private var awaitingFinalTranslation = false
 
     private let conversationID = UUID()
     private var glassesStartTask: Task<Void, Never>?
@@ -123,12 +124,12 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     func swapLanguages() {
-        guard !glassesActive, !phoneActive else { return }
+        guard !glassesActive, !phoneActive, !awaitingFinalTranslation else { return }
         (glassesLanguage, phoneLanguage) = (phoneLanguage, glassesLanguage)
     }
 
     func updateGlassesLanguage(_ language: String) {
-        guard !glassesActive, !phoneActive else { return }
+        guard !glassesActive, !phoneActive, !awaitingFinalTranslation else { return }
         glassesLanguage = language
         if sameLanguage(glassesLanguage, phoneLanguage) {
             phoneLanguage = TranslationLanguage.fallback(excluding: language)
@@ -136,7 +137,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     func updatePhoneLanguage(_ language: String) {
-        guard !glassesActive, !phoneActive else { return }
+        guard !glassesActive, !phoneActive, !awaitingFinalTranslation else { return }
         phoneLanguage = language
         if sameLanguage(glassesLanguage, phoneLanguage) {
             glassesLanguage = TranslationLanguage.fallback(excluding: language)
@@ -147,6 +148,10 @@ final class ConversationTranslationController: ObservableObject {
         logRecordingLifecycle("glasses button tapped")
         permissionGeneration += 1
         guard isActive, !glassesStopping else { return }
+        guard !awaitingFinalTranslation else {
+            statusText = L10n.t("正在处理翻译…", "Processing translation…")
+            return
+        }
         // 连接中再点一次：取消开麦。
         if glassesConnecting, !glassesRecording {
             deferredGlassesSpeech.cancel()
@@ -180,10 +185,11 @@ final class ConversationTranslationController: ObservableObject {
             }
             glassesState.reset()
             manager?.markLocalRecordingStopped(reason: "conversation glasses manual stop")
-            manager?.finish()
             glassesRecording = false
             enterProcessingStatus(reason: "glasses manual stop")
             releaseGlassesSpeech(reason: "Gen2 manual stop")
+            awaitingFinalTranslation = manager != nil
+            manager?.finish(waitForTranslation: true)
             return
         }
         if phoneActive {
@@ -212,6 +218,10 @@ final class ConversationTranslationController: ObservableObject {
     func togglePhoneRecording() {
         logRecordingLifecycle("phone button tapped")
         guard isActive else { return }
+        guard !awaitingFinalTranslation else {
+            statusText = L10n.t("正在处理翻译…", "Processing translation…")
+            return
+        }
         permissionGeneration += 1
         let permissionRequest = permissionGeneration
         if phoneActive {
@@ -405,6 +415,7 @@ final class ConversationTranslationController: ObservableObject {
     }
 
     private func stopAllRecording(resetSocket: Bool) {
+        awaitingFinalTranslation = false
         deferredGlassesSpeech.cancel()
         if glassesState.hasSentCommand { logGlassesAudio("stop all") }
         cancelSocketReadyTimeout()
@@ -615,7 +626,6 @@ final class ConversationTranslationController: ObservableObject {
         glassesRecording = false
         glassesOpusDecoder.close()
         manager?.markLocalRecordingStopped(reason: "conversation \(reason)")
-        manager?.finish()
         enterProcessingStatus(reason: reason)
         if !confirmed {
             // The device may still be capturing. Do not auto-play TTS into its mic.
@@ -626,6 +636,8 @@ final class ConversationTranslationController: ObservableObject {
         } else {
             deferredGlassesSpeech.cancel()
         }
+        awaitingFinalTranslation = recorded && confirmed && manager != nil
+        manager?.finish(waitForTranslation: awaitingFinalTranslation)
     }
 
     private func releaseGlassesSpeech(reason: String) {
@@ -767,6 +779,10 @@ final class ConversationTranslationController: ObservableObject {
             return
         }
         if glassesConnecting || glassesRecording || waitingPhoneSocketReady || phoneRecording {
+            return
+        }
+        if awaitingFinalTranslation {
+            statusText = L10n.t("正在处理翻译…", "Processing translation…")
             return
         }
         let hasResult = !latestTranslation.isEmpty || !latestTranscript.isEmpty
@@ -1040,6 +1056,15 @@ extension ConversationTranslationController: RealtimeTranslationManager.Callback
 
     func onTranslationCompleted() {
         settleProcessingStatus(reason: "translation completed")
+    }
+
+    func onFinished(waitTimedOut: Bool) {
+        awaitingFinalTranslation = false
+        guard isActive else { return }
+        settleProcessingStatus(reason: "translation input finished")
+        if waitTimedOut {
+            statusText = L10n.t("等待译文语音超时，请重试", "Translation audio timed out. Please try again.")
+        }
     }
 
     func onSpeech(_ data: Data) {
