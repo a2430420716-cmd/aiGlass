@@ -223,6 +223,7 @@ final class MediaImportManager: ObservableObject {
     @Published private(set) var lastFailureReport: MediaImportFailureReport?
     @Published private(set) var completionNotice: String?
     @Published private(set) var pendingGen1RecoveryCount = 0
+    @Published private(set) var failedGen1RecoveryCount = 0
     @Published private var isClosingGen1Hotspot = false
 
     @Published private(set) var manualWifiJoin: ManualGlassesWifiJoin?
@@ -680,9 +681,12 @@ final class MediaImportManager: ObservableObject {
         guard let target = ble.savedPeripheralUUIDString.flatMap(UUID.init(uuidString:)),
               let account = ble.gen1ImportAccount(for: target) else {
             pendingGen1RecoveryCount = 0
+            failedGen1RecoveryCount = 0
             return
         }
-        pendingGen1RecoveryCount = (try? Gen1ImportInbox().completedEntries(for: target, accountID: account).count) ?? 0
+        let entries = (try? Gen1ImportInbox().completedEntries(for: target, accountID: account)) ?? []
+        pendingGen1RecoveryCount = entries.count
+        failedGen1RecoveryCount = entries.filter { $0.processingError != nil }.count
     }
 
     private func commitGen1File(
@@ -701,7 +705,16 @@ final class MediaImportManager: ObservableObject {
         }
         let watermark = PhotoCaptureWatermarkStore.shared.configuration(fileName: entry.fileName,
             account: entry.accountID, device: entry.targetID.uuidString)
-        let item = try await library.importGen1Original(fileURL: inbox.fileURL(for: entry), fileName: entry.fileName, watermark: watermark)
+        let item: StoredMediaItem
+        do {
+            item = try await library.importGen1Original(fileURL: inbox.fileURL(for: entry), fileName: entry.fileName, watermark: watermark)
+        } catch {
+            try validateOwnership()
+            if error is CancellationError { throw error }
+            do { try inbox.recordProcessingFailure(entry, reason: error.localizedDescription) }
+            catch { DebugLogStore.logWiFi("记录原件处理失败状态失败", detail: "file=\(entry.fileName) error=\(error.localizedDescription)") }
+            throw error
+        }
         try validateOwnership()
         if autoSave {
             do {

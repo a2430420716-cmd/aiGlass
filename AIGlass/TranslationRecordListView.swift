@@ -10,6 +10,7 @@ struct TranslationRecordListView: View {
     @State private var showsDeleteConfirm = false
     @State private var alertMessage: String?
     @State private var detailRecord: SimultaneousTranslationRecord?
+    @State private var sharePayload: TextSharePayload?
 
     var body: some View {
         ZStack {
@@ -50,6 +51,9 @@ struct TranslationRecordListView: View {
         .onAppear { reload() }
         .compatibleNavigationDestination(item: $detailRecord) { record in
             TranslationRecordDetailView(record: record)
+        }
+        .sheet(item: $sharePayload) { payload in
+            SystemTextShareSheet(text: payload.text)
         }
         .alert(L10n.t("提示", "Notice"), isPresented: Binding(
             get: { alertMessage != nil },
@@ -114,18 +118,26 @@ struct TranslationRecordListView: View {
     }
 
     private var actionBar: some View {
-        Button {
-            if selectedIds.isEmpty {
-                alertMessage = L10n.t("请选择要删除的记录", "Select records to delete")
-            } else {
-                showsDeleteConfirm = true
+        HStack(spacing: 24) {
+            Button {
+                if selectedIds.isEmpty {
+                    alertMessage = L10n.t("请选择要删除的记录", "Select records to delete")
+                } else {
+                    showsDeleteConfirm = true
+                }
+            } label: {
+                Label(L10n.t("删除", "Delete"), systemImage: "trash")
+                    .foregroundStyle(AppTheme.accent)
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
-        } label: {
-            Label(L10n.t("删除", "Delete"), systemImage: "trash")
-                .font(AppTheme.notoSansSC(size: 15, weight: .medium))
-                .foregroundStyle(AppTheme.accent)
-                .frame(maxWidth: .infinity)
+
+            Button(action: shareSelectedRecords) {
+                Label(L10n.t("分享", "Share"), systemImage: "square.and.arrow.up")
+                    .foregroundStyle(AppTheme.primaryText)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
         }
+        .font(AppTheme.notoSansSC(size: 15, weight: .medium))
         .buttonStyle(.plain)
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
@@ -187,6 +199,18 @@ struct TranslationRecordListView: View {
 
     private func reload() {
         records = SimultaneousTranslationRecordStore.getAll()
+    }
+
+    private func shareSelectedRecords() {
+        let text = SimultaneousTranslationShareFormatter.text(records: records, selectedIDs: selectedIds) {
+            TranslationLanguage.fromDisplayName($0).displayName
+        }
+        guard !text.isEmpty else {
+            alertMessage = L10n.t("请先选择要分享的记录", "Select records to share first")
+            return
+        }
+        sharePayload = TextSharePayload(text: text)
+        exitSelectionMode()
     }
 
     private func enterSelectionMode() {

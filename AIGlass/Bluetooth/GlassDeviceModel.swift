@@ -1,12 +1,21 @@
 import Foundation
 
-/// 眼镜产品型号。实际协议代际由连接后的 GATT 服务确认。
+/// Product presentation follows API device_type; GATT confirms the actual protocol.
 enum GlassDeviceModel: String, CaseIterable, Identifiable {
     case luminaL1 = "Lumina L1"
     case astraA1 = "Astra A1"
     case unknown = "Unknown"
 
-    init(modelName: String) {
+    init(modelName: String, deviceType: APIDeviceType? = nil) {
+        if let deviceType {
+            switch deviceType {
+            case .firstGeneration: self = .luminaL1
+            case .secondGeneration: self = .astraA1
+            case .unknown: self = .unknown
+            }
+            return
+        }
+        // Compatibility for old responses that do not include device_type.
         let name = modelName.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         if name.contains("G5K6") || name == "L1" || name.hasPrefix("L1 ")
             || name.contains("LUMINA L1") {
@@ -20,6 +29,14 @@ enum GlassDeviceModel: String, CaseIterable, Identifiable {
     }
 
     var id: String { rawValue }
+
+    var generation: DeviceGeneration {
+        switch self {
+        case .luminaL1: .gen1G5K61
+        case .astraA1: .gen2
+        case .unknown: .unknown
+        }
+    }
 
     var productLine: String { "MOCO AI Glasses" }
 

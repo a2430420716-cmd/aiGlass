@@ -16,6 +16,7 @@ final class PairingCoordinator: ObservableObject {
     @Published private(set) var navigationResetID = UUID()
     @Published private(set) var pairingModel: GlassDeviceModel?
     @Published private(set) var selectedAPIModelName: String?
+    @Published private(set) var selectedDeviceType: APIDeviceType?
     @Published private(set) var selectedEqName: String?
     @Published private(set) var selectedGuideItems: [DeviceGuideItem] = []
     @Published private(set) var selectedPrepareHTML: String?
@@ -49,6 +50,15 @@ final class PairingCoordinator: ObservableObject {
     init() {
         astraA1BleManager.deviceCardPresenceProvider = { [weak self] in
             self?.hasCorrespondingDeviceCard == true
+        }
+        astraA1BleManager.boundDeviceTypeProvider = { [weak self] targetID, hardwareSN in
+            guard let auth = self?.authSession, auth.isLoggedIn else { return nil }
+            return auth.userInfo?.device.first(where: {
+                DeviceAvailabilityPolicy.matches(
+                    serialNumber: $0.serialNumber, hardwareSN: $0.hardwareSN,
+                    currentPeripheralID: targetID.uuidString, currentHardwareSN: hardwareSN
+                )
+            })?.deviceType
         }
         astraA1BleManager.gen1ImportAccountProvider = { [weak self] targetID, hardwareSN in
             guard let self, let auth = self.authSession, auth.isLoggedIn,
@@ -160,6 +170,7 @@ final class PairingCoordinator: ObservableObject {
     func selectDevice(_ model: DeviceModelItem, guideItems: [DeviceGuideItem]) {
         cancelPairingAttempt()
         selectedAPIModelName = model.modelName
+        selectedDeviceType = model.deviceType
         selectedEqName = model.eqName
         selectedGuideItems = guideItems
         selectedPrepareHTML = model.localizedPrepareHTML
@@ -178,7 +189,9 @@ final class PairingCoordinator: ObservableObject {
         guard selectedAPIModelName == model.modelName else { return }
         selectedEqName = model.eqName
         selectedPrepareHTML = model.localizedPrepareHTML
-        pairingModel = model.glassDeviceModel
+        // The detail endpoint may not yet include the field added to the list.
+        if let type = model.deviceType { selectedDeviceType = type }
+        pairingModel = GlassDeviceModel(modelName: model.modelName, deviceType: selectedDeviceType)
     }
 
     /// 配对准备页「开始配对」→ 开始蓝牙扫描/连接。
@@ -192,7 +205,9 @@ final class PairingCoordinator: ObservableObject {
 
         switch pairingModel {
         case .astraA1, .luminaL1, .unknown:
-            astraA1BleManager.startPairing(preferredDeviceName: selectedAPIModelName)
+            astraA1BleManager.startPairing(
+                preferredDeviceName: selectedAPIModelName, deviceType: selectedDeviceType
+            )
         case .none:
             bindStatusMessage = L10n.t("请先选择设备型号", "Select a device model first")
             showSearchingSheet = true
@@ -472,6 +487,7 @@ final class PairingCoordinator: ObservableObject {
         hasStartedBind = false
         pairingModel = nil
         selectedAPIModelName = nil
+        selectedDeviceType = nil
         selectedEqName = nil
         selectedGuideItems = []
         selectedPrepareHTML = nil

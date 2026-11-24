@@ -54,6 +54,13 @@ struct GlassesSettingsView: View {
             return match
         }
         if device != nil { return nil }
+        if let match = devices.first(where: {
+            pairingCoordinator.astraA1BleManager.matchesCurrentDevice(
+                serialNumber: $0.serialNumber, hardwareSN: $0.hardwareSN
+            )
+        }) {
+            return match
+        }
         return devices.first
     }
 
@@ -106,29 +113,25 @@ struct GlassesSettingsView: View {
     }
 
     private func showsCapability(_ capability: KeyPath<DeviceCapabilities, Bool>) -> Bool {
-        let ble = pairingCoordinator.astraA1BleManager
-        return !isGlassesConnected || ble.deviceGeneration == .unknown
-            || ble.deviceCapabilities[keyPath: capability]
+        let generation = settingsDeviceGeneration
+        return generation == .unknown || DeviceCapabilities.forGeneration(generation)[keyPath: capability]
     }
 
-    /// Use the connected target's protocol first, then its bound model while offline.
-    private var isGen1SettingsDevice: Bool {
+    /// Prefer current account metadata; display names never override a known API type.
+    private var settingsDeviceGeneration: DeviceGeneration {
+        let type = boundDevice != nil ? boundDevice?.deviceType : device?.deviceType
+        if let type { return type.generation }
         let ble = pairingCoordinator.astraA1BleManager
         if isGlassesConnected, ble.deviceGeneration != .unknown {
-            return ble.deviceGeneration == .gen1G5K61
+            return ble.deviceGeneration
         }
-        let modelName = device?.modelName ?? boundDevice?.modelName ?? ""
-        return GlassDeviceModel(modelName: modelName) == .luminaL1
+        return GlassDeviceModel(modelName: boundDevice?.modelName ?? device?.modelName ?? "").generation
     }
+
+    private var isGen1SettingsDevice: Bool { settingsDeviceGeneration == .gen1G5K61 }
 
     private var showsIndicatorBrightness: Bool {
-        if isGen1SettingsDevice { return false }
-        let ble = pairingCoordinator.astraA1BleManager
-        if isGlassesConnected, ble.deviceGeneration != .unknown {
-            return ble.deviceGeneration == .gen2
-        }
-        let modelName = device?.modelName ?? boundDevice?.modelName ?? ""
-        return GlassDeviceModel(modelName: modelName) == .astraA1
+        settingsDeviceGeneration == .gen2
     }
 
     private var indicatorBrightnessSummary: String {

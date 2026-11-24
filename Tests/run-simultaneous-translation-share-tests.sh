@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+test_dir=$(mktemp -d "${TMPDIR:-/tmp}/aiglass-translation-share.XXXXXX")
+trap 'rm -rf "$test_dir"' EXIT
+xcrun swiftc -swift-version 6 -default-isolation MainActor -module-cache-path "$test_dir/cache" \
+  AIGlass/Network/SimultaneousTranslationRecordStore.swift Tests/SimultaneousTranslationShareTests.swift \
+  -o "$test_dir/share"
+"$test_dir/share"

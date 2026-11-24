@@ -11,6 +11,7 @@ struct BindDeviceRequest {
 
 struct DeviceModelItem: Decodable, Identifiable, Equatable {
     let id: Int
+    let deviceType: APIDeviceType?
     let modelName: String
     let modelNameAlias: String?
     let eqName: String
@@ -23,6 +24,7 @@ struct DeviceModelItem: Decodable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id
+        case deviceType = "device_type"
         case prepare
         case enPrepare = "en_prepare"
         case logo
@@ -32,6 +34,21 @@ struct DeviceModelItem: Decodable, Identifiable, Equatable {
         case modelNameAlias = "model_name_alias"
         case eqName = "eq_name"
         case isWatermark = "is_watermark"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int.self, forKey: .id)
+        deviceType = try container.decodeIfPresent(APIDeviceType.self, forKey: .deviceType)
+        modelName = try container.decode(String.self, forKey: .modelName)
+        modelNameAlias = try container.decodeIfPresent(String.self, forKey: .modelNameAlias)
+        eqName = try container.decode(String.self, forKey: .eqName)
+        prepare = try container.decodeIfPresent(String.self, forKey: .prepare)
+        enPrepare = try container.decodeIfPresent(String.self, forKey: .enPrepare)
+        logo = try container.decodeIfPresent(String.self, forKey: .logo)
+        sort = try container.decodeIfPresent(Int.self, forKey: .sort)
+        isWatermark = try container.decodeIfPresent(Int.self, forKey: .isWatermark)
+        status = try container.decodeIfPresent(Int.self, forKey: .status)
     }
 
     /// 列表展示名
@@ -48,7 +65,7 @@ struct DeviceModelItem: Decodable, Identifiable, Equatable {
     }
 
     var glassDeviceModel: GlassDeviceModel {
-        GlassDeviceModel(modelName: modelName)
+        GlassDeviceModel(modelName: modelName, deviceType: deviceType)
     }
 
     var fallbackImageName: String {

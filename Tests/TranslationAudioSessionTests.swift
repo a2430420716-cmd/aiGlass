@@ -323,36 +323,6 @@ struct TranslationAudioSessionTests {
         finishing.begin(now: 400)
         check(finishing.nextAction(now: 400, sendsPending: false) == .stop(timedOut: false),
               "Empty capture needs neither synthetic audio nor a 15 second wait")
-        var replay = TranslationSpeechReplayBuffer()
-        let replayFirstSpeech = Data([1, 0, 2, 0])
-        let nextSpeech = Data([3, 0])
-        check(!replay.append(replayFirstSpeech), "Speech outside a recording cannot enter replay")
-        replay.begin()
-        check(!replay.append(Data()) && !replay.append(Data([1])), "Reject empty and unaligned PCM")
-        check(replay.append(replayFirstSpeech) && replay.append(nextSpeech), "Retain speech while playback is muted")
-        check(replay.chunks == [replayFirstSpeech, nextSpeech] && replay.byteCount == 6,
-              "Replay preserves the PCM sequence returned by the service")
-        let firstReplay = replay.chunks
-        check(replay.chunks == firstReplay, "Replaying does not consume speech needed after off/on or route failure")
-        replay.begin()
-        check(replay.chunks.isEmpty && replay.byteCount == 0, "New recording cannot replay the previous recording")
-        check(replay.append(nextSpeech) && replay.chunks == [nextSpeech], "Replacement recording accepts only its own speech")
-        replay.reset()
-        check(!replay.append(replayFirstSpeech) && replay.chunks.isEmpty, "Exit or language change discards late speech")
-        replay.begin()
-        check(replay.append(Data(count: TranslationSpeechReplayBuffer.maxBytes)), "Accept exactly the byte bound")
-        check(!replay.append(nextSpeech) && replay.overflowed, "Reject byte overflow without discarding the retained prefix")
-        check(replay.byteCount == TranslationSpeechReplayBuffer.maxBytes && replay.chunks.count == 1,
-              "Buffer memory stays bounded")
-        check(!replay.append(replayFirstSpeech), "Do not insert gaps after overflowing")
-        replay.begin()
-        check(!replay.overflowed && replay.byteCount == 0, "New recording resets the overflow budget")
-        for _ in 0..<TranslationSpeechReplayBuffer.maxChunks { _ = replay.append(nextSpeech) }
-        check(replay.chunks.count == TranslationSpeechReplayBuffer.maxChunks, "Accept the chunk limit")
-        check(!replay.append(nextSpeech) && replay.overflowed, "Bound per-chunk overhead as well as PCM bytes")
-        replay.begin()
-        check(!replay.append(Data(count: TranslationSpeechReplayBuffer.maxBytes + 2)) && replay.chunks.isEmpty,
-              "Reject a single oversized response without allocating another retained copy")
         print("TranslationAudioSessionTests: \(assertions) assertions passed")
     }
 }

@@ -32,7 +32,7 @@ struct BluetoothFirmwareUpdateDialog: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 6)
 
-                    Text(L10n.t("欢迎使用MOCO AI Glasses，为了提升体验，我们推荐升级至此版本", "Welcome to MOCO AI Glasses. To improve your experience, we recommend updating to this version."))
+                    Text(L10n.t("欢迎使用MOCO AI，为了提升体验，我们推荐升级至此版本", "Welcome to MOCO AI. To improve your experience, we recommend updating to this version."))
                         .font(AppTheme.notoSansSC(size: 14, weight: .regular))
                         .foregroundStyle(AppTheme.primaryText)
                         .lineSpacing(4)

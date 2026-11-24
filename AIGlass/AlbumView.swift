@@ -399,13 +399,24 @@ struct AlbumView: View {
                 .scaledToFit()
                 .frame(width: 28, height: 28)
 
-            Text(importManager.pendingGen1RecoveryCount > 0
-                 ? L10n.t("\(importManager.pendingGen1RecoveryCount)项原件可从手机恢复", "\(importManager.pendingGen1RecoveryCount) original(s) can be recovered from this phone")
-                 : L10n.t("\(pendingImportCount)项照片和视频可导入手机", "\(pendingImportCount) photos or videos can be imported to your phone"))
-                .font(AppTheme.notoSansSC(size: 15, weight: .regular))
-                .foregroundStyle(AppTheme.primaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(importManager.pendingGen1RecoveryCount > 0
+                     ? L10n.t("\(importManager.pendingGen1RecoveryCount)项原件待处理", "\(importManager.pendingGen1RecoveryCount) original(s) pending processing")
+                     : L10n.t("\(pendingImportCount)项照片和视频可导入手机", "\(pendingImportCount) photos or videos can be imported to your phone"))
+                    .font(AppTheme.notoSansSC(size: 15, weight: .regular))
+                    .foregroundStyle(AppTheme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if importManager.failedGen1RecoveryCount > 0 {
+                    Text(L10n.t(
+                        "\(importManager.failedGen1RecoveryCount)项上次处理失败，原件已保留；录制中断的文件可能无法恢复。",
+                        "\(importManager.failedGen1RecoveryCount) item(s) could not be processed. Originals are retained; interrupted recordings may not be recoverable."
+                    ))
+                    .font(AppTheme.notoSansSC(size: 12, weight: .regular))
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             Spacer(minLength: 8)
 
@@ -413,7 +424,9 @@ struct AlbumView: View {
                 Button {
                     startImport(recoverLocalFilesOnly: importManager.pendingGen1RecoveryCount > 0)
                 } label: {
-                    Text(importManager.pendingGen1RecoveryCount > 0 ? L10n.t("恢复", "Recover") : L10n.t("导入", "Import"))
+                    Text(importManager.pendingGen1RecoveryCount > 0
+                         ? (importManager.failedGen1RecoveryCount > 0 ? L10n.t("重试", "Retry") : L10n.t("处理", "Process"))
+                         : L10n.t("导入", "Import"))
                         .font(AppTheme.notoSansSC(size: 13, weight: .medium))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 16)

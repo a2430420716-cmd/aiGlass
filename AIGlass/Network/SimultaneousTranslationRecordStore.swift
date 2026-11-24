@@ -11,6 +11,30 @@ struct SimultaneousTranslationRecord: Codable, Identifiable, Equatable, Hashable
     let durationMs: Int64
 }
 
+enum SimultaneousTranslationShareFormatter {
+    /// Match Android's record-list sharing order and plain-text fields.
+    static func text(
+        records: [SimultaneousTranslationRecord],
+        selectedIDs: Set<String>,
+        timeZone: TimeZone = .current,
+        displayLanguage: (String) -> String
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy/MM/dd HH:mm"
+        return records.filter { selectedIDs.contains($0.id) }.map { record in
+            [
+                record.title,
+                "\(displayLanguage(record.sourceLanguage)) -> \(displayLanguage(record.targetLanguage))",
+                record.sourceText,
+                record.targetText,
+                formatter.string(from: Date(timeIntervalSince1970: record.createdAt))
+            ].joined(separator: "\n")
+        }.joined(separator: "\n\n")
+    }
+}
+
 enum SimultaneousTranslationRecordStore {
     private static let prefsKeyPrefix = "simultaneous_translation_records_"
     private static let glassesSoundKey = "simultaneous_glasses_sound"

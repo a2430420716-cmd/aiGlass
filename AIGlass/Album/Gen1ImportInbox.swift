@@ -8,6 +8,7 @@ struct Gen1ImportInbox {
         let targetID: UUID
         let fileName: String
         let accountID: String
+        var processingError: String? = nil
     }
 
     let root: URL
@@ -29,6 +30,15 @@ struct Gen1ImportInbox {
     }
 
     func fileURL(for entry: Entry) -> URL { directory(for: entry).appendingPathComponent(entry.fileName) }
+
+    /// Persist failure metadata only; never replace or remove the downloaded original.
+    func recordProcessingFailure(_ entry: Entry, reason: String) throws {
+        var updated = entry
+        updated.processingError = reason
+        try JSONEncoder().encode(updated).write(
+            to: directory(for: entry).appendingPathComponent("entry.json"), options: .atomic
+        )
+    }
 
     func completedEntries(for targetID: UUID, accountID: String? = nil) throws -> [Entry] {
         let target = root.appendingPathComponent(targetID.uuidString, isDirectory: true)

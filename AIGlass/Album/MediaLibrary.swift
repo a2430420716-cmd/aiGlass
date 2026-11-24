@@ -263,6 +263,7 @@ final class MediaLibrary: ObservableObject {
 
         if isVideo {
             await Self.logVideoDuration(url: source, fileName: fileName, stage: "gen1_downloaded_original")
+            try await Gen1VideoOriginalValidator.validateVideoOriginal(source)
             let processing = try await Gen1VideoImportPipeline.process(
                 source: source, stabilizedURL: stabilizedURL, output: temporary,
                 stabilize: { input, output in

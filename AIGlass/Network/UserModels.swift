@@ -279,6 +279,7 @@ struct UserDevice: Decodable, Identifiable, Equatable {
     private(set) var deviceName: String?
     let eqName: String?
     let modelName: String?
+    let deviceType: APIDeviceType?
     /// 绑定用蓝牙标识（iOS = CoreBluetooth UUID）。
     let serialNumber: String
     /// 硬件 SN（getdevinfo），接口字段可能是 sn / device_sn。
@@ -295,6 +296,7 @@ struct UserDevice: Decodable, Identifiable, Equatable {
         case deviceName = "device_name"
         case eqName = "eq_name"
         case modelName = "model_name"
+        case deviceType = "device_type"
         case serialNumber = "serial_number"
         case deviceAddress = "device_address"
         case macAddress = "mac_address"
@@ -316,6 +318,7 @@ struct UserDevice: Decodable, Identifiable, Equatable {
         deviceName = Self.decodeString(from: container, forKey: .deviceName)
         eqName = Self.decodeString(from: container, forKey: .eqName)
         modelName = Self.decodeString(from: container, forKey: .modelName)
+        deviceType = try container.decodeIfPresent(APIDeviceType.self, forKey: .deviceType)
         // 对齐 Android `getUnbindSerialNumber`：云端不同设备历史数据字段不一致。
         serialNumber = [
             CodingKeys.serialNumber,
@@ -379,6 +382,6 @@ struct UserDevice: Decodable, Identifiable, Equatable {
     }
 
     var cardImageName: String {
-        GlassDeviceModel(modelName: modelName ?? "").imageName
+        GlassDeviceModel(modelName: modelName ?? "", deviceType: deviceType).imageName
     }
 }

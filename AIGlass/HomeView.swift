@@ -4,6 +4,7 @@ struct DeviceCardData: Identifiable, Equatable {
     let id: String
     let name: String?
     let modelName: String?
+    let deviceType: APIDeviceType?
     /// 品牌名，对齐 Android 首页卡片 `tv_eq_name`，缺省显示 MOCO。
     let eqName: String?
     /// 账号绑定 serial_number（iOS 为 BLE UUID）。
@@ -31,6 +32,7 @@ struct DeviceCardData: Identifiable, Equatable {
         id: String,
         name: String?,
         modelName: String?,
+        deviceType: APIDeviceType? = nil,
         eqName: String? = nil,
         serialNumber: String? = nil,
         hardwareSN: String? = nil,
@@ -43,6 +45,7 @@ struct DeviceCardData: Identifiable, Equatable {
         self.id = id
         self.name = name
         self.modelName = modelName
+        self.deviceType = deviceType
         self.eqName = eqName
         self.serialNumber = serialNumber
         self.hardwareSN = hardwareSN
@@ -57,6 +60,7 @@ struct DeviceCardData: Identifiable, Equatable {
         id = "device-\(device.id ?? 0)-\(device.serialNumber)"
         name = device.displayName
         modelName = device.modelName
+        deviceType = device.deviceType
         eqName = device.eqName
         serialNumber = device.serialNumber
         hardwareSN = device.hardwareSN
@@ -73,6 +77,7 @@ struct DeviceCardData: Identifiable, Equatable {
             id: id,
             name: name,
             modelName: modelName,
+            deviceType: deviceType,
             eqName: eqName,
             serialNumber: serialNumber,
             hardwareSN: hardwareSN,
@@ -89,6 +94,7 @@ struct DeviceCardData: Identifiable, Equatable {
             id: id,
             name: displayName,
             modelName: modelName,
+            deviceType: deviceType,
             eqName: eqName,
             serialNumber: serialNumber,
             hardwareSN: hardwareSN,
@@ -515,11 +521,6 @@ struct HomeView: View {
                     onReconnectDevice: reconnectBoundDevice
                 )
                 volumeSection
-                    .overlay(alignment: .bottom) {
-                        mediaActionToast
-                            .offset(y: 18)
-                    }
-                    .zIndex(1)
                 actionGrid
             }
             .frame(maxWidth: .infinity)
@@ -527,6 +528,12 @@ struct HomeView: View {
         }
         .refreshable {
             await reloadHomeDeviceState(userInitiated: true)
+        }
+        .overlay(alignment: .bottom) {
+            // Keep feedback in the visible viewport, even when the volume card
+            // has scrolled away or its disconnected hit testing is disabled.
+            mediaActionToast
+                .padding(.bottom, 16)
         }
     }
 
@@ -591,7 +598,7 @@ struct HomeView: View {
 
     private func requireConnectedDevice() -> Bool {
         guard ble.isDeviceAvailable else {
-            mediaActionAlertMessage = L10n.t("设备未连接", "Device not connected")
+            showMediaActionToast(L10n.t("设备未连接", "Device not connected"))
             return false
         }
         return true
@@ -926,7 +933,7 @@ struct HomeView: View {
                     } label: {
                         FeatureActionCardView(
                             title: L10n.t("AI录音", "AI Recording"),
-                            subtitle: L10n.t("随时记录，AI转写总结", "Record anytime. AI-powered transcription & summary."),
+                            subtitle: L10n.t("随时记录，AI转写总结", "AI transcription summaries, record anytime"),
                             iconName: "android_home_recording"
                         )
                     }
@@ -1120,15 +1127,21 @@ private struct DeviceCarouselSection: View {
             guard !card.isFindDevice else { return card }
             let connected = ble.isDeviceAvailable && matchesLiveBLEDevice(card)
             let model: GlassDeviceModel
-            switch ble.deviceGeneration {
-            case .gen1G5K61: model = .luminaL1
-            case .gen2: model = .astraA1
-            case .unknown: model = GlassDeviceModel(modelName: card.modelName ?? "")
+            if card.deviceType != nil {
+                model = GlassDeviceModel(modelName: card.modelName ?? "", deviceType: card.deviceType)
+            } else if connected {
+                switch ble.deviceGeneration {
+                case .gen1G5K61: model = .luminaL1
+                case .gen2: model = .astraA1
+                case .unknown: model = GlassDeviceModel(modelName: card.modelName ?? "")
+                }
+            } else {
+                model = GlassDeviceModel(modelName: card.modelName ?? "")
             }
             return card.withConnection(
                 isConnected: connected,
                 batteryPercent: connected ? ble.deviceBatteryPercent : nil,
-                isCharging: connected && ble.deviceGeneration == .gen2 && ble.deviceIsCharging,
+                isCharging: connected && model == .astraA1 && ble.deviceGeneration == .gen2 && ble.deviceIsCharging,
                 connectedImageName: model.connectedImageName
             )
         }
@@ -1608,11 +1621,12 @@ private struct VolumeSlider: View {
     }
 }
 
-/// Keep unavailable actions disabled without PlainButtonStyle's automatic dimming.
-/// Only the disconnected glasses image uses the requested 50% opacity.
+/// Disconnected cards remain tappable to explain why the action is unavailable.
+/// Connected in-flight media commands can still disable their own button.
 private struct HomeActionButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .contentShape(Rectangle())
             .opacity(configuration.isPressed ? 0.85 : 1)
     }
 }
@@ -1628,13 +1642,13 @@ private struct MediaActionCardView: View {
                     .resizable()
                     .renderingMode(.original)
                     .scaledToFit()
-                    .frame(width: geometry.size.width < 160 ? 40 : 48, height: 48)
+                    .frame(width: geometry.size.width < 160 ? 56 : 64, height: 64)
 
                 Text(title)
                     .font(AppTheme.notoSansSC(size: 16, weight: .medium))
                     .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(geometry.size.width < 160 ? 0.65 : 0.8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .layoutPriority(1)
             }
@@ -1669,7 +1683,7 @@ private struct FeatureActionCardView: View {
                     .resizable()
                     .renderingMode(.original)
                     .scaledToFit()
-                    .frame(width: 32, height: 32)
+                    .frame(width: 36, height: 36)
             }
 
             Text(subtitle)

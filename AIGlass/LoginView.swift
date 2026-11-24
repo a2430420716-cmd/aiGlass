@@ -135,11 +135,8 @@ struct LoginView: View {
 
     private var loginContent: some View {
         ZStack(alignment: .top) {
-            backgroundLayers
-
             Color.clear
                 .contentShape(Rectangle())
-                .ignoresSafeArea()
                 .onTapGesture {
                     dismissKeyboard()
                 }
@@ -161,8 +158,13 @@ struct LoginView: View {
             }
             .padding(.horizontal, 24)
         }
+        .background {
+            // Full-screen artwork must not expand the form's safe-area layout.
+            backgroundLayers
+                .allowsHitTesting(false)
+        }
         .navigationBarHidden(true)
-        .overlay(alignment: .topLeading) {
+        .safeAreaInset(edge: .top, spacing: 0) {
             if let onSelectServer {
                 Button {
                     dismissKeyboard()
@@ -170,9 +172,14 @@ struct LoginView: View {
                 } label: {
                     Label(L10n.t("选择服务器", "Select Server"), systemImage: "chevron.left")
                         .font(.system(size: 14, weight: .medium))
-                        .padding(16)
+                        .frame(minHeight: 44)
+                        .padding(.horizontal, 16)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .foregroundStyle(AppTheme.primaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 8)
             }
         }
         .dismissKeyboardOnVerticalDrag(perform: dismissKeyboard)

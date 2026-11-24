@@ -10,6 +10,27 @@ struct SharePayload: Identifiable {
     let urls: [URL]
 }
 
+struct TextSharePayload: Identifiable {
+    let id = UUID()
+    let text: String
+}
+
+struct SystemTextShareSheet: UIViewControllerRepresentable {
+    let text: String
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+        if let popover = controller.popoverPresentationController {
+            popover.sourceView = controller.view
+            popover.sourceRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+            popover.permittedArrowDirections = []
+        }
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
 struct SystemShareSheet: UIViewControllerRepresentable {
     let urls: [URL]
     var onComplete: (() -> Void)?

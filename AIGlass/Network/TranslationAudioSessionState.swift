@@ -92,44 +92,6 @@ struct TranslationDeferredSpeechQueue {
     }
 }
 
-/// Returned speech for the current interpretation recording, including speech
-/// received while muted. Replaying does not consume it, so a failed route or a
-/// later off/on toggle can restart the same recording without mixing sessions.
-struct TranslationSpeechReplayBuffer {
-    static let maxBytes = 16_000_000
-    static let maxChunks = 16_384
-    private var accepting = false
-    private(set) var chunks: [Data] = []
-    private(set) var byteCount = 0
-    private(set) var overflowed = false
-
-    mutating func begin() {
-        reset()
-        accepting = true
-    }
-
-    @discardableResult
-    mutating func append(_ data: Data) -> Bool {
-        guard accepting, !data.isEmpty, data.count.isMultiple(of: 2) else { return false }
-        // Retain a contiguous prefix if an unexpected response exceeds the cap.
-        guard !overflowed, chunks.count < Self.maxChunks,
-              data.count <= Self.maxBytes, byteCount <= Self.maxBytes - data.count else {
-            overflowed = true
-            return false
-        }
-        chunks.append(data)
-        byteCount += data.count
-        return true
-    }
-
-    mutating func reset() {
-        accepting = false
-        chunks.removeAll()
-        byteCount = 0
-        overflowed = false
-    }
-}
-
 /// Invalidates asynchronous URL lookups and socket callbacks when a session closes.
 struct TranslationConnectionAttempt {
     private(set) var current: UInt64 = 0

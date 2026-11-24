@@ -102,6 +102,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @Published private(set) var isDeviceInfoReady = false
 
     @Published private(set) var deviceGeneration: DeviceGeneration = .unknown
+    /// Current-account metadata for this exact peripheral, never a display-name lookup.
+    var boundDeviceTypeProvider: ((UUID, String?) -> APIDeviceType?)?
     @Published private(set) var settingsRecordDurationSeconds: Int?
     @Published private(set) var isRecordDurationSettingPending = false
     @Published private(set) var recordDurationSettingResult: Gen1RecordDurationSettingState.Result?
@@ -412,6 +414,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private var standingConnectAllowed = false
     /// 配对弹窗扫描时按设备名过滤，值为所选 model_name（如 G5T71）。
     private var pairingModelNameFilter: String?
+    private var pairingDeviceTypeFilter: APIDeviceType?
     private var userPairingTargetID: UUID?
     private var userPairingRetryCount = 0
     private let maxUserPairingRetries = 3
@@ -718,8 +721,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     var isDeviceAvailable: Bool {
-        DeviceAvailabilityPolicy.canOperate(
-            isBluetoothReady: isReady,
+        let typeMatches = connectedPeripheral.map { peripheral in
+            expectedDeviceType(for: peripheral)?.matches(deviceGeneration) ?? true
+        } ?? true
+        return DeviceAvailabilityPolicy.canOperate(
+            isBluetoothReady: isReady && typeMatches,
             hasCorrespondingCard: deviceCardPresenceProvider?() ?? false
         )
     }
@@ -4431,10 +4437,14 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     /// 开始扫描；发现设备后列入弹窗，由用户手动选择再连接。
-    func startPairing(preferredDeviceName: String? = nil) {
+    func startPairing(preferredDeviceName: String? = nil, deviceType: APIDeviceType? = nil) {
         guard let modelName = preferredDeviceName?.trimmingCharacters(in: .whitespacesAndNewlines),
               !modelName.isEmpty else {
             updateState(.failed(L10n.t("请先选择设备型号", "Select a device model first")))
+            return
+        }
+        guard deviceType != .unknown else {
+            updateState(.failed(L10n.t("设备型号类型未知，请刷新型号列表后重试", "Device type is unknown. Refresh the model list and try again.")))
             return
         }
         guard prepareCentralManager(allowAuthorizationRequest: true) else { return }
@@ -4497,9 +4507,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         isManualPairingScan = true
         isUserInitiatedPairingConnect = false
         pairingModelNameFilter = modelName
+        pairingDeviceTypeFilter = deviceType
 
         print("\(logTag) startPairing, central state=\(centralManager.state.rawValue)")
-        print("\(logTag) pairing scan filter by device name containing model_name=\(modelName)")
+        connectLog("pairing scan policy", detail: "model=\(modelName) device_type=\(deviceType?.rawValue.description ?? "missing") evidence=\(deviceType == nil ? "legacy_model_hint" : "advertisement_or_GATT_service")")
 
         switch centralManager.state {
         case .poweredOn:
@@ -4653,7 +4664,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func shouldPauseBackgroundProbe() -> Bool {
-        isManualPairingScan && !discoveredPairingDevices.isEmpty
+        // Typed devices may have arbitrary names; continue verifying other nearby
+        // candidates so the first discovered glasses do not hide the user's pair.
+        pairingDeviceTypeFilter == nil && isManualPairingScan && !discoveredPairingDevices.isEmpty
     }
 
     /// 取消扫描/连接（用户点取消）。
@@ -4673,6 +4686,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         isManualPairingScan = false
         isUserInitiatedPairingConnect = false
         pairingModelNameFilter = nil
+        pairingDeviceTypeFilter = nil
         userPairingTargetID = nil
         userPairingRetryCount = 0
         pendingUserPairingPeripheral = nil
@@ -5804,7 +5818,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
 
         if isManualPairingScan {
-            print("\(logTag) beginScan pairing by device name containing model_name=\(pairingModelNameFilter ?? "nil")")
+            print("\(logTag) beginScan model=\(pairingModelNameFilter ?? "nil") device_type=\(pairingDeviceTypeFilter?.rawValue.description ?? "missing")")
         } else {
             print("\(logTag) beginScan by protocol service UUID (name-independent)")
         }
@@ -5813,7 +5827,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
 
-        if !isManualPairingScan {
+        if !isManualPairingScan || pairingDeviceTypeFilter != nil {
             scheduleProbeStart()
         }
 
@@ -6264,6 +6278,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             isManualPairingScan = false
             isUserInitiatedPairingConnect = false
             pairingModelNameFilter = nil
+            pairingDeviceTypeFilter = nil
             statusMessage = L10n.t("连接成功", "Connected")
             startBatteryPolling()
             // 设备一进入就绪（刚连上/接管 GATT）就查询运行状态；等 notify 稳定后再发。
@@ -6434,6 +6449,24 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID]
         ]
         return lists.compactMap { $0 }.contains { !Set($0).isDisjoint(with: Self.supportedServiceUUIDs) }
+    }
+
+    private func protocolGeneration(serviceUUIDs: Set<CBUUID>) -> DeviceGeneration {
+        if serviceUUIDs.contains(AstraA1BleProtocol.serviceUUID) { return .gen2 }
+        if serviceUUIDs.contains(Self.gen1ServiceUUID) { return .gen1G5K61 }
+        return .unknown
+    }
+
+    private func advertisedProtocolGeneration(_ advertisementData: [String: Any]) -> DeviceGeneration {
+        let uuids = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? [])
+            + (advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID] ?? [])
+        return protocolGeneration(serviceUUIDs: Set(uuids))
+    }
+
+    private func expectedDeviceType(for peripheral: CBPeripheral) -> APIDeviceType? {
+        if isPairingSessionActive { return pairingDeviceTypeFilter }
+        let currentSN = identityPeripheralID == peripheral.identifier ? deviceSN : nil
+        return boundDeviceTypeProvider?(peripheral.identifier, currentSN)
     }
 
     private func connect(to peripheral: CBPeripheral, probing: Bool) {
@@ -6984,7 +7017,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         _ peripheral: CBPeripheral,
         advertisementData: [String: Any]
     ) -> Bool {
-        guard let modelName = pairingModelNameFilter,
+        guard pairingDeviceTypeFilter == nil, let modelName = pairingModelNameFilter,
               !modelName.isEmpty else {
             return false
         }
@@ -7008,10 +7041,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     ) {
         let name = resolvedName(for: peripheral, advertisementData: advertisementData)
         let displayName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !displayName.isEmpty else { return }
         addVerifiedPairingDevice(
             peripheral,
-            displayName: displayName,
+            displayName: displayName.isEmpty ? L10n.t("未知设备", "Unknown device") : displayName,
             rssi: rssi.intValue
         )
     }
@@ -8246,7 +8278,19 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
             }
 
             if isManualPairingScan {
-                if nameMatchesPairingModelName(peripheral, advertisementData: advertisementData) {
+                if let type = pairingDeviceTypeFilter {
+                    let generation = advertisedProtocolGeneration(advertisementData)
+                    if generation != .unknown {
+                        if type.matches(generation) {
+                            registerNameMatchedPairingDevice(peripheral, advertisementData: advertisementData, rssi: RSSI)
+                        }
+                    } else if (advertisementData[CBAdvertisementDataIsConnectable] as? Bool) ?? true {
+                        // Renamed glasses may omit service UUIDs in advertising.
+                        // Reuse the existing service-only probe; do not guess their type.
+                        enqueueProbeCandidate(peripheral, rssi: RSSI)
+                        scheduleProbeStart()
+                    }
+                } else if nameMatchesPairingModelName(peripheral, advertisementData: advertisementData) {
                     registerNameMatchedPairingDevice(peripheral, advertisementData: advertisementData, rssi: RSSI)
                 }
                 return
@@ -8676,6 +8720,25 @@ extension AstraA1BleManager: CBPeripheralDelegate {
             }
 
             print("\(logTag) protocol service confirmed")
+
+            let actualGeneration = protocolGeneration(serviceUUIDs: Set(services.map(\.uuid)))
+            if let expected = expectedDeviceType(for: peripheral), !expected.matches(actualGeneration) {
+                connectLog("device_type does not match GATT", detail: "target=\(peripheral.identifier.uuidString) device_type=\(expected.rawValue) gattGeneration=\(actualGeneration.rawValue) bindingAndCommandsBlocked=true")
+                if isProbingService {
+                    handleProbeFailed(reason: "device_type/GATT mismatch")
+                } else {
+                    cancelConnectWatchdog()
+                    autoReconnectEnabled = false
+                    standingConnectAllowed = false
+                    isUserInitiatedPairingConnect = false
+                    centralManager.cancelPeripheralConnection(peripheral)
+                    updateState(.failed(L10n.t(
+                        "眼镜类型与所选或已绑定型号不一致，请刷新设备信息后重试",
+                        "The glasses type does not match the selected or bound model. Refresh device information and try again."
+                    )))
+                }
+                return
+            }
 
             if isPairingSessionActive && isProbingService {
                 let name = peripheral.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
