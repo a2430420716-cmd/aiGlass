@@ -959,7 +959,7 @@ struct HomeView: View {
                     } label: {
                         FeatureActionCardView(
                             title: L10n.t("AI翻译", "Translation"),
-                            subtitle: L10n.t("支持多种语言，让对话交流更顺畅自然", "Multi-language support for smooth, natural conversations."),
+                            subtitle: L10n.t("支持多种语言，让对话交流更顺畅自然", "Multi-language support\nfor smoother conversations"),
                             iconName: "android_home_translation"
                         )
                     }
@@ -985,7 +985,7 @@ struct HomeView: View {
                     } label: {
                         FeatureActionCardView(
                             title: L10n.t("智能图像识别", "AI Vision"),
-                            subtitle: L10n.t("第一人称视觉助手，识别眼前万物，并解说信息", "Your POV assistant. Identifies and explains what you see."),
+                            subtitle: L10n.t("第一人称视觉助手，识别眼前万物，并解说信息", "Identifies and explains\nwhat you see"),
                             iconName: "android_home_recognition"
                         )
                     }
@@ -1692,12 +1692,9 @@ private struct FeatureActionCardView: View {
                     .frame(width: 36, height: 36)
             }
 
-            Text(subtitle)
+            subtitleView
                 .font(AppTheme.notoSansSC(size: HomeTypography.description, weight: .regular))
                 .foregroundStyle(AppTheme.homeCardSubtitleText)
-                .lineLimit(subtitleLineLimit)
-                .minimumScaleFactor(1)
-                .fixedSize(horizontal: false, vertical: true)
                 .padding(.trailing, 4)
         }
         .padding(12)
@@ -1706,6 +1703,28 @@ private struct FeatureActionCardView: View {
         .background(AppTheme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius))
         .shadow(color: AppTheme.cardShadow, radius: 10, y: 4)
+    }
+
+    @ViewBuilder
+    private var subtitleView: some View {
+        if subtitle.contains("\n") {
+            // Explicit English copy breaks stay on two complete lines at narrow widths.
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(subtitle.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(subtitle.replacingOccurrences(of: "\n", with: " "))
+        } else {
+            Text(subtitle)
+                .lineLimit(subtitleLineLimit)
+                .minimumScaleFactor(1)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
