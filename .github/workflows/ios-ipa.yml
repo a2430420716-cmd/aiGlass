@@ -19,11 +19,11 @@ permissions:
 
 jobs:
   ipa:
-    runs-on: macos-26-intel
+    runs-on: xcode-27
     timeout-minutes: 60
     env:
       EXPORT_METHOD: ${{ inputs.export_method }}
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - name: 检查签名配置
@@ -37,6 +37,14 @@ jobs:
       - name: 准备 Xcode 和 CocoaPods
         run: |
           xcodebuild -version
+          python3 - <<'PY'
+          import subprocess
+          xcode = subprocess.check_output(['xcodebuild', '-version'], text=True).splitlines()[0].split()[1]
+          sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-version'], text=True).strip()
+          assert int(xcode.split('.')[0]) >= 27, '打包必须使用 Xcode 27 或更新版本'
+          assert int(sdk.split('.')[0]) >= 27, '打包必须使用 iOS 27 SDK 或更新版本'
+          print(f'Build toolchain verified: Xcode {xcode}; iOS SDK {sdk}')
+          PY
           sudo gem install cocoapods -v 1.17.0 --no-document
           pod install --deployment
       - name: 验证蓝牙连接与升级恢复

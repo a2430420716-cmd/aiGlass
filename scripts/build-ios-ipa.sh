@@ -102,6 +102,10 @@ python3 - <<'PY'
 import json, os, pathlib, plistlib, subprocess
 app = pathlib.Path('build/AIGlass.xcarchive/Products/Applications/AIGlass.app')
 info = plistlib.loads((app / 'Info.plist').read_bytes())
+sdk_name = info.get('DTSDKName', '')
+assert sdk_name.startswith('iphoneos') and int(sdk_name[len('iphoneos'):].split('.')[0]) >= 27, '归档必须使用 iOS 27 SDK 或更新版本'
+assert int(info.get('DTXcode', '0')) >= 2700, '归档必须使用 Xcode 27 或更新版本'
+print(f'Archived toolchain verified: Xcode {info["DTXcode"]}; SDK {sdk_name}')
 expected_diagnostics = os.environ['EXPORT_METHOD'] in ('debugging', 'release-testing')
 actual_diagnostics = info.get('AIGlassDiagnosticsEnabled')
 assert actual_diagnostics in (True, False, 'YES', 'NO'), '缺少调试日志构建标记'
