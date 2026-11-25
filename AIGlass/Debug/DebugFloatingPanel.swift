@@ -24,6 +24,7 @@ enum DebugOverlayWindow {
     private static var window: PassthroughWindow?
 
     static func installIfNeeded() {
+        guard AppDiagnostics.isEnabled else { return }
         guard window == nil else { return }
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })

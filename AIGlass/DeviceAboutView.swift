@@ -128,9 +128,9 @@ struct DeviceAboutView: View {
     // MARK: - Display values
 
     private var displayName: String {
-        (isAboutDeviceAvailable ? nonEmpty(ble.deviceName) : nil)
+        nonEmpty(boundDevice?.deviceName)
+            ?? (isAboutDeviceAvailable ? nonEmpty(ble.deviceName) : nil)
             ?? (isAboutDeviceAvailable ? nonEmpty(ble.currentPeripheralName) : nil)
-            ?? nonEmpty(boundDevice?.deviceName)
             ?? nonEmpty(boundDevice?.displayName)
             ?? placeholder
     }

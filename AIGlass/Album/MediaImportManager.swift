@@ -560,7 +560,7 @@ final class MediaImportManager: ObservableObject {
                     importedNames.append(name)
                     filesToDeleteOnDevice.append(name)
                     print("\(logTag) imported \(name) bytes=\(data.count)，稍后统一删设备文件")
-                    if autoSaveToPhotoLibrary {
+                    if autoSaveToPhotoLibrary && item.videoPlaybackUnavailable != true {
                         do {
                             try await SystemPhotoLibrarySaver.save(
                                 fileURL: library.originalURL(for: item),
@@ -571,6 +571,9 @@ final class MediaImportManager: ObservableObject {
                             // 对齐 Android：系统相册保存失败不影响 App 内导入，也不保留设备文件重试。
                             print("\(logTag) auto-save Photos failed \(name): \(error.localizedDescription)")
                         }
+                    }
+                    if autoSaveToPhotoLibrary && item.videoPlaybackUnavailable == true {
+                        DebugLogStore.logWiFi("视频已正常导入 App，相册播放不可用", detail: "file=\(name) skippedPhotosExport=true sourcePreserved=true importCompleted=true")
                     }
                 } catch {
                     if Self.shouldDeleteUnopenableFile(error) {
@@ -716,7 +719,7 @@ final class MediaImportManager: ObservableObject {
             throw error
         }
         try validateOwnership()
-        if autoSave {
+        if autoSave && item.videoPlaybackUnavailable != true {
             do {
                 try await SystemPhotoLibrarySaver.save(fileURL: library.originalURL(for: item), isVideo: item.isVideo)
             } catch {
@@ -726,6 +729,9 @@ final class MediaImportManager: ObservableObject {
                     "The app original for \(entry.fileName) is safe, but saving to Photos failed. Import again to retry: \(error.localizedDescription)"
                 ))
             }
+        }
+        if autoSave && item.videoPlaybackUnavailable == true {
+            DebugLogStore.logWiFi("视频已正常导入 App，相册播放不可用", detail: "file=\(entry.fileName) skippedPhotosExport=true sourcePreserved=true importCompleted=true")
         }
         try validateOwnership()
         // Permanent original and app manifest have committed. A cleanup failure can be

@@ -76,11 +76,13 @@ PY
 # Apply signing to the app target only; CocoaPods frameworks must not inherit a profile.
 ruby - <<'RUBY'
 require 'xcodeproj'
+require File.expand_path('scripts/diagnostics-settings', Dir.pwd)
 settings = Xcodeproj::Plist.read_from_path(File.join(ENV.fetch('RUNNER_TEMP'), 'aiglass-signing-settings.plist'))
 project = Xcodeproj::Project.open('AIGlass.xcodeproj')
 target = project.targets.find { |item| item.name == 'AIGlass' }
 raise 'AIGlass target missing' unless target
 target.build_configurations.each do |config|
+  AIGlassDiagnosticsSettings.apply(config.build_settings, ENV.fetch('EXPORT_METHOD'))
   config.build_settings.keys.grep(/\A(?:DEVELOPMENT_TEAM|CODE_SIGN_IDENTITY|PROVISIONING_PROFILE)/).each { |key| config.build_settings.delete(key) }
   config.build_settings['TARGETED_DEVICE_FAMILY'] = '1'
   config.build_settings['CODE_SIGN_STYLE'] = 'Manual'
@@ -97,9 +99,13 @@ xcodebuild -workspace AIGlass.xcworkspace -scheme AIGlass -configuration Release
   archive 2>&1 | tee build/logs/archive.log
 # Verify the archived app, not just the source settings, before exporting.
 python3 - <<'PY'
-import json, pathlib, plistlib, subprocess
+import json, os, pathlib, plistlib, subprocess
 app = pathlib.Path('build/AIGlass.xcarchive/Products/Applications/AIGlass.app')
 info = plistlib.loads((app / 'Info.plist').read_bytes())
+expected_diagnostics = os.environ['EXPORT_METHOD'] in ('debugging', 'release-testing')
+actual_diagnostics = info.get('AIGlassDiagnosticsEnabled')
+assert actual_diagnostics in (True, False, 'YES', 'NO'), '缺少调试日志构建标记'
+assert (actual_diagnostics in (True, 'YES')) == expected_diagnostics, '调试日志开关与导出类型不一致'
 assert info.get('UIDeviceFamily') == [1], '归档 App 必须仅支持 iPhone'
 keys = {
     'NSBluetoothAlwaysUsageDescription', 'NSBluetoothPeripheralUsageDescription',

@@ -10,6 +10,8 @@ struct StoredMediaItem: Identifiable, Codable, Equatable {
     let createdAt: Date
     var isFavorite: Bool
     let durationSeconds: Double?
+    /// Optional for backward compatibility with manifests written before this flag.
+    var videoPlaybackUnavailable: Bool? = nil
 
     var originalFileName: String { "\(id.uuidString)_\(fileName)" }
     var thumbnailFileName: String { "\(id.uuidString)_thumb.jpg" }
@@ -117,6 +119,25 @@ final class MediaLibrary: ObservableObject {
             defer {
                 try? fileManager.removeItem(at: tempURL)
                 try? fileManager.removeItem(at: stabilizedURL)
+            }
+
+            var originalIsReadable = true
+            do {
+                try await Gen1VideoOriginalValidator.validateVideoOriginal(tempURL)
+            } catch is Gen1VideoOriginalValidator.UnreadableVideoError {
+                originalIsReadable = false
+            }
+            if !originalIsReadable {
+                try Task.checkCancellation()
+                try fileManager.copyItem(at: tempURL, to: originalURL)
+                let unreadableItem = StoredMediaItem(
+                    id: id, fileName: fileName, isVideo: true, createdAt: Date(),
+                    isFavorite: false, durationSeconds: nil, videoPlaybackUnavailable: true
+                )
+                try Self.generateUnavailableVideoThumbnail(to: thumbnailURL(for: unreadableItem))
+                try Task.checkCancellation()
+                try commitGen1Item(unreadableItem)
+                return unreadableItem
             }
 
             let stabilized = await PixSmartVideoEIS.stabilizeVideo(
@@ -248,7 +269,6 @@ final class MediaLibrary: ObservableObject {
             id: receipt.id, fileName: displayName, isVideo: isVideo,
             createdAt: receipt.createdAt, isFavorite: previous?.isFavorite ?? false, durationSeconds: nil
         )
-        let output = originalURL(for: item)
         let temporary = originalsURL.appendingPathComponent("gen1_\(receipt.id.uuidString)_processing.\(isVideo ? "mp4" : "jpg")")
         let stabilizedURL = originalsURL.appendingPathComponent("gen1_\(receipt.id.uuidString)_eis.mp4")
         let temporaryThumbnail = thumbnailsURL.appendingPathComponent("gen1_\(receipt.id.uuidString)_processing.jpg")
@@ -263,9 +283,15 @@ final class MediaLibrary: ObservableObject {
 
         if isVideo {
             await Self.logVideoDuration(url: source, fileName: fileName, stage: "gen1_downloaded_original")
-            try await Gen1VideoOriginalValidator.validateVideoOriginal(source)
+            var originalIsReadable = true
+            do {
+                try await Gen1VideoOriginalValidator.validateVideoOriginal(source)
+            } catch is Gen1VideoOriginalValidator.UnreadableVideoError {
+                originalIsReadable = false
+            }
             let processing = try await Gen1VideoImportPipeline.process(
                 source: source, stabilizedURL: stabilizedURL, output: temporary,
+                originalIsReadable: originalIsReadable,
                 stabilize: { input, output in
                     let success = await PixSmartVideoEIS.stabilizeGen1Video(from: input, to: output)
                     if success {
@@ -280,14 +306,23 @@ final class MediaLibrary: ObservableObject {
                     DebugLogStore.logWiFi("视频防抖回退原件", detail: "file=\(fileName) \(detail)")
                 }
             )
-            DebugLogStore.logWiFi("视频导入处理完成", detail: "file=\(fileName) stabilized=\(processing == .stabilized) rotation=clockwise90 originalPreserved=true")
-            await Self.logVideoDuration(url: temporary, fileName: fileName, stage: "gen1_album_final")
+            let unreadable = processing == .unreadableOriginal
+            let unprocessed = unreadable || processing == .unprocessedOriginal
+            DebugLogStore.logWiFi("视频导入处理完成", detail: "file=\(fileName) stabilized=\(processing == .stabilized) rotation=\(unprocessed ? "none" : "clockwise90") playbackUnavailable=\(unreadable) originalPreserved=true")
+            if !unreadable {
+                await Self.logVideoDuration(url: temporary, fileName: fileName, stage: "gen1_album_final")
+            }
             item = StoredMediaItem(
-                id: receipt.id, fileName: displayName, isVideo: true,
+                id: receipt.id, fileName: unprocessed ? fileName : displayName, isVideo: true,
                 createdAt: receipt.createdAt, isFavorite: previous?.isFavorite ?? false,
-                durationSeconds: Self.videoDuration(url: temporary)
+                durationSeconds: unreadable ? nil : Self.videoDuration(url: temporary),
+                videoPlaybackUnavailable: unreadable ? true : nil
             )
-            try Self.generateVideoThumbnail(from: temporary, to: temporaryThumbnail)
+            if unreadable {
+                try Self.generateUnavailableVideoThumbnail(to: temporaryThumbnail)
+            } else {
+                try Self.generateVideoThumbnail(from: temporary, to: temporaryThumbnail)
+            }
         } else {
             let data = try Data(contentsOf: source, options: .mappedIfSafe)
             let rotated = try Gen1MediaOrientation.rotatePhotoClockwise90(data, fileName: fileName)
@@ -300,10 +335,11 @@ final class MediaLibrary: ObservableObject {
             throw MediaOrientationFixer.Error.encodeFailed
         }
         try Task.checkCancellation()
+        let output = originalURL(for: item)
         try installGen1Derivative(from: temporary, to: output)
         try installGen1Derivative(from: temporaryThumbnail, to: thumbnailURL(for: item))
         try commitGen1Item(item)
-        print("[MediaLibrary] Gen1 original preserved; clockwise rotation applied")
+        print("[MediaLibrary] Gen1 video/photo committed; original preserved; playbackUnavailable=\(item.videoPlaybackUnavailable == true)")
         return item
     }
 
@@ -387,10 +423,34 @@ final class MediaLibrary: ObservableObject {
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 600, height: 600)
         let time = CMTime(seconds: 0.1, preferredTimescale: 600)
-        let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
+        let cgImage: CGImage
+        do {
+            cgImage = try generator.copyCGImage(at: time, actualTime: nil)
+        } catch {
+            // A missing preview is not a failed download. Disk-write failures in
+            // the placeholder path still propagate and prevent premature cleanup.
+            DebugLogStore.logWiFi("视频缩略图不可生成，使用占位图", detail: "file=\(videoURL.lastPathComponent) error=\(error.localizedDescription)")
+            try generateUnavailableVideoThumbnail(to: url)
+            return
+        }
         let image = UIImage(cgImage: cgImage)
         let thumb = squareCroppedThumbnail(from: image, side: 300)
         guard let jpeg = thumb.jpegData(compressionQuality: 0.85) else { return }
+        try jpeg.write(to: url, options: .atomic)
+    }
+
+    private static func generateUnavailableVideoThumbnail(to url: URL) throws {
+        let side: CGFloat = 300
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { context in
+            UIColor(white: 0.90, alpha: 1).setFill()
+            context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+            let symbol = UIImage(systemName: "video", withConfiguration: UIImage.SymbolConfiguration(pointSize: 64))?
+                .withTintColor(UIColor(white: 0.55, alpha: 1), renderingMode: .alwaysOriginal)
+            symbol?.draw(in: CGRect(x: 108, y: 118, width: 84, height: 64))
+        }
+        guard let jpeg = image.jpegData(compressionQuality: 0.85) else { throw MediaOrientationFixer.Error.encodeFailed }
         try jpeg.write(to: url, options: .atomic)
     }
 

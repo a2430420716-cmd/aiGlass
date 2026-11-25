@@ -228,12 +228,14 @@ struct HomeView: View {
         _ = deviceNameRevision
         let cards = authSession.homeDeviceCards.map { card in
             guard !card.isFindDevice else { return card }
+            if let serverDevice = authSession.userInfo?.device.first(where: {
+                $0.serialNumber.caseInsensitiveCompare(card.serialNumber ?? "") == .orderedSame
+            }),
+               serverDevice.deviceName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                return card.withDisplayName(serverDevice.displayName)
+            }
             if let customName = DeviceDisplayNameStore.displayName(for: card) {
                 return card.withDisplayName(customName)
-            }
-            if let serverDevice = authSession.userInfo?.device.first(where: { $0.serialNumber == card.serialNumber }),
-               serverDevice.deviceName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-                return card
             }
             if ble.matchesCurrentDevice(serialNumber: card.serialNumber, hardwareSN: card.hardwareSN),
                let name = [ble.deviceName, ble.currentPeripheralName]
@@ -841,7 +843,7 @@ struct HomeView: View {
     private var header: some View {
         HStack {
             Text(L10n.t("设备", "Device"))
-                .font(AppTheme.notoSansSC(size: HomeLayout.screenTitleSize, weight: .bold))
+                .font(AppTheme.notoSansSC(size: HomeTypography.pageTitle, weight: .bold))
                 .tracking(0)
                 .lineSpacing(0)
                 .foregroundStyle(AppTheme.primaryText)
@@ -865,7 +867,7 @@ struct HomeView: View {
     private var volumeSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(L10n.t("系统音量", "System volume"))
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: HomeTypography.description, weight: .regular))
                 .foregroundStyle(AppTheme.primaryText)
 
             HStack(spacing: 10) {
@@ -925,6 +927,7 @@ struct HomeView: View {
                     .disabled(ble.isDeviceAvailable && (ble.isVideoStarting || ble.isVideoStopping || ble.videoCompleted))
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: HomeLayout.actionCardSpacing) {
                 if showsCapability(\.aiRecording) {
@@ -973,6 +976,7 @@ struct HomeView: View {
                     }
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: HomeLayout.actionCardSpacing) {
                 if showsCapability(\.aiImageRecognition) {
@@ -1002,6 +1006,7 @@ struct HomeView: View {
                     .buttonStyle(HomeActionButtonStyle())
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: HomeLayout.actionCardSpacing) {
                 if showsCapability(\.tutorial) {
@@ -1056,6 +1061,7 @@ struct HomeView: View {
                     .hidden()
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity)
         .background {
@@ -1365,7 +1371,7 @@ private struct DeviceCardView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     if device.isFindDevice {
                         Text(L10n.t("查找您的设备", "Find your device"))
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.system(size: HomeTypography.description, weight: .semibold))
                             .foregroundStyle(AppTheme.primaryText)
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
@@ -1378,7 +1384,7 @@ private struct DeviceCardView: View {
                                 .frame(width: 22, height: 22)
 
                             Text(brandName)
-                                .font(.system(size: 15, weight: .bold))
+                                .font(.system(size: HomeTypography.cardTitle, weight: .bold))
                                 .foregroundStyle(AppTheme.primaryText)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.8)
@@ -1388,7 +1394,7 @@ private struct DeviceCardView: View {
                         Button(action: onEditName) {
                             HStack(spacing: 5) {
                                 Text(device.name ?? "")
-                                    .font(.system(size: 15, weight: .regular))
+                                    .font(.system(size: HomeTypography.cardTitle, weight: .regular))
                                     .foregroundStyle(AppTheme.primaryText)
                                     .lineLimit(1)
                                     .truncationMode(.tail)
@@ -1412,9 +1418,9 @@ private struct DeviceCardView: View {
                                         .frame(width: 24, height: 24)
                                     (
                                         Text("\(battery)")
-                                            .font(.system(size: 15, weight: .bold))
+                                            .font(.system(size: HomeTypography.cardTitle, weight: .bold))
                                         + Text("%")
-                                            .font(.system(size: 15, weight: .regular))
+                                            .font(.system(size: HomeTypography.cardTitle, weight: .regular))
                                     )
                                         .foregroundStyle(AppTheme.primaryText)
                                 }
@@ -1645,7 +1651,7 @@ private struct MediaActionCardView: View {
                     .frame(width: geometry.size.width < 160 ? 56 : 64, height: 64)
 
                 Text(title)
-                    .font(AppTheme.notoSansSC(size: 16, weight: .medium))
+                    .font(AppTheme.notoSansSC(size: HomeTypography.mediaTitle, weight: .bold))
                     .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
                     .minimumScaleFactor(geometry.size.width < 160 ? 0.65 : 0.8)
@@ -1666,13 +1672,13 @@ private struct FeatureActionCardView: View {
     let title: String
     let subtitle: String
     let iconName: String
-    var subtitleLineLimit: Int = 3
+    var subtitleLineLimit: Int? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 8) {
                 Text(title)
-                    .font(AppTheme.notoSansSC(size: 15, weight: .semibold))
+                    .font(AppTheme.notoSansSC(size: HomeTypography.cardTitle, weight: .bold))
                     .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
@@ -1687,15 +1693,16 @@ private struct FeatureActionCardView: View {
             }
 
             Text(subtitle)
-                .font(AppTheme.notoSansSC(size: 11, weight: .regular))
+                .font(AppTheme.notoSansSC(size: HomeTypography.description, weight: .regular))
                 .foregroundStyle(AppTheme.homeCardSubtitleText)
                 .lineLimit(subtitleLineLimit)
-                .minimumScaleFactor(subtitleLineLimit == 1 ? 0.8 : 1)
+                .minimumScaleFactor(1)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.trailing, 4)
         }
         .padding(12)
-        .frame(width: HomeLayout.actionCardWidth, height: HomeLayout.featureActionCardHeight, alignment: .topLeading)
+        .frame(width: HomeLayout.actionCardWidth, alignment: .topLeading)
+        .frame(minHeight: HomeLayout.featureActionCardHeight, maxHeight: .infinity, alignment: .topLeading)
         .background(AppTheme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius))
         .shadow(color: AppTheme.cardShadow, radius: 10, y: 4)
@@ -1711,7 +1718,7 @@ private struct GuideActionCardView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 8) {
                 Text(title)
-                    .font(AppTheme.notoSansSC(size: 15, weight: .semibold))
+                    .font(AppTheme.notoSansSC(size: HomeTypography.cardTitle, weight: .bold))
                     .foregroundStyle(AppTheme.primaryText)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
@@ -1726,12 +1733,13 @@ private struct GuideActionCardView: View {
             }
 
             Text(subtitle)
-                .font(AppTheme.notoSansSC(size: 11, weight: .regular))
+                .font(AppTheme.notoSansSC(size: HomeTypography.description, weight: .regular))
                 .foregroundStyle(AppTheme.homeCardSubtitleText)
-                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
-        .frame(width: HomeLayout.actionCardWidth, height: HomeLayout.actionCardHeight, alignment: .topLeading)
+        .frame(width: HomeLayout.actionCardWidth, alignment: .topLeading)
+        .frame(minHeight: HomeLayout.actionCardHeight, maxHeight: .infinity, alignment: .topLeading)
         .background(AppTheme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius))
         .shadow(color: AppTheme.cardShadow, radius: 10, y: 4)

@@ -1,4 +1,5 @@
 #import "PixSmartImageStabilizer.h"
+#import "../../Debug/AIGlassDiagnostics.h"
 
 #import <CoreVideo/CoreVideo.h>
 #import <OpenGLES/EAGL.h>
@@ -215,7 +216,7 @@ static NSString *const kPixSmartEISErrorDomain = @"PixSmartEIS";
             &dstTex
         );
         if (texRet != kCVReturnSuccess || !dstTex) {
-            NSLog(@"[PixSmartEIS] texture create failed: %d", texRet);
+            AIGlassDebugLog(@"[PixSmartEIS] texture create failed: %d", texRet);
             CVPixelBufferRelease(dstPB);
             break;
         }
@@ -360,7 +361,7 @@ static NSString *const kPixSmartEISErrorDomain = @"PixSmartEIS";
         }
         return nil;
     }
-    NSLog(@"[PixSmartEIS] stabilize ok (GL) %dx%d -> %lu bytes", width, height, (unsigned long)jpeg.length);
+    AIGlassDebugLog(@"[PixSmartEIS] stabilize ok (GL) %dx%d -> %lu bytes", width, height, (unsigned long)jpeg.length);
     return jpeg;
 }
 
@@ -381,7 +382,7 @@ static NSString *const kPixSmartEISErrorDomain = @"PixSmartEIS";
         NSString *bad = [docs.firstObject stringByAppendingPathComponent:@"SXS_VideoStabilizePv_IOS_Activation.data"];
         if ([[NSFileManager defaultManager] fileExistsAtPath:bad]) {
             [[NSFileManager defaultManager] removeItemAtPath:bad error:nil];
-            NSLog(@"[PixSmartEIS] removed legacy activation cache");
+            AIGlassDebugLog(@"[PixSmartEIS] removed legacy activation cache");
         }
     });
 
@@ -393,7 +394,7 @@ static NSString *const kPixSmartEISErrorDomain = @"PixSmartEIS";
 
     NSString *path = [self licenseFilePath];
     if (!path) {
-        NSLog(@"[PixSmartEIS] license file missing in bundle");
+        AIGlassDebugLog(@"[PixSmartEIS] license file missing in bundle");
         [lock unlock];
         return NO;
     }
@@ -405,12 +406,12 @@ static NSString *const kPixSmartEISErrorDomain = @"PixSmartEIS";
     PixSmartVsPvCheckLicense(path.UTF8String, "", "", &result);
 
     licensed = (result.result == 0);
-    NSLog(@"[PixSmartEIS] license result=%d sn=%s exp=%s",
+    AIGlassDebugLog(@"[PixSmartEIS] license result=%d sn=%s exp=%s",
           result.result, result.sn, result.expiringDate);
     if (!licensed) {
-        NSLog(@"[PixSmartEIS] auth failed code=%d ( -21 = need online activate once )", result.result);
+        AIGlassDebugLog(@"[PixSmartEIS] auth failed code=%d ( -21 = need online activate once )", result.result);
     } else {
-        NSLog(@"[PixSmartEIS] auth OK");
+        AIGlassDebugLog(@"[PixSmartEIS] auth OK");
     }
     [lock unlock];
     return licensed;

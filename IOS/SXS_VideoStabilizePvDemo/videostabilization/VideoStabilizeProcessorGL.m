@@ -1,4 +1,5 @@
 #import "VideoStabilizeProcessorGL.h"
+#import "../../../AIGlass/Debug/AIGlassDiagnostics.h"
 
 #import <AVFoundation/AVFoundation.h>
 #import <OpenGLES/EAGL.h>
@@ -58,7 +59,7 @@ _Static_assert(BT709 == 0 && BT709_FULLRANGE == 1, "PixSmart profile color const
 - (instancetype)initWithEisData:(EisData *)eisData delegate:(id<VideoStabilizeProcessorDelegate>)delegate {
     self = [super init];
     if (self = [super initWithEisData:eisData delegate:delegate]) {
-        NSLog(@"VideoStabilizeProcessorGL init");
+        AIGlassDebugLog(@"VideoStabilizeProcessorGL init");
         _processingQueue = dispatch_queue_create("com.pixsmart.videostabilize.processorgl", DISPATCH_QUEUE_SERIAL);
         _currentState = ProcessorStateIdle;
         atomic_init(&_gen1Cancelled, false);
@@ -126,7 +127,7 @@ _Static_assert(BT709 == 0 && BT709_FULLRANGE == 1, "PixSmart profile color const
         [self _notifyFailure:@"Insufficient video frames"];
         return;
     }
-    NSLog(@"VideoStabilizeProcessorYUV inputSize: %dx%d, totalFrames: %ld, rotation: %f, sourceBitRate: %.2f Mbps",
+    AIGlassDebugLog(@"VideoStabilizeProcessorYUV inputSize: %dx%d, totalFrames: %ld, rotation: %f, sourceBitRate: %.2f Mbps",
           (uint32_t)_inputSize.width, (uint32_t)_inputSize.height, _totalFrames, rotationAngle, sourceBitRate/1000000);
     
     NSError *error = nil;
@@ -148,7 +149,7 @@ _Static_assert(BT709 == 0 && BT709_FULLRANGE == 1, "PixSmart profile color const
     [EAGLContext setCurrentContext:_glContext];
     const GLubyte *ver = glGetString(GL_VERSION);
     const GLubyte *ren = glGetString(GL_RENDERER);
-    NSLog(@"GL_VERSION = %s GL_RENDERER = %s", ver ? (const char *)ver : "NULL", ren ? (const char *)ren : "NULL");
+    AIGlassDebugLog(@"GL_VERSION = %s GL_RENDERER = %s", ver ? (const char *)ver : "NULL", ren ? (const char *)ren : "NULL");
     
     glGenFramebuffers(1, &_fbo);
     
@@ -242,7 +243,7 @@ _Static_assert(BT709 == 0 && BT709_FULLRANGE == 1, "PixSmart profile color const
                                                                        0,
                                                                        &dstTex);
         if (texRet != kCVReturnSuccess || !dstTex) {
-            NSLog(@"❌ texture creation failed: %d", texRet);
+            AIGlassDebugLog(@"❌ texture creation failed: %d", texRet);
         }
         
         GLuint texID = CVOpenGLESTextureGetName(dstTex);
@@ -255,7 +256,7 @@ _Static_assert(BT709 == 0 && BT709_FULLRANGE == 1, "PixSmart profile color const
                                0);
         GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         if (status != GL_FRAMEBUFFER_COMPLETE) {
-            NSLog(@"❌ FBO incomplete: 0x%x, _currentFrameIndex = %d texID = %d _fbo = %d",
+            AIGlassDebugLog(@"❌ FBO incomplete: 0x%x, _currentFrameIndex = %d texID = %d _fbo = %d",
                   status, _currentFrameIndex, texID, _fbo);
         }
         
@@ -289,7 +290,7 @@ _Static_assert(BT709 == 0 && BT709_FULLRANGE == 1, "PixSmart profile color const
             while (!_videoInput.readyForMoreMediaData) {
                 usleep(1000);
             }
-//            NSLog(@"VS OUT FRAME"
+//            AIGlassDebugLog(@"VS OUT FRAME"
 //                  "\n  frameIndex      = %ld"
 //                  "\n  timestampOut(ns)= %ld"
 //                  "\n  outPTS(ns)      = %lld"
@@ -543,7 +544,7 @@ _Static_assert(BT709 == 0 && BT709_FULLRANGE == 1, "PixSmart profile color const
     _gen1Initialized = YES;
     PixSmartVsPvSetLogEnable(&_vsHandle, FALSE);
     _currentState = ProcessorStateProcessing;
-    NSLog(@"PixSmart Gen1 profile: %.0fx%.0f, dregScale=%.6f, colorStandard=%d",
+    AIGlassDebugLog(@"PixSmart Gen1 profile: %.0fx%.0f, dregScale=%.6f, colorStandard=%d",
           width, height, profile.dregScale, profile.colorStandard);
 
     NSString *failure = nil;
@@ -740,7 +741,7 @@ _Static_assert(BT709 == 0 && BT709_FULLRANGE == 1, "PixSmart profile color const
     } else if (_vsHandle) {
         // Mirrors Android's safety guard: vendor Uninit may crash with no real
         // input. There is no safe release API for this exceptional engine state.
-        NSLog(@"PixSmart Gen1 skips unsafe zero-frame/failed-init release");
+        AIGlassDebugLog(@"PixSmart Gen1 skips unsafe zero-frame/failed-init release");
     }
     _vsHandle = NULL;
     _gen1Initialized = NO;
@@ -805,7 +806,7 @@ _Static_assert(BT709 == 0 && BT709_FULLRANGE == 1, "PixSmart profile color const
                                              fileType:AVFileTypeMPEG4
                                                 error:&error];
     if (error) {
-        NSLog(@"AssetWriter初始化失败: %@", error);
+        AIGlassDebugLog(@"AssetWriter初始化失败: %@", error);
         return NO;
     }
     
@@ -844,16 +845,16 @@ _Static_assert(BT709 == 0 && BT709_FULLRANGE == 1, "PixSmart profile color const
     if ([_assetWriter canAddInput:_videoInput]) {
         [_assetWriter addInput:_videoInput];
     } else {
-        NSLog(@"add video input failed");
+        AIGlassDebugLog(@"add video input failed");
         return NO;
     }
     
     if (![_assetWriter startWriting]) {
-        NSLog(@"startWriting failed: %@", _assetWriter.error);
+        AIGlassDebugLog(@"startWriting failed: %@", _assetWriter.error);
         return NO;
     }
     
-    NSLog(@"VideoStabilizeProcessorYUV setupVideoWriter done");
+    AIGlassDebugLog(@"VideoStabilizeProcessorYUV setupVideoWriter done");
     return YES;
 }
 

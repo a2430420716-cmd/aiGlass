@@ -5,3 +5,4 @@
 #import "PixSmartImageStabilizer.h"
 #import "PixSmartVideoStabilizer.h"
 #import "AIGlassOpusDecoder.h"
+#import "Debug/AIGlassDiagnostics.h"

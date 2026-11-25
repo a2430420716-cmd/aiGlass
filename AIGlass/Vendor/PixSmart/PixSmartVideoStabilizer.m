@@ -1,4 +1,5 @@
 #import "PixSmartVideoStabilizer.h"
+#import "../../Debug/AIGlassDiagnostics.h"
 
 #import <TargetConditionals.h>
 
@@ -132,7 +133,7 @@
             return;
         }
         [[self activeWorkers] addObject:worker];
-        NSLog(@"[PixSmartVideoEIS] start generation=%@ input=%@ output=%@", useGen1Configuration ? @"gen1" : @"gen2", inputURL.path, outputURL.path);
+        AIGlassDebugLog(@"[PixSmartVideoEIS] start generation=%@ input=%@ output=%@", useGen1Configuration ? @"gen1" : @"gen2", inputURL.path, outputURL.path);
         [worker.processor startProcessing];
 
         // Android uses a 30-minute deadline. Gen1 requests cooperative cancellation
@@ -142,7 +143,7 @@
             dispatch_get_main_queue(),
             ^{
                 if (!worker.completed) {
-                    NSLog(@"[PixSmartVideoEIS] timeout");
+                    AIGlassDebugLog(@"[PixSmartVideoEIS] timeout");
                     if (worker.usesGen1Configuration) {
                         worker.timedOut = YES;
                         [worker.processor stopProcessing];
@@ -166,13 +167,13 @@
     unsigned long long size = [[[NSFileManager defaultManager]
         attributesOfItemAtPath:self.outputURL.path error:nil] fileSize];
     BOOL valid = [[NSFileManager defaultManager] fileExistsAtPath:self.outputURL.path] && size > 0;
-    NSLog(@"[PixSmartVideoEIS] finish valid=%d bytes=%llu info=%@", valid, size, videoInfo);
+    AIGlassDebugLog(@"[PixSmartVideoEIS] finish valid=%d bytes=%llu info=%@", valid, size, videoInfo);
     [self finishWithSuccess:valid error:valid ? nil : @"EIS 输出视频为空"];
 }
 
 - (void)onProcessFailed:(NSDictionary *)errorInfo {
     NSString *message = errorInfo[@"error"] ?: @"PixSmart 视频 EIS 失败";
-    NSLog(@"[PixSmartVideoEIS] failed: %@", message);
+    AIGlassDebugLog(@"[PixSmartVideoEIS] failed: %@", message);
     [self finishWithSuccess:NO error:message];
 }
 

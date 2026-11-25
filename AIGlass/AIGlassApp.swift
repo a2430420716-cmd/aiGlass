@@ -9,11 +9,6 @@ import Foundation
 import SwiftUI
 import UIKit
 
-private enum AppDebugFeatures {
-    /// Enable internal log controls for this test package.
-    static let showsFloatingLogPanel = true
-}
-
 private enum StartupRemoteCrashCheck {
     private static let endpoint = URL(string: "https://www.cxkw.com/check")!
 
@@ -48,6 +43,7 @@ struct AIGlassApp: App {
     @StateObject private var languageManager = AppLanguageManager.shared
 
     init() {
+        AIGlassConfigureSDKDiagnostics(AppDiagnostics.isEnabled)
         DeviceWifiManager.removeStaleTransferConfigurations()
         // 异步远程退出检查；除响应正文严格为 true 外，任何结果均忽略。
         StartupRemoteCrashCheck.start()
@@ -75,7 +71,7 @@ struct AIGlassApp: App {
                 }
                 .background(AppTheme.background.ignoresSafeArea())
                 .overlay {
-                    if AppDebugFeatures.showsFloatingLogPanel {
+                    if AppDiagnostics.isEnabled {
                         DebugFloatingPanel()
                     }
                 }

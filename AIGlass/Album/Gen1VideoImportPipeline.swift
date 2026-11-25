@@ -7,6 +7,8 @@ enum Gen1VideoImportPipeline {
     enum Result: Equatable {
         case stabilized
         case originalFallback
+        case unreadableOriginal
+        case unprocessedOriginal
     }
 
     enum Failure: Error {
@@ -17,6 +19,7 @@ enum Gen1VideoImportPipeline {
         source: URL,
         stabilizedURL: URL,
         output: URL,
+        originalIsReadable: Bool = true,
         stabilize: (URL, URL) async -> Bool,
         rotateWithAudio: (URL, URL, URL) async throws -> Void,
         diagnostic: (String) -> Void = { _ in }
@@ -25,6 +28,15 @@ enum Gen1VideoImportPipeline {
         guard Set(paths).count == 3 else { throw Failure.overlappingPaths }
         try Task.checkCancellation()
         defer { try? FileManager.default.removeItem(at: stabilizedURL) }
+
+        if !originalIsReadable {
+            // Transfer integrity and playback support are separate. Save the
+            // completed file unchanged; native enhancement cannot read it.
+            try? FileManager.default.removeItem(at: output)
+            try FileManager.default.copyItem(at: source, to: output)
+            try Task.checkCancellation()
+            return .unreadableOriginal
+        }
 
         let enhanced = await stabilize(source, stabilizedURL)
         try Task.checkCancellation()
@@ -45,8 +57,18 @@ enum Gen1VideoImportPipeline {
         // Failed export may have left a partial derivative. Only remove that output,
         // never the source archive or its inbox entry.
         try? FileManager.default.removeItem(at: output)
-        try await rotateWithAudio(source, source, output)
-        try Task.checkCancellation()
-        return .originalFallback
+        do {
+            try await rotateWithAudio(source, source, output)
+            try Task.checkCancellation()
+            return .originalFallback
+        } catch {
+            try Task.checkCancellation()
+            if error is CancellationError { throw error }
+            diagnostic("Original export failed; saving downloaded bytes unchanged: \(error.localizedDescription)")
+            try? FileManager.default.removeItem(at: output)
+            try FileManager.default.copyItem(at: source, to: output)
+            try Task.checkCancellation()
+            return .unprocessedOriginal
+        }
     }
 }

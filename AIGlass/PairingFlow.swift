@@ -255,7 +255,7 @@ final class PairingCoordinator: ObservableObject {
                 }) else { return discovered }
                 let legacyName = DeviceDisplayNameStore.displayName(for: DeviceCardData(device: bound))
                 let serverName = bound.deviceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let name = legacyName ?? (serverName.isEmpty ? discovered.displayName : serverName)
+                let name = serverName.isEmpty ? (legacyName ?? discovered.displayName) : serverName
                 // Display aliases never replace UUIDs or change scan/model filtering.
                 return DiscoveredBLEDevice(id: discovered.id, displayName: name, rssi: discovered.rssi)
             }

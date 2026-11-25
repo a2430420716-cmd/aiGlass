@@ -421,6 +421,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// 用户点「配对」时若系统层已连接，先断开再以全新连接触发系统配对弹窗。
     private var pendingUserPairingPeripheral: CBPeripheral?
     private var discoveredPeripherals: [UUID: CBPeripheral] = [:]
+    /// Fresh scan names survive GATT probing, which can expose a stale peripheral.name.
+    private var pairingAdvertisedNames: [UUID: String] = [:]
     private var activeProbeRSSI: Int?
 
     private let scanTimeoutSeconds: TimeInterval = 30
@@ -4503,6 +4505,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         probedIDs.removeAll()
         discoveredPairingDevices = []
         discoveredPeripherals = [:]
+        pairingAdvertisedNames = [:]
         isPairingSessionActive = true
         isManualPairingScan = true
         isUserInitiatedPairingConnect = false
@@ -4694,6 +4697,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         cancelManualHardReconnectState(reason: "cancel-pairing")
         discoveredPairingDevices = []
         discoveredPeripherals = [:]
+        pairingAdvertisedNames = [:]
         cancelScanTimeout()
         cancelProbeStart()
         stopScan()
@@ -6381,11 +6385,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
         if let index = discoveredPairingDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
             let existing = discoveredPairingDevices[index]
-            if rssi > existing.rssi {
+            if displayName != existing.displayName || rssi > existing.rssi {
                 discoveredPairingDevices[index] = DiscoveredBLEDevice(
                     id: peripheral.identifier,
                     displayName: displayName,
-                    rssi: rssi
+                    rssi: max(rssi, existing.rssi)
                 )
             }
         } else {
@@ -7017,21 +7021,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         _ peripheral: CBPeripheral,
         advertisementData: [String: Any]
     ) -> Bool {
-        guard pairingDeviceTypeFilter == nil, let modelName = pairingModelNameFilter,
-              !modelName.isEmpty else {
-            return false
-        }
-
         let name = resolvedName(for: peripheral, advertisementData: advertisementData)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return false }
-
-        if name.localizedCaseInsensitiveContains(modelName) { return true }
-        let selected = GlassDeviceModel(modelName: modelName)
-        if selected == .luminaL1 {
-            return DeviceGeneration.fromDeviceName(name) == .gen1G5K61
-        }
-        return false
+        return PairingDeviceNamePolicy.matchesModel(pairingModelNameFilter, deviceName: name)
     }
 
     private func registerNameMatchedPairingDevice(
@@ -7846,9 +7837,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func resolvedName(for peripheral: CBPeripheral, advertisementData: [String: Any]) -> String {
-        peripheral.name
-            ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
-            ?? ""
+        PairingDeviceNamePolicy.discoveredName(
+            advertised: advertisementData[CBAdvertisementDataLocalNameKey] as? String,
+            cached: peripheral.name
+        )
     }
 
     private func logDiscoveredPeripheral(
@@ -8278,6 +8270,10 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
             }
 
             if isManualPairingScan {
+                // device_type selects the protocol; raw model_name still limits the
+                // products shown, just as Android's selected-model scan does.
+                guard nameMatchesPairingModelName(peripheral, advertisementData: advertisementData) else { return }
+                pairingAdvertisedNames[peripheral.identifier] = resolvedName(for: peripheral, advertisementData: advertisementData)
                 if let type = pairingDeviceTypeFilter {
                     let generation = advertisedProtocolGeneration(advertisementData)
                     if generation != .unknown {
@@ -8290,7 +8286,7 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
                         enqueueProbeCandidate(peripheral, rssi: RSSI)
                         scheduleProbeStart()
                     }
-                } else if nameMatchesPairingModelName(peripheral, advertisementData: advertisementData) {
+                } else {
                     registerNameMatchedPairingDevice(peripheral, advertisementData: advertisementData, rssi: RSSI)
                 }
                 return
@@ -8741,7 +8737,13 @@ extension AstraA1BleManager: CBPeripheralDelegate {
             }
 
             if isPairingSessionActive && isProbingService {
-                let name = peripheral.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let name = PairingDeviceNamePolicy.discoveredName(
+                    advertised: pairingAdvertisedNames[peripheral.identifier], cached: peripheral.name
+                )
+                guard PairingDeviceNamePolicy.matchesModel(pairingModelNameFilter, deviceName: name) else {
+                    handleProbeFailed(reason: "selected model name mismatch")
+                    return
+                }
                 let displayName = name.isEmpty ? L10n.t("未知设备", "Unknown device") : name
                 addVerifiedPairingDevice(
                     peripheral,

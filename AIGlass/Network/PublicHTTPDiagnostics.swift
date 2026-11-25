@@ -15,6 +15,7 @@ nonisolated final class PublicHTTPDiagnostics: NSObject, URLSessionTaskDelegate,
     }
 
     static func data(for request: URLRequest, session: URLSession) async throws -> (Data, URLResponse) {
+        guard AppDiagnostics.isEnabled else { return try await session.data(for: request) }
         let diagnostics = PublicHTTPDiagnostics(request: request)
         diagnostics.start()
         defer { diagnostics.monitor.cancel() }

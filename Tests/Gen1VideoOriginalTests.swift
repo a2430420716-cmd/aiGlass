@@ -29,6 +29,16 @@ struct Gen1VideoOriginalTests {
         }
         let retainedInvalid = try Data(contentsOf: invalid)
         precondition(retainedInvalid == bytes, "Validation cannot modify invalid originals")
+        let imported = root.appendingPathComponent("album-interrupted.mp4")
+        let outcome = try await Gen1VideoImportPipeline.process(
+            source: invalid, stabilizedURL: root.appendingPathComponent("unused-eis.mp4"),
+            output: imported, originalIsReadable: false,
+            stabilize: { _, _ in preconditionFailure("Broken recording must not enter native EIS") },
+            rotateWithAudio: { _, _, _ in preconditionFailure("Broken recording must not enter decoding/export") }
+        )
+        precondition(outcome == .unreadableOriginal)
+        let importedBytes = try Data(contentsOf: imported)
+        precondition(importedBytes == bytes, "Rejected AVFoundation metadata still imports exact downloaded bytes")
 
         let valid = root.appendingPathComponent("normal.mp4")
         let writer = try AVAssetWriter(outputURL: valid, fileType: .mp4)
@@ -71,6 +81,6 @@ struct Gen1VideoOriginalTests {
         }
         let cancellationPreserved = await cancelled.value
         precondition(cancellationPreserved, "Cancellation must not be reported as corrupt video")
-        print("Gen1 original validation: unreadable, normal, source retention and cancellation passed")
+        print("Gen1 original validation: unreadable raw import, normal enhancement gate, source retention and cancellation passed")
     }
 }

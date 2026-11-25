@@ -7,6 +7,8 @@ struct AlbumMediaDetailView: View {
     @State private var player: AVPlayer?
     @State private var playerItemID: UUID?
     @State private var playbackError: String?
+    @State private var playbackFailed = false
+    @State private var playerStatusObservation: NSKeyValueObservation?
 
     private let library = MediaLibrary.shared
 
@@ -15,8 +17,15 @@ struct AlbumMediaDetailView: View {
             Color.black.ignoresSafeArea()
 
             if item.isVideo {
-                AlbumVideoPlayer(player: player)
-                    .ignoresSafeArea()
+                if item.videoPlaybackUnavailable == true || playbackFailed {
+                    Text(L10n.t("无法播放此视频，原始文件已保留。", "This video cannot be played. The original file is retained."))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(24)
+                } else {
+                    AlbumVideoPlayer(player: player)
+                        .ignoresSafeArea()
+                }
             } else if let image = UIImage(contentsOfFile: library.originalURL(for: item).path) {
                 Image(uiImage: image)
                     .resizable()
@@ -28,7 +37,7 @@ struct AlbumMediaDetailView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if item.isVideo, let player {
+            if item.isVideo, !playbackFailed, let player {
                 AlbumVideoControls(player: player)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 16)
@@ -50,23 +59,23 @@ struct AlbumMediaDetailView: View {
         }
         .onAppear {
             if item.isVideo {
+                playbackFailed = false
+                playbackError = nil
                 prepareVideoPlayer()
             }
         }
         .onChangeCompat(of: item.id) { _ in
-            player?.pause()
-            player = nil
-            playerItemID = nil
+            releaseVideoPlayer()
             playbackError = nil
+            playbackFailed = false
             if item.isVideo { prepareVideoPlayer() }
         }
-        .onDisappear { player?.pause() }
+        .onDisappear { releaseVideoPlayer() }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemFailedToPlayToEndTime)) { notification in
             guard let failedItem = notification.object as? AVPlayerItem,
                   failedItem === player?.currentItem else { return }
             let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
-            playbackError = L10n.t("视频播放失败，请重新打开视频。", "Video playback failed. Reopen the video.")
-            DebugLogStore.logWiFi("相册视频：播放失败", detail: "file=\(item.fileName) error=\(error?.localizedDescription ?? "unknown")")
+            reportPlaybackFailure(error)
         }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
             guard let endedItem = notification.object as? AVPlayerItem,
@@ -85,15 +94,47 @@ struct AlbumMediaDetailView: View {
     }
 
     private func prepareVideoPlayer() {
+        guard item.videoPlaybackUnavailable != true else {
+            reportPlaybackFailure(nil)
+            return
+        }
         do {
             try GlassesAudioRouteController.activate(.playback)
         } catch {
             DebugLogStore.logWiFi("相册视频：音频会话失败", detail: "file=\(item.fileName) error=\(error.localizedDescription)")
         }
         guard player == nil || playerItemID != item.id else { return }
-        player = AVPlayer(url: library.originalURL(for: item))
+        let videoItem = AVPlayerItem(url: library.originalURL(for: item))
+        player = AVPlayer(playerItem: videoItem)
         playerItemID = item.id
+        // An unreadable MP4 can fail before playback begins, without posting
+        // FailedToPlayToEndTime. Observe the item status as well.
+        let expectedID = item.id
+        playerStatusObservation = videoItem.observe(\.status, options: [.initial, .new]) { observed, _ in
+            guard observed.status == .failed else { return }
+            Task { @MainActor in
+                guard playerItemID == expectedID,
+                      observed === player?.currentItem else { return }
+                reportPlaybackFailure(observed.error)
+            }
+        }
         DebugLogStore.logWiFi("相册视频：创建播放器", detail: "file=\(item.fileName) storedDuration=\(item.durationSeconds ?? 0)")
+    }
+
+    private func reportPlaybackFailure(_ error: Error?) {
+        guard !playbackFailed else { return }
+        player?.pause()
+        playbackFailed = true
+        playbackError = L10n.t("无法播放此视频，文件可能已损坏。原始文件已保留。", "This video cannot be played and may be damaged. The original file is retained.")
+        DebugLogStore.logWiFi("相册视频：播放失败", detail: "file=\(item.fileName) error=\(error?.localizedDescription ?? "unreadable original") originalRetained=true")
+    }
+
+    private func releaseVideoPlayer() {
+        playerStatusObservation?.invalidate()
+        playerStatusObservation = nil
+        player?.pause()
+        player = nil
+        playerItemID = nil
     }
 }
 

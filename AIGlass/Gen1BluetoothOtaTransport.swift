@@ -8,7 +8,12 @@ import JL_OTALib
 /// The ordinary BLE manager must suspend its reconnect loop until this transport finishes.
 @MainActor
 final class Gen1BluetoothOtaTransport: NSObject {
-    private let sdk = JL_OTAManager.getOTAManager()
+    private let sdk: JL_OTAManager = {
+        AIGlassConfigureSDKDiagnostics(AppDiagnostics.isEnabled)
+        let manager = JL_OTAManager.getOTAManager()
+        manager.logSendData(AppDiagnostics.isEnabled)
+        return manager
+    }()
     private let authentication = JLHashHandler()
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?

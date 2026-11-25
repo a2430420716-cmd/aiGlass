@@ -7,6 +7,8 @@
 		<string>en</string>
 		<string>zh-Hans</string>
 	</array>
+	<key>AIGlassDiagnosticsEnabled</key>
+	<string>$(AIGlassDiagnosticsEnabled)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

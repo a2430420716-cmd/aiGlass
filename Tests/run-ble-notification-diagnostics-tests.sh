@@ -10,7 +10,8 @@ xcrun swiftc -module-cache-path "$test_dir/cache" \
   Tests/BLENotificationDiagnosticsTests.swift -o "$test_dir/notification-diagnostics"
 "$test_dir/notification-diagnostics"
 
-xcrun swiftc -module-cache-path "$test_dir/cache" \
+xcrun swiftc -D AIGLASS_DIAGNOSTICS -module-cache-path "$test_dir/cache" \
+  AIGlass/Debug/AppDiagnostics.swift \
   AIGlass/Bluetooth/AstraA1/BLENotificationDiagnostics.swift \
   AIGlass/Bluetooth/AstraA1/AstraA1BleProtocol.swift \
   AIGlass/Debug/DebugLogStore.swift \

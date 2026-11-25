@@ -36,6 +36,19 @@ enum HomeLayout {
     static let glassImageHeight: CGFloat = 77
 }
 
+/// Android home uses 720px design dimensions and scales them with screen width.
+/// Keep this scoped to home so other pages retain their existing typography.
+enum HomeTypography {
+    static func pointSize(_ designPixels: CGFloat, screenWidth: CGFloat = UIScreen.main.bounds.width) -> CGFloat {
+        max(11, designPixels * screenWidth / 720)
+    }
+
+    static var pageTitle: CGFloat { pointSize(36) }
+    static var mediaTitle: CGFloat { pointSize(35) }
+    static var cardTitle: CGFloat { pointSize(28) }
+    static var description: CGFloat { pointSize(24) }
+}
+
 extension AppTheme {
     static func notoSansSC(size: CGFloat, weight: Font.Weight = .bold) -> Font {
         .custom("Noto Sans SC", size: size).weight(weight)

@@ -64,6 +64,7 @@ final class DebugLogStore: ObservableObject {
         body: String?,
         headers: [String: String]? = nil
     ) {
+        guard AppDiagnostics.isEnabled else { return }
         let detail = Self.composeHTTPDetail(url: url, headers: headers, body: body, extra: nil)
         Task { @MainActor in
             shared.append(
@@ -83,6 +84,7 @@ final class DebugLogStore: ObservableObject {
         error: String? = nil,
         headers: [String: String]? = nil
     ) {
+        guard AppDiagnostics.isEnabled else { return }
         var extras: [String] = []
         if let statusCode {
             extras.append("HTTP \(statusCode)")
@@ -108,6 +110,7 @@ final class DebugLogStore: ObservableObject {
     }
 
     nonisolated static func logHTTPEvent(_ title: String, detail: String) {
+        guard AppDiagnostics.isEnabled else { return }
         Task { @MainActor in
             shared.append(channel: .http, direction: .event, title: title, detail: detail)
         }
@@ -117,6 +120,7 @@ final class DebugLogStore: ObservableObject {
 
     /// Translation WebSocket lifecycle and bounded counters, without audio or transcripts.
     nonisolated static func logTranslation(_ title: String, detail: String = "") {
+        guard AppDiagnostics.isEnabled else { return }
         Task { @MainActor in
             shared.append(channel: .http, direction: .event, title: "translation \(title)", detail: detail)
         }
@@ -124,6 +128,7 @@ final class DebugLogStore: ObservableObject {
 
     /// 分享同时记入 HTTP 和 Wi-Fi 频道，便于交叉检查网络与媒体交付。
     nonisolated static func logShare(_ title: String, detail: String = "") {
+        guard AppDiagnostics.isEnabled else { return }
         let capturedAt = Date()
         Task { @MainActor in
             shared.append(channel: .http, direction: .event, title: "分享：\(title)", detail: detail, date: capturedAt)
@@ -134,6 +139,7 @@ final class DebugLogStore: ObservableObject {
     // MARK: - BLE
 
     nonisolated static func logBLESent(_ data: Data) {
+        guard AppDiagnostics.isEnabled else { return }
         let formatted = Self.formatBLE(data)
         Task { @MainActor in
             shared.append(
@@ -146,6 +152,7 @@ final class DebugLogStore: ObservableObject {
     }
 
     nonisolated static func logBLEReceived(_ data: Data) {
+        guard AppDiagnostics.isEnabled else { return }
         let formatted = Self.formatBLE(data)
         Task { @MainActor in
             shared.append(
@@ -167,6 +174,7 @@ final class DebugLogStore: ObservableObject {
         error: String? = nil,
         capturedAt: Date
     ) {
+        guard AppDiagnostics.isEnabled else { return }
         let formatted = BLENotificationDiagnostics.format(
             data: data,
             peripheralID: peripheralID,
@@ -190,6 +198,7 @@ final class DebugLogStore: ObservableObject {
         detail: String = "",
         capturedAt: Date = Date()
     ) {
+        guard AppDiagnostics.isEnabled else { return }
         Task { @MainActor in
             shared.append(
                 channel: .ble,
@@ -209,6 +218,7 @@ final class DebugLogStore: ObservableObject {
         detail: String = "",
         direction: Direction = .event
     ) {
+        guard AppDiagnostics.isEnabled else { return }
         Task { @MainActor in
             shared.append(
                 channel: .connect,
@@ -227,6 +237,7 @@ final class DebugLogStore: ObservableObject {
         detail: String = "",
         direction: Direction = .event
     ) {
+        guard AppDiagnostics.isEnabled else { return }
         Task { @MainActor in
             shared.append(
                 channel: .wifi,
@@ -252,6 +263,7 @@ final class DebugLogStore: ObservableObject {
 
     /// 当前频道全部日志拼成可分享文本。
     func exportText(for channel: Channel) -> String {
+        guard AppDiagnostics.isEnabled else { return "" }
         let entries: [Entry]
         let channelName: String
         switch channel {
@@ -299,6 +311,7 @@ final class DebugLogStore: ObservableObject {
 
     /// 写入临时文件，供系统分享。文件名含频道与时间戳。
     func exportFileURL(for channel: Channel) throws -> URL {
+        guard AppDiagnostics.isEnabled else { throw CocoaError(.featureUnsupported) }
         let channelKey: String
         switch channel {
         case .http: channelKey = "http"
@@ -317,6 +330,7 @@ final class DebugLogStore: ObservableObject {
     // MARK: - Private
 
     private func append(channel: Channel, direction: Direction, title: String, detail: String, date: Date = Date()) {
+        guard AppDiagnostics.isEnabled else { return }
         let entry = Entry(
             id: UUID(),
             date: date,
@@ -357,7 +371,8 @@ final class DebugLogStore: ObservableObject {
     }
 
     nonisolated static func headerFields(from response: HTTPURLResponse) -> [String: String] {
-        response.allHeaderFields.reduce(into: [String: String]()) { result, item in
+        guard AppDiagnostics.isEnabled else { return [:] }
+        return response.allHeaderFields.reduce(into: [String: String]()) { result, item in
             result[String(describing: item.key)] = String(describing: item.value)
         }
     }
@@ -614,6 +629,7 @@ final class DebugLogStore: ObservableObject {
     }
 
     nonisolated static func utf8Body(from data: Data?, binaryHint: String? = nil) -> String? {
+        guard AppDiagnostics.isEnabled else { return nil }
         guard let data else { return binaryHint }
         if data.isEmpty { return binaryHint ?? "(empty)" }
         if let text = String(data: data, encoding: .utf8), !text.isEmpty {
@@ -626,6 +642,7 @@ final class DebugLogStore: ObservableObject {
     }
 
     nonisolated static func jsonBody(_ object: [String: Any]) -> String? {
+        guard AppDiagnostics.isEnabled else { return nil }
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
               let text = String(data: data, encoding: .utf8) else {
