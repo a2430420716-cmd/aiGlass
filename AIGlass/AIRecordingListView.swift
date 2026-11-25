@@ -27,7 +27,7 @@ struct AIRecordingListView: View {
 
     @State private var isRecordingUI = false
     @State private var recordingElapsed: TimeInterval = 0
-    @State private var recordStartedAt: Date?
+    @State private var recordStartedAt: TimeInterval?
     @State private var selectedItemID: String?
     @State private var playbackProgress: [String: Double] = [:]
     @State private var playingItemID: String?
@@ -169,7 +169,7 @@ struct AIRecordingListView: View {
             if recording {
                 if !isRecordingUI {
                     isRecordingUI = true
-                    recordStartedAt = Date()
+                    recordStartedAt = ProcessInfo.processInfo.systemUptime
                     recordingElapsed = 0
                 }
             } else if isRecordingUI {
@@ -214,9 +214,22 @@ struct AIRecordingListView: View {
                 exitBatchMode()
             }
         }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            guard isRecordingUI, let started = recordStartedAt else { return }
-            recordingElapsed = Date().timeIntervalSince(started)
+        .task(id: isRecordingUI) {
+            guard isRecordingUI else { return }
+            // A body-created Timer publisher restarts when BLE changes redraw this
+            // page. This task keeps its identity until recording or visibility changes.
+            while !Task.isCancelled {
+                guard let started = recordStartedAt else { return }
+                let elapsed = max(0, ProcessInfo.processInfo.systemUptime - started)
+                if Int(elapsed) != Int(recordingElapsed) {
+                    recordingElapsed = elapsed
+                }
+                do {
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                } catch {
+                    return
+                }
+            }
         }
     }
 
@@ -224,7 +237,7 @@ struct AIRecordingListView: View {
         if ble.isAIRecording {
             isRecordingUI = true
             if recordStartedAt == nil {
-                recordStartedAt = Date()
+                recordStartedAt = ProcessInfo.processInfo.systemUptime
             }
         }
     }
