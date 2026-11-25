@@ -110,6 +110,74 @@ import Foundation
         check(ordering.discoveredPairingDevices[1].displayName == "L2 renamed"
               && ordering.discoveredPairingDevices[1].rssi == -20,
               "A stable row still updates its name and best signal without replacing its UUID")
+
+        // Product series come from model_name, with no generation-to-series mapping.
+        let series = ["L1", "L2", "L3", "M1", "X9 Pro"]
+        for type in [APIDeviceType.firstGeneration, .secondGeneration] {
+            for model in series {
+                let candidateScan = PairingNameScanProbe()
+                candidateScan.pairingModelNameFilter = model
+                candidateScan.pairingDeviceTypeFilter = type
+                for other in series where other != model {
+                    candidateScan.discover(CBPeripheral(identifier: UUID(), name: "\(other) 0031"),
+                        advertisementData: ["generation": type.generation], rssi: -25)
+                    candidateScan.discover(CBPeripheral(identifier: UUID(), name: "\(other) 0032"),
+                        advertisementData: [:], rssi: -25)
+                }
+                check(candidateScan.discoveredPairingDevices.isEmpty && candidateScan.queued.isEmpty,
+                      "Same device_type cannot admit or probe another product: \(model)")
+                let device = CBPeripheral(identifier: UUID(), name: "\(model.lowercased()) 0033")
+                candidateScan.discover(device, advertisementData: ["generation": type.generation], rssi: -35)
+                check(candidateScan.discoveredPairingDevices.map(\.id) == [device.identifier],
+                      "Arbitrary current model works with its own protocol generation")
+                let pending = CBPeripheral(identifier: UUID(), name: "\(model) 0034")
+                candidateScan.discover(pending, advertisementData: [:], rssi: -40)
+                check(candidateScan.queued == [pending.identifier], "Own model without services still requires a GATT probe")
+                let opposite: DeviceGeneration = type == .firstGeneration ? .gen2 : .gen1G5K61
+                candidateScan.discover(CBPeripheral(identifier: UUID(), name: "\(model) 0035"),
+                    advertisementData: ["generation": opposite], rssi: -20)
+                check(candidateScan.discoveredPairingDevices.count == 1, "Own series cannot bypass conflicting GATT protocol")
+                check(candidateScan.pairWithDiscoveredDevice(id: device.identifier), "Own verified series remains selectable")
+                check(candidateScan.connectedIDs == [device.identifier], "Pairing connects the exact selected UUID")
+            }
+        }
+
+        let finalAdmission = PairingNameScanProbe()
+        let staleL1 = CBPeripheral(identifier: UUID(), name: "L1 0036")
+        finalAdmission.addVerifiedPairingDevice(staleL1, displayName: "L1 0036", rssi: -20)
+        check(finalAdmission.discoveredPairingDevices.isEmpty && finalAdmission.discoveredPeripherals.isEmpty,
+              "Final registration cannot bypass the selected series even after a delayed probe")
+        let liveL2 = CBPeripheral(identifier: UUID(), name: "L1 cached")
+        finalAdmission.discover(liveL2, advertisementData: ["generation": DeviceGeneration.gen1G5K61,
+                              CBAdvertisementDataLocalNameKey: "L2 0037"], rssi: -35)
+        finalAdmission.pairingModelNameFilter = "M1"
+        check(!finalAdmission.pairWithDiscoveredDevice(id: liveL2.identifier)
+              && finalAdmission.connectedIDs.isEmpty && finalAdmission.stoppedProbes == 0,
+              "A stale tap from the previous model cannot stop probing or connect")
+        finalAdmission.pairingModelNameFilter = "L2"
+        check(finalAdmission.pairWithDiscoveredDevice(id: liveL2.identifier),
+              "Latest matching advertisement wins over an old cached peripheral name at selection")
+        let hidden = CBPeripheral(identifier: UUID(), name: "L2 unverified")
+        finalAdmission.discoveredPeripherals[hidden.identifier] = hidden
+        check(!finalAdmission.pairWithDiscoveredDevice(id: hidden.identifier), "Unverified cache entries cannot be selected")
+
+        let rows = PairingPresentationProbe()
+        let rawRows = series.map { DiscoveredBLEDevice(id: UUID(), displayName: "\($0) 0040", rssi: -40) }
+        rows.astraA1BleManager.discoveredPairingDevices = rawRows
+        for (index, model) in series.enumerated() {
+            rows.selectedAPIModelName = model
+            check(rows.discoveredPairingDevices == [rawRows[index]],
+                  "Search presentation preserves the live name and only the selected series")
+        }
+        rows.selectedAPIModelName = "M1"
+        rows.pairWithDiscoveredDevice(id: rawRows[1].id)
+        check(rows.astraA1BleManager.selectedIDs.isEmpty && !rows.userConfirmedPairingDevice,
+              "Coordinator rejects a stale L2 row after selecting M1")
+        rows.pairWithDiscoveredDevice(id: rawRows[3].id)
+        check(rows.astraA1BleManager.selectedIDs == [rawRows[3].id] && rows.userConfirmedPairingDevice,
+              "Coordinator forwards only the current matching UUID")
+        rows.selectedAPIModelName = nil
+        check(rows.discoveredPairingDevices.isEmpty, "Missing selection cannot display all devices of a generation")
         print("Pairing device names: \(assertions) assertions passed")
     }
 }

@@ -216,6 +216,10 @@ final class PairingCoordinator: ObservableObject {
 
     func pairWithDiscoveredDevice(id: UUID) {
         guard !userConfirmedPairingDevice, !isBindingDevice else { return }
+        guard discoveredPairingDevices.contains(where: { $0.id == id }) else {
+            pairingAlertMessage = L10n.t("配对状态已失效，请重新搜索设备", "Pairing session expired. Search again.")
+            return
+        }
         // 该眼镜已在账号里：只提示，不连接、不绑定。
         if isPeripheralAlreadyBound(id) {
             print("[Pairing] tap already-bound device \(id.uuidString), skip connect")
@@ -247,17 +251,13 @@ final class PairingCoordinator: ObservableObject {
     }
 
     var discoveredPairingDevices: [DiscoveredBLEDevice] {
+        guard let modelName = PairingDeviceNamePolicy.firstNonEmpty([selectedAPIModelName]) else { return [] }
         switch pairingModel {
         case .astraA1, .luminaL1, .unknown:
-            return astraA1BleManager.discoveredPairingDevices.map { discovered in
-                guard let bound = authSession?.userInfo?.device.first(where: {
-                    $0.serialNumber.caseInsensitiveCompare(discovered.id.uuidString) == .orderedSame
-                }) else { return discovered }
-                let legacyName = DeviceDisplayNameStore.displayName(for: DeviceCardData(device: bound))
-                let serverName = bound.deviceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let name = serverName.isEmpty ? (legacyName ?? discovered.displayName) : serverName
-                // Display aliases never replace UUIDs or change scan/model filtering.
-                return DiscoveredBLEDevice(id: discovered.id, displayName: name, rssi: discovered.rssi)
+            // Android's search sheet displays the live scan name. Bound aliases
+            // belong to home/settings and must not replace the matched series here.
+            return astraA1BleManager.discoveredPairingDevices.filter { discovered in
+                PairingDeviceNamePolicy.matchesModel(modelName, deviceName: discovered.displayName)
             }
         case .none:
             return []

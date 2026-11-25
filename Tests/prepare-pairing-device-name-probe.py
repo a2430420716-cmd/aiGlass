@@ -25,11 +25,13 @@ admission = block(scan, '            if isManualPairingScan {')
 methods = '\n'.join(block(text, marker).replace('private func ', 'func ', 1) for marker in (
     '    private func resolvedName(', '    private func nameMatchesPairingModelName(',
     '    private func registerNameMatchedPairingDevice(', '    private func addVerifiedPairingDevice(',
+    '    func pairWithDiscoveredDevice(id:',
 ))
 coordinator_source = Path(sys.argv[3]) if len(sys.argv) > 3 else repo / 'AIGlass/PairingFlow.swift'
 coordinator = coordinator_source.read_text(encoding='utf-8')
 presentation = '\n'.join(block(coordinator, marker) for marker in (
     '    var isPairingSheetConnecting:', '    var pairingSheetLoadingText:',
+    '    var discoveredPairingDevices:', '    func pairWithDiscoveredDevice(id:',
 ))
 sheet = (repo / 'AIGlass/DeviceSearchingSheet.swift').read_text(encoding='utf-8')
 visibility = block(sheet, '    private var showsDeviceList:').replace('private var ', 'var ', 1)
@@ -48,25 +50,41 @@ final class PairingNameScanProbe {
     var discoveredPairingDevices: [DiscoveredBLEDevice] = []
     var queued: [UUID] = []
     var isManualPairingScan = true
+    var isPairingSessionActive = true
+    var isUserInitiatedPairingConnect = false
+    var userPairingTargetID: UUID?
+    var userPairingRetryCount = 0
+    var connectedIDs: [UUID] = []
+    var stoppedProbes = 0
     let logTag = "[scan-test]"
     func advertisedProtocolGeneration(_ data: [String: Any]) -> DeviceGeneration {
         data["generation"] as? DeviceGeneration ?? .unknown
     }
     func enqueueProbeCandidate(_ peripheral: CBPeripheral, rssi: NSNumber) { queued.append(peripheral.identifier) }
     func scheduleProbeStart() {}
+    func stopPairingListProbe() { stoppedProbes += 1 }
+    func connectForUserPairing(to peripheral: CBPeripheral) { connectedIDs.append(peripheral.identifier) }
     func discover(_ peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
 """ + admission + '\n}\n' + methods + '\n}\n' + block(text, 'enum AstraA1ConnectionState:') + """
 final class PairingConnectionProbe {
     var connectionState: AstraA1ConnectionState = .scanning
     var statusMessage = ""
+    var discoveredPairingDevices: [DiscoveredBLEDevice] = []
+    var selectedIDs: [UUID] = []
+    func pairWithDiscoveredDevice(id: UUID) -> Bool { selectedIDs.append(id); return true }
 }
 final class PairingPresentationProbe {
     var isBindingDevice = false
     var userConfirmedPairingDevice = false
     var pairingModel: GlassDeviceModel? = .luminaL1
+    var selectedAPIModelName: String? = "L2"
     var bindStatusMessage: String?
+    var pairingAlertMessage: String?
+    var waitedForID: UUID?
     let astraA1BleManager = PairingConnectionProbe()
     func isBindFailureOrAlreadyBound(_ message: String) -> Bool { false }
+    func isPeripheralAlreadyBound(_ id: UUID) -> Bool { false }
+    func startDeviceIdentityTimeout(peripheralID: UUID) { waitedForID = peripheralID }
 """ + presentation + """
 }
 struct PairingSheetVisibilityProbe {

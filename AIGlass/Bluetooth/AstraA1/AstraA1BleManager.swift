@@ -4538,6 +4538,11 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             print("\(logTag) pairWithDiscoveredDevice missing peripheral \(id.uuidString)")
             return false
         }
+        let name = PairingDeviceNamePolicy.discoveredName(
+            advertised: pairingAdvertisedNames[id], cached: peripheral.name
+        )
+        guard discoveredPairingDevices.contains(where: { $0.id == id }),
+              PairingDeviceNamePolicy.matchesModel(pairingModelNameFilter, deviceName: name) else { return false }
 
         print("\(logTag) user selected pairing device \(peripheral.name ?? id.uuidString)")
         userPairingTargetID = id
@@ -6381,6 +6386,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         displayName: String,
         rssi: Int
     ) {
+        // Every admission path must match the selected product independently of
+        // device_type; a compatible GATT service never authorizes another series.
+        guard PairingDeviceNamePolicy.matchesModel(pairingModelNameFilter, deviceName: displayName) else { return }
         discoveredPeripherals[peripheral.identifier] = peripheral
 
         if let index = discoveredPairingDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
