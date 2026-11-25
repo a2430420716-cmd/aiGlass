@@ -6403,7 +6403,8 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             print("\(logTag) pairing list + \(displayName) [\(peripheral.identifier.uuidString)]")
         }
 
-        discoveredPairingDevices.sort { $0.rssi > $1.rssi }
+        // Keep first-discovery order for this search session. Signal/name updates
+        // must not move a different device under the user's Pair button.
     }
 
     private func finishPairingListProbe(for peripheral: CBPeripheral) {
