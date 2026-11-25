@@ -265,19 +265,9 @@ final class PairingCoordinator: ObservableObject {
     }
 
     var isPairingSheetConnecting: Bool {
-        if isBindingDevice { return true }
-        if userConfirmedPairingDevice { return true }
-        switch pairingModel {
-        case .astraA1, .luminaL1, .unknown:
-            switch astraA1BleManager.connectionState {
-            case .connecting, .discoveringServices, .enablingNotifications:
-                return true
-            default:
-                return false
-            }
-        case .none:
-            return false
-        }
+        // Background GATT probes also connect and discover services. Only a user
+        // selection or backend binding may replace the search list with progress.
+        isBindingDevice || userConfirmedPairingDevice
     }
 
     var pairingSheetLoadingText: String {

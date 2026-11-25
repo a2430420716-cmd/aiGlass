@@ -26,6 +26,13 @@ methods = '\n'.join(block(text, marker).replace('private func ', 'func ', 1) for
     '    private func resolvedName(', '    private func nameMatchesPairingModelName(',
     '    private func registerNameMatchedPairingDevice(', '    private func addVerifiedPairingDevice(',
 ))
+coordinator_source = Path(sys.argv[3]) if len(sys.argv) > 3 else repo / 'AIGlass/PairingFlow.swift'
+coordinator = coordinator_source.read_text(encoding='utf-8')
+presentation = '\n'.join(block(coordinator, marker) for marker in (
+    '    var isPairingSheetConnecting:', '    var pairingSheetLoadingText:',
+))
+sheet = (repo / 'AIGlass/DeviceSearchingSheet.swift').read_text(encoding='utf-8')
+visibility = block(sheet, '    private var showsDeviceList:').replace('private var ', 'var ', 1)
 probe = """
 import Foundation
 let CBAdvertisementDataLocalNameKey = "local-name"
@@ -48,5 +55,23 @@ final class PairingNameScanProbe {
     func enqueueProbeCandidate(_ peripheral: CBPeripheral, rssi: NSNumber) { queued.append(peripheral.identifier) }
     func scheduleProbeStart() {}
     func discover(_ peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
-""" + admission + '\n}\n' + methods + '\n}\n'
+""" + admission + '\n}\n' + methods + '\n}\n' + block(text, 'enum AstraA1ConnectionState:') + """
+final class PairingConnectionProbe {
+    var connectionState: AstraA1ConnectionState = .scanning
+    var statusMessage = ""
+}
+final class PairingPresentationProbe {
+    var isBindingDevice = false
+    var userConfirmedPairingDevice = false
+    var pairingModel: GlassDeviceModel? = .luminaL1
+    var bindStatusMessage: String?
+    let astraA1BleManager = PairingConnectionProbe()
+    func isBindFailureOrAlreadyBound(_ message: String) -> Bool { false }
+""" + presentation + """
+}
+struct PairingSheetVisibilityProbe {
+    let devices: [DiscoveredBLEDevice]
+    let isConnecting: Bool
+    let isBinding: Bool
+""" + visibility + '\n}\n'
 Path(sys.argv[1]).write_text(probe, encoding='utf-8')
