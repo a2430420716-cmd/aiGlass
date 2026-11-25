@@ -1,156 +1,213 @@
-name: iOS IPA
-
-on:
-  workflow_dispatch:
-    inputs:
-      export_method:
-        description: 安装方式（测试手机必须包含在描述文件中）
-        required: true
-        default: release-testing
-        type: choice
-        options:
-          - release-testing
-          - debugging
-          - app-store-connect
-          - enterprise
-
+name: Verify stable search during background GATT probing
 permissions:
   contents: read
-
 jobs:
   ipa:
     runs-on: xcode-27
-    timeout-minutes: 60
+    timeout-minutes: 35
     env:
-      EXPORT_METHOD: ${{ inputs.export_method }}
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     steps:
-      - uses: actions/checkout@v4
-      - name: 检查签名配置
-        env:
-          IOS_CERTIFICATE_BASE64: ${{ inputs.export_method == 'app-store-connect' && secrets.IOS_STORE_CERTIFICATE_BASE64 || inputs.export_method == 'debugging' && secrets.IOS_TEST_CERTIFICATE_BASE64 || secrets.IOS_CERTIFICATE_BASE64 }}
-          IOS_CERTIFICATE_PASSWORD: ${{ inputs.export_method == 'app-store-connect' && secrets.IOS_STORE_CERTIFICATE_PASSWORD || inputs.export_method == 'debugging' && secrets.IOS_TEST_CERTIFICATE_PASSWORD || secrets.IOS_CERTIFICATE_PASSWORD }}
-          IOS_PROFILE_BASE64: ${{ inputs.export_method == 'app-store-connect' && secrets.IOS_STORE_PROFILE_BASE64 || inputs.export_method == 'debugging' && secrets.IOS_TEST_PROFILE_BASE64 || secrets.IOS_PROFILE_BASE64 }}
-        run: |
-          test -n "$IOS_CERTIFICATE_BASE64" || { echo '缺少 IOS_CERTIFICATE_BASE64'; exit 1; }
-          test -n "$IOS_PROFILE_BASE64" || { echo '缺少 IOS_PROFILE_BASE64'; exit 1; }
-      - name: 准备 Xcode 和 CocoaPods
-        run: |
-          xcodebuild -version
-          python3 - <<'PY'
-          import subprocess
-          xcode = subprocess.check_output(['xcodebuild', '-version'], text=True).splitlines()[0].split()[1]
-          sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-version'], text=True).strip()
-          assert int(xcode.split('.')[0]) >= 27, '打包必须使用 Xcode 27 或更新版本'
-          assert int(sdk.split('.')[0]) >= 27, '打包必须使用 iOS 27 SDK 或更新版本'
-          print(f'Build toolchain verified: Xcode {xcode}; iOS SDK {sdk}')
-          PY
-          sudo gem install cocoapods -v 1.17.0 --no-document
-          pod install --deployment
-      - name: 验证蓝牙连接与升级恢复
-        timeout-minutes: 5
-        run: |
-          bash Tests/run-gatt-recovery-tests.sh
-          bash Tests/run-astra-notification-framer-tests.sh
-          bash Tests/run-gen2-ota-recovery-tests.sh
-          bash Tests/run-gen2-ota-wifi-session-tests.sh
-          bash Tests/run-gen2-indicator-brightness-tests.sh
-          bash Tests/run-device-command-availability-tests.sh
-          bash Tests/run-api-device-type-tests.sh
-          bash Tests/run-pairing-device-name-tests.sh
-      - name: 验证一代热点收尾和导入
-        timeout-minutes: 5
-        run: |
-          bash Tests/run-gen1-hotspot-cleanup-tests.sh
-          bash Tests/run-gen1-hotspot-availability-tests.sh
-          bash Tests/run-gen1-ap-import-tests.sh
-          bash Tests/run-gen1-video-original-tests.sh
-          bash Tests/run-gen1-video-import-tests.sh
-      - name: 验证一代协议与存储容量
-        timeout-minutes: 5
-        run: |
-          bash Tests/run-gen1-background-query-tests.sh
-          bash Tests/run-gen1-record-duration-tests.sh
-          xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-protocol-cache" AIGlass/Bluetooth/Gen1/Gen1Protocol.swift Tests/Gen1ProtocolTests.swift -o "$RUNNER_TEMP/gen1-protocol-tests"
-          "$RUNNER_TEMP/gen1-protocol-tests"
-          xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-runtime-cache" AIGlass/Bluetooth/Gen1/Gen1Protocol.swift AIGlass/Bluetooth/AstraA1/AstraA1BleProtocol.swift Tests/Gen1RuntimeStatusTests.swift -o "$RUNNER_TEMP/gen1-runtime-tests"
-          "$RUNNER_TEMP/gen1-runtime-tests"
-      - name: 验证一代蓝牙升级恢复记录
-        timeout-minutes: 5
-        run: |
-          bash Tests/run-gen1-bluetooth-ota-tests.sh
-          bash Tests/run-gen1-ota-version-tests.sh
-          xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-recovery-cache" AIGlass/Gen1FirmwareUpdateProtocol.swift AIGlass/Gen1BluetoothOtaRecoveryStore.swift Tests/Gen1BluetoothOtaRecoveryTests.swift -o "$RUNNER_TEMP/gen1-recovery-tests"
-          "$RUNNER_TEMP/gen1-recovery-tests"
-      - name: 验证正式接口路由
-        timeout-minutes: 5
-        run: bash Tests/run-backend-routing-tests.sh
-      - name: 验证正式包与测试包日志开关
-        timeout-minutes: 5
-        run: bash Tests/run-diagnostics-tests.sh
-      - name: 验证改密账号不被脱敏资料覆盖
-        timeout-minutes: 5
-        run: |
-          bash Tests/run-auth-account-identifier-tests.sh
-          bash Tests/run-password-recovery-request-tests.sh
-      - name: 验证 AI 对话记录过滤执行指令
-        timeout-minutes: 5
-        run: bash Tests/run-ai-chat-record-filter-tests.sh
-      - name: 验证水印与 TCP 传输
-        timeout-minutes: 5
-        run: |
-          bash Tests/run-photo-capture-watermark-tests.sh
-          bash Tests/run-gen1-media-tcp-tests.sh
-          bash Tests/run-wifi-diagnostics-tests.sh
-      - name: 验证相册图片分享表示
-        timeout-minutes: 5
-        run: bash Tests/run-album-share-image-provider-tests.sh
-      - name: 验证翻译录音与播放
-        timeout-minutes: 5
-        run: |
-          xcrun swiftc -module-cache-path "$RUNNER_TEMP/translation-audio-cache" AIGlass/Network/TranslationAudioSessionState.swift Tests/TranslationAudioSessionTests.swift -o "$RUNNER_TEMP/translation-audio-tests"
-          "$RUNNER_TEMP/translation-audio-tests"
-          bash Tests/run-translation-pcm-playback-tests.sh
-          bash Tests/run-simultaneous-translation-share-tests.sh
-          bash Tests/run-simultaneous-playback-switch-tests.sh
-      - name: 验证录像与解绑
-        timeout-minutes: 5
-        run: |
-          bash Tests/run-home-video-capture-tests.sh
-          bash Tests/run-device-unpair-identity-tests.sh
-      - name: 验证固件升级与电量限制
-        timeout-minutes: 5
-        run: |
-          bash Tests/run-firmware-download-tests.sh
-          bash Tests/run-gen1-firmware-tests.sh
-          bash Tests/run-gen1-firmware-session-tests.sh
-      - name: 签名、归档、导出 IPA
-        env:
-          IOS_CERTIFICATE_BASE64: ${{ inputs.export_method == 'app-store-connect' && secrets.IOS_STORE_CERTIFICATE_BASE64 || inputs.export_method == 'debugging' && secrets.IOS_TEST_CERTIFICATE_BASE64 || secrets.IOS_CERTIFICATE_BASE64 }}
-          IOS_CERTIFICATE_PASSWORD: ${{ inputs.export_method == 'app-store-connect' && secrets.IOS_STORE_CERTIFICATE_PASSWORD || inputs.export_method == 'debugging' && secrets.IOS_TEST_CERTIFICATE_PASSWORD || secrets.IOS_CERTIFICATE_PASSWORD }}
-          IOS_PROFILE_BASE64: ${{ inputs.export_method == 'app-store-connect' && secrets.IOS_STORE_PROFILE_BASE64 || inputs.export_method == 'debugging' && secrets.IOS_TEST_PROFILE_BASE64 || secrets.IOS_PROFILE_BASE64 }}
-        run: bash scripts/build-ios-ipa.sh
-      - name: 上传安装包
-        uses: actions/upload-artifact@v4
-        with:
-          name: AIGlass-1.1.7-184-${{ inputs.export_method }}
-          path: build/ipa/*.ipa
-          if-no-files-found: error
-          retention-days: 7
-      - name: 上传构建日志
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-build-logs-${{ github.run_id }}
-          path: build/logs/*.log
-          if-no-files-found: ignore
-          retention-days: 7
-      - name: 清理签名材料
-        if: always()
-        run: |
-          security delete-keychain "$RUNNER_TEMP/aiglass-signing.keychain-db" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/aiglass-certificate.p12" "$RUNNER_TEMP/aiglass-profile.mobileprovision" "$RUNNER_TEMP/aiglass-profile.plist"
-          if [ -f "$RUNNER_TEMP/aiglass-installed-profile-path" ]; then
-            profile_path=$(cat "$RUNNER_TEMP/aiglass-installed-profile-path")
-            rm -f "$profile_path" "$RUNNER_TEMP/aiglass-installed-profile-path"
-          fi
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: 准备 Xcode 和 CocoaPods
+      run: 'xcodebuild -version
+
+        python3 - <<''PY''
+
+        import subprocess
+
+        xcode = subprocess.check_output([''xcodebuild'', ''-version''], text=True).splitlines()[0].split()[1]
+
+        sdk = subprocess.check_output([''xcrun'', ''--sdk'', ''iphoneos'', ''--show-sdk-version''],
+        text=True).strip()
+
+        assert int(xcode.split(''.'')[0]) >= 27, ''打包必须使用 Xcode 27 或更新版本''
+
+        assert int(sdk.split(''.'')[0]) >= 27, ''打包必须使用 iOS 27 SDK 或更新版本''
+
+        print(f''Build toolchain verified: Xcode {xcode}; iOS SDK {sdk}'')
+
+        PY
+
+        sudo gem install cocoapods -v 1.17.0 --no-document
+
+        pod install --deployment
+
+        '
+    - name: Demonstrate both regressions against previous implementation
+      timeout-minutes: 5
+      run: "set -euo pipefail\nulimit -c 0\nprobe_dir=$(mktemp -d)\ntrap 'rm -rf \"\
+        $probe_dir\"' EXIT\ngit show HEAD^:AIGlass/PairingFlow.swift > \"$probe_dir/old-coordinator.swift\"\
+        \ngit show HEAD^:AIGlass/Bluetooth/AstraA1/AstraA1BleManager.swift > \"$probe_dir/old-manager.swift\"\
+        \nfor regression in presentation order; do\n  manager=AIGlass/Bluetooth/AstraA1/AstraA1BleManager.swift\n\
+        \  coordinator=AIGlass/PairingFlow.swift\n  if [ \"$regression\" = presentation\
+        \ ]; then\n    coordinator=\"$probe_dir/old-coordinator.swift\"\n  else\n\
+        \    manager=\"$probe_dir/old-manager.swift\"\n  fi\n  python3 Tests/prepare-pairing-device-name-probe.py\
+        \ \"$probe_dir/$regression.swift\" \"$manager\" \"$coordinator\"\n  xcrun\
+        \ swiftc -swift-version 5 -module-cache-path \"$probe_dir/cache\" \\\n   \
+        \ AIGlass/Bluetooth/Gen1/Gen1Protocol.swift AIGlass/Bluetooth/APIDeviceType.swift\
+        \ \\\n    AIGlass/Bluetooth/GlassDeviceModel.swift AIGlass/Bluetooth/PairingDeviceNamePolicy.swift\
+        \ \\\n    \"$probe_dir/$regression.swift\" Tests/PairingDeviceNamePolicyTests.swift\
+        \ -o \"$probe_dir/$regression\"\n  python3 - \"$probe_dir/$regression\" \"\
+        $regression\" <<'PY'\nimport subprocess, sys\nresult = subprocess.run([sys.argv[1]],\
+        \ capture_output=True, text=True)\nmessage = ('Background GATT probes must\
+        \ never become user-confirmed pairing' if sys.argv[2] == 'presentation'\n\
+        \           else \"RSSI changes cannot move rows under the user's Pair button\"\
+        )\nassert result.returncode != 0 and message in result.stderr, 'Baseline must\
+        \ fail at the intended regression: ' + result.stderr[:1500]\nprint('Verified\
+        \ previous implementation fails regression: ' + sys.argv[2])\nPY\ndone\n"
+    - name: 验证蓝牙连接与升级恢复
+      timeout-minutes: 5
+      run: 'bash Tests/run-gatt-recovery-tests.sh
+
+        bash Tests/run-astra-notification-framer-tests.sh
+
+        bash Tests/run-gen2-ota-recovery-tests.sh
+
+        bash Tests/run-gen2-ota-wifi-session-tests.sh
+
+        bash Tests/run-gen2-indicator-brightness-tests.sh
+
+        bash Tests/run-device-command-availability-tests.sh
+
+        bash Tests/run-api-device-type-tests.sh
+
+        bash Tests/run-pairing-device-name-tests.sh
+
+        '
+    - name: 验证一代热点收尾和导入
+      timeout-minutes: 5
+      run: 'bash Tests/run-gen1-hotspot-cleanup-tests.sh
+
+        bash Tests/run-gen1-hotspot-availability-tests.sh
+
+        bash Tests/run-gen1-ap-import-tests.sh
+
+        bash Tests/run-gen1-video-original-tests.sh
+
+        bash Tests/run-gen1-video-import-tests.sh
+
+        '
+    - name: 验证一代协议与存储容量
+      timeout-minutes: 5
+      run: 'bash Tests/run-gen1-background-query-tests.sh
+
+        bash Tests/run-gen1-record-duration-tests.sh
+
+        xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-protocol-cache" AIGlass/Bluetooth/Gen1/Gen1Protocol.swift
+        Tests/Gen1ProtocolTests.swift -o "$RUNNER_TEMP/gen1-protocol-tests"
+
+        "$RUNNER_TEMP/gen1-protocol-tests"
+
+        xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-runtime-cache" AIGlass/Bluetooth/Gen1/Gen1Protocol.swift
+        AIGlass/Bluetooth/AstraA1/AstraA1BleProtocol.swift Tests/Gen1RuntimeStatusTests.swift
+        -o "$RUNNER_TEMP/gen1-runtime-tests"
+
+        "$RUNNER_TEMP/gen1-runtime-tests"
+
+        '
+    - name: 验证一代蓝牙升级恢复记录
+      timeout-minutes: 5
+      run: 'bash Tests/run-gen1-bluetooth-ota-tests.sh
+
+        bash Tests/run-gen1-ota-version-tests.sh
+
+        xcrun swiftc -module-cache-path "$RUNNER_TEMP/gen1-recovery-cache" AIGlass/Gen1FirmwareUpdateProtocol.swift
+        AIGlass/Gen1BluetoothOtaRecoveryStore.swift Tests/Gen1BluetoothOtaRecoveryTests.swift
+        -o "$RUNNER_TEMP/gen1-recovery-tests"
+
+        "$RUNNER_TEMP/gen1-recovery-tests"
+
+        '
+    - name: 验证正式接口路由
+      timeout-minutes: 5
+      run: bash Tests/run-backend-routing-tests.sh
+    - name: 验证正式包与测试包日志开关
+      timeout-minutes: 5
+      run: bash Tests/run-diagnostics-tests.sh
+    - name: 验证改密账号不被脱敏资料覆盖
+      timeout-minutes: 5
+      run: 'bash Tests/run-auth-account-identifier-tests.sh
+
+        bash Tests/run-password-recovery-request-tests.sh
+
+        '
+    - name: 验证 AI 对话记录过滤执行指令
+      timeout-minutes: 5
+      run: bash Tests/run-ai-chat-record-filter-tests.sh
+    - name: 验证水印与 TCP 传输
+      timeout-minutes: 5
+      run: 'bash Tests/run-photo-capture-watermark-tests.sh
+
+        bash Tests/run-gen1-media-tcp-tests.sh
+
+        bash Tests/run-wifi-diagnostics-tests.sh
+
+        '
+    - name: 验证相册图片分享表示
+      timeout-minutes: 5
+      run: bash Tests/run-album-share-image-provider-tests.sh
+    - name: 验证翻译录音与播放
+      timeout-minutes: 5
+      run: 'xcrun swiftc -module-cache-path "$RUNNER_TEMP/translation-audio-cache"
+        AIGlass/Network/TranslationAudioSessionState.swift Tests/TranslationAudioSessionTests.swift
+        -o "$RUNNER_TEMP/translation-audio-tests"
+
+        "$RUNNER_TEMP/translation-audio-tests"
+
+        bash Tests/run-translation-pcm-playback-tests.sh
+
+        bash Tests/run-simultaneous-translation-share-tests.sh
+
+        bash Tests/run-simultaneous-playback-switch-tests.sh
+
+        '
+    - name: 验证录像与解绑
+      timeout-minutes: 5
+      run: 'bash Tests/run-home-video-capture-tests.sh
+
+        bash Tests/run-device-unpair-identity-tests.sh
+
+        '
+    - name: 验证固件升级与电量限制
+      timeout-minutes: 5
+      run: 'bash Tests/run-firmware-download-tests.sh
+
+        bash Tests/run-gen1-firmware-tests.sh
+
+        bash Tests/run-gen1-firmware-session-tests.sh
+
+        '
+    - name: Compile unsigned production app with iOS 27 SDK
+      timeout-minutes: 18
+      run: "set -euo pipefail\nmkdir -p results\nruby - <<'RUBY'\nrequire 'xcodeproj'\n\
+        require File.expand_path('scripts/diagnostics-settings', Dir.pwd)\nproject\
+        \ = Xcodeproj::Project.open('AIGlass.xcodeproj')\ntarget = project.targets.find\
+        \ { |item| item.name == 'AIGlass' }\ntarget.build_configurations.each do |config|\n\
+        \  AIGlassDiagnosticsSettings.apply(config.build_settings, 'app-store-connect')\n\
+        end\nproject.save\nRUBY\nxcodebuild -workspace AIGlass.xcworkspace -scheme\
+        \ AIGlass -configuration Release -destination 'generic/platform=iOS' -derivedDataPath\
+        \ \"$RUNNER_TEMP/aiglass-xcode27\" CODE_SIGNING_ALLOWED=NO SWIFT_OPTIMIZATION_LEVEL=-Onone\
+        \ build 2>&1 | tee results/build.txt\npython3 - <<'PY'\nimport json, os, pathlib,\
+        \ plistlib\ninfo = plistlib.loads((pathlib.Path(os.environ['RUNNER_TEMP'])\
+        \ / 'aiglass-xcode27/Build/Products/Release-iphoneos/AIGlass.app/Info.plist').read_bytes())\n\
+        assert info['CFBundleShortVersionString'] == '1.1.7'\nassert info['CFBundleVersion']\
+        \ == '184'\nassert info['MinimumOSVersion'] == '15.0'\nassert info['CFBundleDisplayName']\
+        \ == 'Moco AI'\nassert info['AIGlassDiagnosticsEnabled'] in (False, 'NO')\n\
+        sdk_name = info.get('DTSDKName', '')\nassert sdk_name.startswith('iphoneos')\
+        \ and int(sdk_name[len('iphoneos'):].split('.')[0]) >= 27\nassert int(info.get('DTXcode',\
+        \ '0')) >= 2700\nresult = {key: info.get(key) for key in ['CFBundleShortVersionString',\
+        \ 'CFBundleVersion', 'MinimumOSVersion', 'AIGlassDiagnosticsEnabled', 'DTXcode',\
+        \ 'DTXcodeBuild', 'DTSDKName']}\npathlib.Path('results/verified-metadata.json').write_text(json.dumps(result,\
+        \ indent=2))\nprint(json.dumps(result))\nprint('Xcode 27 compatibility verified.\
+        \ No archive, IPA or App Store submission created.')\nPY"
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: xcode27-verification
+        path: results
+        if-no-files-found: ignore
+'on':
+  workflow_dispatch: {}

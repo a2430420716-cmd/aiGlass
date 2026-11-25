@@ -66,6 +66,50 @@ import Foundation
               "Old responses without device_type keep model-name matching")
         check(APIDeviceType.firstGeneration.generation == .gen1G5K61 && APIDeviceType.secondGeneration.generation == .gen2,
               "L2/L3 names never replace the API generation contract")
+
+        let presentation = PairingPresentationProbe()
+        let backgroundStates: [AstraA1ConnectionState] = [
+            .scanning, .connecting, .discoveringServices, .enablingNotifications, .ready, .disconnected
+        ]
+        for state in backgroundStates {
+            presentation.astraA1BleManager.connectionState = state
+            check(!presentation.isPairingSheetConnecting,
+                  "Background GATT probes must never become user-confirmed pairing")
+            check(presentation.pairingSheetLoadingText == "Searching for devices…",
+                  "Automatic candidate checks keep the searching explanation")
+            let sheet = PairingSheetVisibilityProbe(devices: scan.discoveredPairingDevices,
+                isConnecting: presentation.isPairingSheetConnecting, isBinding: presentation.isBindingDevice)
+            check(sheet.showsDeviceList, "Known UUIDs remain visible/selectable while another candidate is probed")
+        }
+        presentation.userConfirmedPairingDevice = true
+        check(presentation.isPairingSheetConnecting, "An explicit Pair tap locks presentation to pairing")
+        check(presentation.pairingSheetLoadingText == "Pairing", "Explicit selection still shows pairing progress")
+        check(!PairingSheetVisibilityProbe(devices: scan.discoveredPairingDevices,
+            isConnecting: presentation.isPairingSheetConnecting, isBinding: false).showsDeviceList,
+              "User-confirmed pairing hides the list to prevent a second selection")
+        presentation.userConfirmedPairingDevice = false
+        presentation.isBindingDevice = true
+        check(presentation.isPairingSheetConnecting && presentation.pairingSheetLoadingText == "Pairing device...",
+              "Backend binding continues to show its own progress")
+        presentation.isBindingDevice = false
+        check(!presentation.isPairingSheetConnecting, "Cancelling/restoring search releases the pairing presentation")
+        presentation.astraA1BleManager.connectionState = .bluetoothUnavailable("Bluetooth off")
+        check(presentation.pairingSheetLoadingText == "Bluetooth off", "Bluetooth permission/power guidance remains visible")
+        check(!PairingSheetVisibilityProbe(devices: [], isConnecting: false, isBinding: false).showsDeviceList,
+              "Empty searches retain their loading presentation")
+
+        let ordering = PairingNameScanProbe()
+        let first = CBPeripheral(identifier: UUID(), name: "L2 0001")
+        let second = CBPeripheral(identifier: UUID(), name: "L2 0002")
+        ordering.discover(first, advertisementData: ["generation": DeviceGeneration.gen1G5K61], rssi: -50)
+        ordering.discover(second, advertisementData: ["generation": DeviceGeneration.gen1G5K61], rssi: -60)
+        ordering.discover(second, advertisementData: ["generation": DeviceGeneration.gen1G5K61,
+                           CBAdvertisementDataLocalNameKey: "L2 renamed"], rssi: -20)
+        check(ordering.discoveredPairingDevices.map(\.id) == [first.identifier, second.identifier],
+              "RSSI changes cannot move rows under the user's Pair button")
+        check(ordering.discoveredPairingDevices[1].displayName == "L2 renamed"
+              && ordering.discoveredPairingDevices[1].rssi == -20,
+              "A stable row still updates its name and best signal without replacing its UUID")
         print("Pairing device names: \(assertions) assertions passed")
     }
 }
