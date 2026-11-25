@@ -1,4 +1,5 @@
 /* System permission descriptions follow the iOS app language. */
+"CFBundleDisplayName" = "Moco AI";
 "NSBluetoothAlwaysUsageDescription" = "用于连接 MOCO AI 眼镜，控制拍照、录像并同步设备信息。";
 "NSBluetoothPeripheralUsageDescription" = "用于连接 MOCO AI 眼镜，控制拍照、录像并同步设备信息。";
 "NSCameraUsageDescription" = "用于拍摄头像，以及提交反馈时拍摄图片和视频。";

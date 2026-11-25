@@ -1,4 +1,5 @@
 /* System permission descriptions follow the iOS app language. */
+"CFBundleDisplayName" = "Moco AI";
 "NSBluetoothAlwaysUsageDescription" = "Bluetooth connects to your MOCO AI glasses to control photos and videos and sync device information.";
 "NSBluetoothPeripheralUsageDescription" = "Bluetooth connects to your MOCO AI glasses to control photos and videos and sync device information.";
 "NSCameraUsageDescription" = "Use the camera to take a profile photo and capture photos or videos for feedback.";

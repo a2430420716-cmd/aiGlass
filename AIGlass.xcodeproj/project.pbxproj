@@ -364,7 +364,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 183;
+				CURRENT_PROJECT_VERSION = 184;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = G8X6YGC2WL;
 				ENABLE_PREVIEWS = YES;
@@ -396,7 +396,7 @@
 					"$(PROJECT_DIR)/AIGlass/Vendor/OpusDecode",
 				);
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "MOCO AI";
+				INFOPLIST_KEY_CFBundleDisplayName = "Moco AI";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Bluetooth connects to your MOCO AI glasses to control photos and videos and sync device information.";
 				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "Bluetooth connects to your MOCO AI glasses to control photos and videos and sync device information.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Use the camera to take a profile photo and capture photos or videos for feedback.";
@@ -456,7 +456,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Developer";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 183;
+				CURRENT_PROJECT_VERSION = 184;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = G8X6YGC2WL;
 				ENABLE_PREVIEWS = YES;
@@ -488,7 +488,7 @@
 					"$(PROJECT_DIR)/AIGlass/Vendor/OpusDecode",
 				);
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "MOCO AI";
+				INFOPLIST_KEY_CFBundleDisplayName = "Moco AI";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Bluetooth connects to your MOCO AI glasses to control photos and videos and sync device information.";
 				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "Bluetooth connects to your MOCO AI glasses to control photos and videos and sync device information.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Use the camera to take a profile photo and capture photos or videos for feedback.";
