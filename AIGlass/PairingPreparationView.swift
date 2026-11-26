@@ -126,26 +126,52 @@ struct PairingPreparationView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    /// Android `ll_instructions` 同款本地兜底：prepare 为空或 WebView 加载失败时显示。
+    private var fallbackSteps: [(title: String, imageName: String, description: String)] {
+        if pairingCoordinator.pairingModel?.generation == .gen2 {
+            return [
+                (
+                    L10n.t("一、将眼镜开机", "1. Power on the glasses"),
+                    "pairing_gen2_power_on",
+                    L10n.t(
+                        "长按电源键开机，充电指示灯闪烁绿色后熄灭，并响起开机提示音，表示开机成功。若无反应，请先为眼镜充电后重试。",
+                        "Press and hold the power button to power on the glasses. The charging LED flashes green, then turns off and the startup chime sounds. If there is no response, charge the glasses first and try again."
+                    )
+                ),
+                (
+                    L10n.t("二、进入配对模式", "2. Enter pairing mode"),
+                    "pairing_gen2_indicator",
+                    L10n.t("充电指示灯闪烁蓝色，表示眼镜已进入配对模式。", "The charging LED flashes blue, indicating that the glasses have entered pairing mode.")
+                )
+            ]
+        }
+        return [
+            (
+                L10n.t("一、将眼镜开机", "1. Turn on the glasses"),
+                "pairing_power_on_1",
+                L10n.t(
+                    "拨动电源键开机，内侧指示灯会开始闪烁。开机完成时，指示灯熄灭且听到语音提示(若无反应，请先尝试为眼镜充电)。",
+                    "Toggle the power switch to turn on the device; the notification LED on the inside will begin to flash. When the device has booted up, the notification LED will turn off and you will hear a voice prompt (if there is no response, please try charging the glasses first)."
+                )
+            ),
+            (
+                L10n.t("二、确认内侧指示灯闪烁", "2. Check that the notification LED is flashing"),
+                "pairing_inner_indicator",
+                L10n.t("指示灯闪烁说明进入配对状态。", "The flashing notification LED indicates that the device is in pairing mode.")
+            )
+        ]
+    }
+
+    /// Missing localized HTML uses the selected protocol generation's guide.
     private var fallbackInstructions: some View {
         ScrollView(showsIndicators: true) {
             VStack(alignment: .leading, spacing: 28) {
-                fallbackStep(
-                    title: L10n.t("一、将眼镜开机", "1. Turn on the glasses"),
-                    imageName: "pairing_power_on_1",
-                    description: L10n.t(
-                        "拨动电源键开机，内侧指示灯会开始闪烁。开机完成时，指示灯熄灭且听到语音提示(若无反应，请先尝试为眼镜充电)。",
-                        "Toggle the power switch to turn on the device; the notification LED on the inside will begin to flash. When the device has booted up, the notification LED will turn off and you will hear a voice prompt (if there is no response, please try charging the glasses first)."
+                ForEach(Array(fallbackSteps.enumerated()), id: \.offset) { _, step in
+                    fallbackStep(
+                        title: step.title,
+                        imageName: step.imageName,
+                        description: step.description
                     )
-                )
-                fallbackStep(
-                    title: L10n.t("二、确认内侧指示灯闪烁", "2. Check that the notification LED is flashing"),
-                    imageName: "pairing_inner_indicator",
-                    description: L10n.t(
-                        "指示灯闪烁说明进入配对状态。",
-                        "The flashing notification LED indicates that the device is in pairing mode."
-                    )
-                )
+                }
             }
             .padding(.horizontal, 32)
             .padding(.top, 16)

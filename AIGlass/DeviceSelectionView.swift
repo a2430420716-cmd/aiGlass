@@ -38,13 +38,11 @@ struct DeviceSelectionView: View {
                 Spacer()
             } else {
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 12) {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                         ForEach(models) { model in
                             Button {
                                 pairingCoordinator.selectDevice(model, guideItems: [])
-                                if model.prepare?
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                                    .isEmpty != false {
+                                if model.localizedPrepareHTML == nil {
                                     Task {
                                         await refreshSelectedModel(modelName: model.modelName)
                                     }
@@ -97,23 +95,27 @@ struct DeviceSelectionView: View {
             Image(model.fallbackImageName)
                 .resizable()
                 .scaledToFit()
-                .frame(height: 78)
+                .frame(height: 72)
 
             VStack(spacing: 4) {
                 Text(deviceSeriesName(for: model))
                     .font(AppTheme.notoSansSC(size: 16, weight: .bold))
                     .foregroundStyle(AppTheme.primaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
 
                 if !model.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text(model.displayName)
                         .font(AppTheme.notoSansSC(size: 16, weight: .bold))
                         .foregroundStyle(AppTheme.primaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
             }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 14)
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 12)
         .background(AppTheme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius, style: .continuous))
         .shadow(color: AppTheme.cardShadow, radius: 10, y: 4)
