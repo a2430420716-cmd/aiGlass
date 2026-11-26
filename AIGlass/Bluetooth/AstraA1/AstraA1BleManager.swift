@@ -10,6 +10,18 @@ struct DiscoveredBLEDevice: Identifiable, Equatable {
     let rssi: Int
 }
 
+enum PairingProbeStartPolicy {
+    /// Pairing should verify the first candidate promptly, without restarting
+    /// its timer for every subsequent advertisement. Background scans keep
+    /// their existing debounce interval.
+    static func delay(
+        isManualPairing: Bool, hasScheduledStart: Bool, defaultDelay: TimeInterval
+    ) -> TimeInterval? {
+        guard !isManualPairing || !hasScheduledStart else { return nil }
+        return isManualPairing ? 0.2 : defaultDelay
+    }
+}
+
 /// Astra A1 BLE 连接状态（文档 3.1.3）。
 enum AstraA1ConnectionState: Equatable {
     case idle
@@ -5829,7 +5841,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
 
-        if !isManualPairingScan || pairingDeviceTypeFilter != nil {
+        if !isManualPairingScan {
             scheduleProbeStart()
         }
 
@@ -5894,12 +5906,23 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func scheduleProbeStart() {
+        if isManualPairingScan, probeCandidates.isEmpty { return }
+        guard let delay = PairingProbeStartPolicy.delay(
+            isManualPairing: isManualPairingScan,
+            hasScheduledStart: probeStartWorkItem != nil,
+            defaultDelay: probeStartDelaySeconds
+        ) else { return }
         cancelProbeStart()
         let workItem = DispatchWorkItem { [weak self] in
-            self?.startProbingIfNeeded()
+            guard let self else { return }
+            self.probeStartWorkItem = nil
+            self.startProbingIfNeeded()
         }
         probeStartWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + probeStartDelaySeconds, execute: workItem)
+        if isManualPairingScan {
+            connectLog("pairing probe scheduled", detail: "model=\(pairingModelNameFilter ?? "nil") delaySeconds=\(delay) candidates=\(probeCandidates.count) laterAdvertisementsKeepDeadline=true")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     private func resetConnectionHandles(preserveFailedRecoveryBudget: Bool = false) {
@@ -6400,6 +6423,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 )
             )
             print("\(logTag) pairing list + \(displayName) [\(peripheral.identifier.uuidString)]")
+            connectLog("pairing candidate listed", detail: "id=\(peripheral.identifier.uuidString) name=\(displayName) selectedModel=\(pairingModelNameFilter ?? "nil")")
         }
 
         // Keep first-discovery order for this search session. Signal/name updates
@@ -8240,6 +8264,7 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
+        let callbackUptime = ProcessInfo.processInfo.systemUptime
         Task { @MainActor in
             guard central === centralManager else { return }
             guard case .scanning = connectionState, !hasStartedConnect else { return }
@@ -8273,7 +8298,11 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
                 // device_type selects the protocol; raw model_name still limits the
                 // products shown, just as Android's selected-model scan does.
                 guard nameMatchesPairingModelName(peripheral, advertisementData: advertisementData) else { return }
+                let isFirstMatchingAdvertisement = pairingAdvertisedNames[peripheral.identifier] == nil
                 pairingAdvertisedNames[peripheral.identifier] = resolvedName(for: peripheral, advertisementData: advertisementData)
+                if isFirstMatchingAdvertisement {
+                    connectLog("pairing advertisement matched", detail: "id=\(peripheral.identifier.uuidString) name=\(pairingAdvertisedNames[peripheral.identifier] ?? "") model=\(pairingModelNameFilter ?? "nil") rssi=\(RSSI.intValue) advertisedGeneration=\(advertisedProtocolGeneration(advertisementData).rawValue) callbackDelaySeconds=\(max(0, ProcessInfo.processInfo.systemUptime - callbackUptime))")
+                }
                 if let type = pairingDeviceTypeFilter {
                     let generation = advertisedProtocolGeneration(advertisementData)
                     if generation != .unknown {

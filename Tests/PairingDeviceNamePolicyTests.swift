@@ -7,6 +7,25 @@ import Foundation
             precondition(value, message)
             assertions += 1
         }
+        check(PairingProbeStartPolicy.delay(isManualPairing: true, hasScheduledStart: false, defaultDelay: 1.5) == 0.2,
+              "The first matching pairing candidate starts verification after 0.2 seconds")
+        var pairingDeadline: TimeInterval?
+        for arrival in [0.0, 0.05, 0.1, 0.15, 0.19] {
+            if let delay = PairingProbeStartPolicy.delay(
+                isManualPairing: true, hasScheduledStart: pairingDeadline != nil, defaultDelay: 1.5
+            ) {
+                pairingDeadline = arrival + delay
+            }
+        }
+        check(pairingDeadline == 0.2, "Repeated advertisements cannot postpone the first pending probe")
+        check(PairingProbeStartPolicy.delay(isManualPairing: true, hasScheduledStart: true, defaultDelay: 1.5) == nil,
+              "An already armed pairing timer is retained")
+        check(PairingProbeStartPolicy.delay(isManualPairing: true, hasScheduledStart: false, defaultDelay: 1.5) == 0.2,
+              "After firing or cancellation a new candidate can arm another timer")
+        for pending in [false, true] {
+            check(PairingProbeStartPolicy.delay(isManualPairing: false, hasScheduledStart: pending, defaultDelay: 1.5) == 1.5,
+                  "Background discovery retains its existing debounce")
+        }
         check(!PairingDeviceNamePolicy.matchesModel("L2", deviceName: "L1 0361"),
               "Same protocol/generation must not admit a different selected sales model")
         for model in ["L1", "L2", "L3", "G5T71"] {

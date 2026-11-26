@@ -41,7 +41,7 @@ let CBAdvertisementDataLocalNameKey = "local-name"
 let CBAdvertisementDataIsConnectable = "connectable"
 struct CBPeripheral { let identifier: UUID; let name: String? }
 enum L10n { static func t(_ zh: String, _ en: String) -> String { en } }
-""" + block(text, 'struct DiscoveredBLEDevice:') + """
+""" + block(text, 'struct DiscoveredBLEDevice:') + '\n' + block(text, 'enum PairingProbeStartPolicy {') + """
 final class PairingNameScanProbe {
     var pairingModelNameFilter: String? = "L2"
     var pairingDeviceTypeFilter: APIDeviceType? = .firstGeneration
@@ -57,6 +57,7 @@ final class PairingNameScanProbe {
     var connectedIDs: [UUID] = []
     var stoppedProbes = 0
     let logTag = "[scan-test]"
+    func connectLog(_ event: String, detail: String) {}
     func advertisedProtocolGeneration(_ data: [String: Any]) -> DeviceGeneration {
         data["generation"] as? DeviceGeneration ?? .unknown
     }
@@ -65,6 +66,7 @@ final class PairingNameScanProbe {
     func stopPairingListProbe() { stoppedProbes += 1 }
     func connectForUserPairing(to peripheral: CBPeripheral) { connectedIDs.append(peripheral.identifier) }
     func discover(_ peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        let callbackUptime = ProcessInfo.processInfo.systemUptime
 """ + admission + '\n}\n' + methods + '\n}\n' + block(text, 'enum AstraA1ConnectionState:') + """
 final class PairingConnectionProbe {
     var connectionState: AstraA1ConnectionState = .scanning
