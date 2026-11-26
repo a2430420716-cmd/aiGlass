@@ -1,4 +1,4 @@
-"""Build a native contract target from the actual production callback methods."""
+"""Build playback/phone-stop contract targets from production controller methods."""
 from pathlib import Path
 import sys
 
@@ -43,4 +43,34 @@ if legacy:
     output += "    private var speechReplayBuffer = TranslationSpeechReplayBuffer()\n"
     output += "    init() { speechReplayBuffer.begin() }\n"
 output += "\n".join(methods) + "\n}\n"
+conversation = (Path(__file__).resolve().parent.parent /
+                "AIGlass/ConversationTranslationController.swift").read_text(encoding="utf-8")
+output += block(conversation, "struct ConversationTranslationMessage:") + "\n"
+output += """
+@MainActor final class ConversationPlaybackProbe {
+    var manager: RealtimeTranslationManager? = RealtimeTranslationManager()
+    var isActive = true
+    var glassesRecording = false
+    var glassesConnecting = false
+    var phoneRecording = false
+    var waitingPhoneSocketReady = false
+    var awaitingFinalTranslation = false
+    var glassesActive: Bool { glassesRecording || glassesConnecting }
+    var phoneActive: Bool { phoneRecording || waitingPhoneSocketReady }
+    var phoneAutoStopTask: Task<Void, Never>?
+    var statusText = ""
+    var alertMessage: String?
+    var microphoneStops = 0
+    func cancelSocketReadyTimeout() {}
+    func stopPhoneAudio() { microphoneStops += 1 }
+    func enterProcessingStatus(reason: String) { statusText = "processing" }
+    func settleProcessingStatus(reason: String) { statusText = "settled" }
+    func stopPhone() { stopPhoneRecording() }
+"""
+output += "\n".join(block(conversation, marker) for marker in [
+    "    func replay(",
+    "    private func stopPhoneRecording()",
+    "    func onFinished(",
+    "    func onGlassesPlaybackStateChanged(",
+]) + "\n}\n"
 Path(sys.argv[3]).write_text(output, encoding="utf-8")

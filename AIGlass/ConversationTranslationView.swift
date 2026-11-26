@@ -214,7 +214,7 @@ struct ConversationTranslationView: View {
                         .foregroundStyle(AppTheme.primaryText)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    if message.hasSpeech || message.speechData != nil {
+                    if message.showsPlaybackControl {
                         Button {
                             controller.replay(message)
                         } label: {
@@ -225,11 +225,18 @@ struct ConversationTranslationView: View {
                                 .resizable()
                                 .scaledToFit()
                                 .frame(width: 22, height: 22)
+                                .opacity(message.hasPlayableSpeech ? 1 : 0.45)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(message.side == .glasses
                                             ? L10n.t("在手机播放译文", "Play translation on phone")
                                             : L10n.t("在眼镜播放译文", "Play translation on glasses"))
+                        .accessibilityValue(message.hasPlayableSpeech
+                                            ? L10n.t("语音已就绪", "Audio ready")
+                                            : L10n.t("尚未收到语音", "Audio not received"))
+                        .accessibilityHint(message.hasPlayableSpeech
+                                           ? L10n.t("轻点播放", "Tap to play")
+                                           : L10n.t("轻点查看提示", "Tap for details"))
                     }
                 }
             }

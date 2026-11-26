@@ -16,6 +16,15 @@ struct ConversationTranslationMessage: Identifiable, Equatable {
     var translatedText: String
     var speechData: Data?
     var hasSpeech: Bool
+
+    var hasPlayableSpeech: Bool {
+        guard let speechData else { return false }
+        return !speechData.isEmpty && speechData.count.isMultiple(of: 2)
+    }
+
+    var showsPlaybackControl: Bool {
+        !translatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasPlayableSpeech
+    }
 }
 
 /// 对话翻译控制器：对齐安卓 `ConversationTranslationActivity`。
@@ -194,6 +203,8 @@ final class ConversationTranslationController: ObservableObject {
         }
         if phoneActive {
             stopPhoneRecording()
+            // Keep the phone turn alive until its final translation audio arrives.
+            guard !awaitingFinalTranslation else { return }
         }
         guard ble?.isDeviceAvailable == true else {
             logRecordingLifecycle("glasses button rejected: bound device unavailable")
@@ -263,15 +274,29 @@ final class ConversationTranslationController: ObservableObject {
             alertMessage = L10n.t("请先停止录音再播放译文", "Stop recording before playing translation audio.")
             return
         }
-        guard let data = message.speechData, !data.isEmpty else { return }
+        guard !awaitingFinalTranslation else {
+            alertMessage = L10n.t("正在等待译文语音，请稍后重试", "Waiting for translation audio. Please try again shortly.")
+            return
+        }
+        guard message.hasPlayableSpeech, let data = message.speechData else {
+            alertMessage = L10n.t("尚未收到这条译文的语音，请稍后重试或重新录音", "Audio for this translation has not been received. Try again shortly or record again.")
+            return
+        }
         let played: Bool
         if message.side == .glasses {
             played = manager?.replaySpeechOnPhone(data) ?? false
-            statusText = L10n.t("正在播放译文语音…", "Playing translated speech")
+            if played { statusText = L10n.t("正在播放译文语音…", "Playing translated speech") }
         } else {
             played = manager?.replaySpeechOnGlasses(data) ?? false
         }
-        if !played { statusText = L10n.t("眼镜音频不可用", "Glasses audio unavailable") }
+        if !played {
+            if message.side == .glasses {
+                statusText = L10n.t("译文语音播放失败，请重试", "Could not play translation audio. Please try again.")
+                alertMessage = statusText
+            } else {
+                onGlassesPlaybackStateChanged(.unavailable)
+            }
+        }
     }
 
     // MARK: - Turn lifecycle
@@ -398,6 +423,7 @@ final class ConversationTranslationController: ObservableObject {
 
     private func stopPhoneRecording() {
         guard phoneRecording || waitingPhoneSocketReady else { return }
+        let recorded = phoneRecording
         cancelSocketReadyTimeout()
         phoneAutoStopTask?.cancel()
         phoneAutoStopTask = nil
@@ -405,8 +431,13 @@ final class ConversationTranslationController: ObservableObject {
         phoneRecording = false
         stopPhoneAudio()
         manager?.markLocalRecordingStopped(reason: "conversation phone stop")
-        manager?.finish()
-        enterProcessingStatus(reason: "phone stop")
+        awaitingFinalTranslation = recorded && manager != nil
+        if awaitingFinalTranslation {
+            enterProcessingStatus(reason: "phone stop")
+        } else {
+            statusText = L10n.t("点击下方按钮开始录音", "Tap a button below to start recording")
+        }
+        manager?.finish(waitForTranslation: awaitingFinalTranslation)
     }
 
     private func stopPhoneAudio() {
@@ -1109,7 +1140,7 @@ extension ConversationTranslationController: RealtimeTranslationManager.Callback
             statusText = L10n.t("正在播放译文语音…", "Playing translated speech")
         case .unavailable:
             statusText = L10n.t("眼镜音频不可用", "Glasses audio unavailable")
-            alertMessage = L10n.t("无法通过眼镜播放译文，请连接系统蓝牙音频，并在音频输出中选择眼镜后重试", "Translation audio could not play through the glasses. Connect Bluetooth audio, select the glasses as the audio output, and try again.")
+            alertMessage = L10n.t("无法通过眼镜播放译文。请在 iPhone「设置 → 蓝牙」连接眼镜，再到控制中心的音频输出中选择眼镜后重试。", "Unable to play translation audio through the glasses. Connect the glasses in iPhone Settings > Bluetooth, then select them as the audio output in Control Center and try again.")
         }
     }
 

@@ -486,7 +486,7 @@ extension SimultaneousTranslationController: RealtimeTranslationManager.Callback
         case .unavailable:
             translationManager?.resetSpeechPlaybackForTurn()
             socketStatus = L10n.t("眼镜音频暂不可用", "Glasses audio is temporarily unavailable")
-            alertMessage = L10n.t("暂时无法通过眼镜播放译文，请检查系统音频输出后重试", "Translation audio could not play through the glasses. Check the audio output and try again.")
+            alertMessage = L10n.t("无法通过眼镜播放译文。请在 iPhone「设置 → 蓝牙」连接眼镜，再到控制中心的音频输出中选择眼镜后重试。", "Unable to play translation audio through the glasses. Connect the glasses in iPhone Settings > Bluetooth, then select them as the audio output in Control Center and try again.")
         }
     }
 
@@ -517,7 +517,7 @@ extension SimultaneousTranslationController: RealtimeTranslationManager.Callback
         guard translationManager?.playSpeechOnGlasses(data, requiresBluetoothOutput: true) == true else {
             translationManager?.resetSpeechPlaybackForTurn()
             socketStatus = L10n.t("眼镜音频暂不可用", "Glasses audio is temporarily unavailable")
-            alertMessage = L10n.t("暂时无法通过眼镜播放译文，请检查系统音频输出后重试", "Translation audio could not play through the glasses. Check the audio output and try again.")
+            alertMessage = L10n.t("无法通过眼镜播放译文。请在 iPhone「设置 → 蓝牙」连接眼镜，再到控制中心的音频输出中选择眼镜后重试。", "Unable to play translation audio through the glasses. Connect the glasses in iPhone Settings > Bluetooth, then select them as the audio output in Control Center and try again.")
             return false
         }
         return true
