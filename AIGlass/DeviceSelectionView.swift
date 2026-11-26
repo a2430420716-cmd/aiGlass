@@ -38,7 +38,8 @@ struct DeviceSelectionView: View {
                 Spacer()
             } else {
                 ScrollView(showsIndicators: false) {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    // Keep model selection in one column; reduce height to fit four rows.
+                    VStack(spacing: 8) {
                         ForEach(models) { model in
                             Button {
                                 pairingCoordinator.selectDevice(model, guideItems: [])
@@ -54,8 +55,7 @@ struct DeviceSelectionView: View {
                         }
                     }
                     .padding(.horizontal, 20)
-                    .padding(.top, 16)
-                    .padding(.bottom, 32)
+                    .padding(.vertical, 12)
                 }
             }
         }
@@ -91,13 +91,13 @@ struct DeviceSelectionView: View {
     }
 
     private func deviceCard(_ model: DeviceModelItem) -> some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 4) {
             Image(model.fallbackImageName)
                 .resizable()
                 .scaledToFit()
-                .frame(height: 72)
+                .frame(height: 40)
 
-            VStack(spacing: 4) {
+            VStack(spacing: 2) {
                 Text(deviceSeriesName(for: model))
                     .font(AppTheme.notoSansSC(size: 16, weight: .bold))
                     .foregroundStyle(AppTheme.primaryText)
@@ -114,7 +114,7 @@ struct DeviceSelectionView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 14)
+        .padding(.vertical, 6)
         .padding(.horizontal, 12)
         .background(AppTheme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius, style: .continuous))

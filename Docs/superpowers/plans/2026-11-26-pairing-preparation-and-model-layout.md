@@ -1,12 +1,12 @@
 # Pairing preparation and model layout implementation plan
 
-**Goal:** Second-generation devices use their own fallback preparation text/images in English and Chinese; four selectable models fit on one phone screen.
+**Goal:** Second-generation devices use their own fallback preparation text/images in English and Chinese; four selectable models fit on one phone screen in a single column.
 
-**Architecture:** Preserve model-specific localized API HTML as the primary source. Use `device_type`-resolved generation for local fallback content, and bundle the second-generation images already referenced by the Astra A1 API instructions. Change the existing model list to two columns; preserve raw model selection, backend aliases, sorting and pairing filters.
+**Architecture:** Preserve model-specific localized API HTML as the primary source. Use `device_type`-resolved generation for local fallback content, and bundle the second-generation images already referenced by the Astra A1 API instructions. Keep the model list in one column; compact image height and vertical spacing while preserving raw model selection, backend aliases, sorting and pairing filters.
 
 **Tech stack:** SwiftUI, asset catalog, existing DeviceModelItem localization.
 
-**Spec:** User confirms the wrong content is preparation steps/text/pictures. Existing `A2` response has no `en_prepare`; the fallback currently always uses the first-generation switch/inner-LED content. User requests four models visible on the selection screen.
+**Spec:** User confirms the wrong content is preparation steps/text/pictures. Existing `A2` response has no `en_prepare`; the former fallback always used the first-generation switch/inner-LED content. User requests four models visible on the selection screen and explicitly requires one column, with reduced card heights instead of two columns.
 
 ## Constraints and review focus
 
@@ -14,12 +14,13 @@
 - `model_name` selects a product series; `device_type` selects its protocol generation. Keep display names and identifiers.
 - Preserve selected-model request isolation. Refresh missing localized HTML, including missing English with present Chinese.
 - Narrow screens, long aliases, absent HTML, and missing images must remain usable.
+- Always retain a single-column vertical model list. Keep the 16-point labels and scrolling for additional models or large accessibility text.
 
 ## Tasks
 
-- [x] Replace the single model column with a two-column `LazyVGrid` in `DeviceSelectionView.swift`, bounded images and one-line fitting labels. Fetch model detail based on `localizedPrepareHTML`, not Chinese-only `prepare`.
+- [x] Use a single-column `VStack` in `DeviceSelectionView.swift`: 40-point images, 6-point vertical card padding, 8-point card gaps and 12-point vertical list padding. Keep one-line fitting labels. Fetch model detail based on `localizedPrepareHTML`, not Chinese-only `prepare`.
 - [x] Choose fallback steps/images by `pairingCoordinator.pairingModel.generation` in `PairingPreparationView.swift`. Add second-generation power/LED assets using the existing API images, with source documentation.
-- [x] Verify downloaded images and local Swift/asset syntax. Four-card geometry fits 320x568 through larger phones; native rendering and physical-device behavior remain pending requested packaging.
+- [x] Verify downloaded images and local Swift/asset syntax. Recheck the compact single-column geometry on 320x568 through larger phones; native rendering and physical-device behavior remain pending requested packaging.
 
 ## Bundled fallback image sources
 
