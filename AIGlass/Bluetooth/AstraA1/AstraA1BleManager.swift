@@ -823,7 +823,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         return nil
     }
 
-    /// 拍照、开始录像、导入文件、AI 录音、智能识图共用低电量门禁；未知电量不误拦截。
+    /// 导入文件、AI 录音、智能识图的低电量门禁；拍照和录像命令交由设备判断并播放提示音。
     var isBatteryTooLowForMedia: Bool {
         guard let percent = deviceBatteryPercent else { return false }
         return percent <= 15
@@ -3402,10 +3402,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @discardableResult
     func takePhoto() -> Bool {
         guard ensureDeviceAvailable(for: "takePhoto") else { return false }
-        guard !isBatteryTooLowForMedia else {
-            mediaActionAlertMessage = lowBatteryMediaMessage
-            return false
-        }
         let sent = sendCommand(AstraA1BleProtocol.buildTakePhotoCommand())
         if sent, deviceGeneration == .gen1G5K61,
            let id = homePhotoAttemptID, isTakingPhoto,
@@ -3425,10 +3421,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @discardableResult
     func startVideo() -> Bool {
         guard ensureDeviceAvailable(for: "startVideo") else { return false }
-        guard !isBatteryTooLowForMedia else {
-            mediaActionAlertMessage = lowBatteryMediaMessage
-            return false
-        }
         isHomeVideoStartInProgress = true
         defer { isHomeVideoStartInProgress = false }
         return sendCommand(AstraA1BleProtocol.buildStartVideoCommand())
@@ -3450,10 +3442,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     func takePhotoFromHome() {
-        guard !isBatteryTooLowForMedia else {
-            mediaActionAlertMessage = lowBatteryMediaMessage
-            return
-        }
         guard ensureMediaActionAllowed(busy: isTakingPhoto || photoCompleted) else { return }
         homePhotoAttemptID = UUID()
         homePhotoObservedTaking = false
@@ -3472,7 +3460,12 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         // 旧固件不回 devstatus0/actionrsp0 时，也不能让本地 busy 永久卡住。
         scheduleHomePhotoNewFileQuery()
         scheduleMediaCompletionFallback(isPhoto: true)
-        mediaActionToastMessage = L10n.t("眼镜开始拍照，请从相册中导入", "Photo captured. \nPlease import it from your gallery.")
+        if isBatteryTooLowForMedia {
+            // The command has already been queued; the glasses own rejection/beep.
+            mediaActionAlertMessage = lowBatteryMediaMessage
+        } else {
+            mediaActionToastMessage = L10n.t("眼镜开始拍照，请从相册中导入", "Photo captured. \nPlease import it from your gallery.")
+        }
         print("\(logTag) takephoto0 sent, wait PHOTO_TAKING→STANDBY")
     }
 
@@ -3486,10 +3479,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func startVideoRecordingFromHome() {
-        guard !isBatteryTooLowForMedia else {
-            mediaActionAlertMessage = lowBatteryMediaMessage
-            return
-        }
         guard ensureMediaActionAllowed(busy: isVideoStarting || isVideoStopping || videoCompleted) else { return }
         guard isDeviceRuntimeIdle else {
             mediaActionAlertMessage = deviceRuntimeStatus.busyMessage
@@ -3518,6 +3507,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         homeVideoCapture.startSent(at: ProcessInfo.processInfo.systemUptime)
         scheduleHomeVideoStartConfirmation()
         logVideoCapture("start-sent", detail: "durationOwner=device automaticStopCommand=false minimumManualStopDuration=3s")
+        if isBatteryTooLowForMedia {
+            // Notify in the app without withholding the device's command.
+            mediaActionAlertMessage = lowBatteryMediaMessage
+        }
     }
 
     private func stopVideoRecordingFromHome() {
@@ -6344,11 +6337,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func markDeviceRuntimeStatusUnknown(reason: String) {
-        homeVideoCapture.expireUnconfirmedStart()
-        isVideoStarting = false
-        cancelHomeVideoStartConfirmation()
-        isTakingPhoto = false
-        isVideoStopping = false
+        // A lost BLE session ends local capture tracking, including an already
+        // confirmed recording. Reconnection must obtain fresh device evidence.
+        resetHomeMediaCaptureState()
         applyDeviceRuntimeStatus(.unknown, source: reason)
     }
 

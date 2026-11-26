@@ -134,7 +134,7 @@ struct PairingPreparationView: View {
                     "pairing_gen2_power_on",
                     L10n.t(
                         "长按电源键开机，充电指示灯闪烁绿色后熄灭，并响起开机提示音，表示开机成功。若无反应，请先为眼镜充电后重试。",
-                        "Press and hold the power button to power on the glasses. The charging LED flashes green, then turns off and the startup chime sounds. If there is no response, charge the glasses first and try again."
+                        "Press and hold the power button to power on the glasses, the charging LED flashes green, then turns off and the startup chime sounds, indicating a successful power-on. If there is no response, charge the glasses first and try again."
                     )
                 ),
                 (
