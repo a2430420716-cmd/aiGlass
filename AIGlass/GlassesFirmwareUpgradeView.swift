@@ -7,6 +7,7 @@ struct GlassesFirmwareUpgradeView: View {
     @EnvironmentObject private var otaManager: BluetoothOtaUpgradeManager
 
     @ObservedObject private var ble: AstraA1BleManager
+    @State private var showsLatestVersionToast = false
 
     init(ble: AstraA1BleManager) {
         _ble = ObservedObject(wrappedValue: ble)
@@ -32,6 +33,29 @@ struct GlassesFirmwareUpgradeView: View {
         .background(AppTheme.background.ignoresSafeArea())
         .navigationBarHidden(true)
         .suppressTabBarOnAppear()
+        .overlay(alignment: .bottom) {
+            if showsLatestVersionToast {
+                Text(L10n.t("当前已是最新版本", "Already  up to date"))
+                    .font(AppTheme.notoSansSC(size: 14, weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    .background(Color.black.opacity(0.78))
+                    .clipShape(Capsule())
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 72)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: showsLatestVersionToast)
+        .task(id: showsLatestVersionToast) {
+            guard showsLatestVersionToast else { return }
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                showsLatestVersionToast = false
+            } catch {}
+        }
         .onAppear {
             ble.ensureConnected(reason: "firmwareUpgrade")
             refreshVersionsFromBLE()
@@ -131,11 +155,20 @@ struct GlassesFirmwareUpgradeView: View {
             .disabled((!ble.isDeviceAvailable && !canOpenLoaderRecovery(offer))
                       || (ble.deviceVersionQueryFailed && !offer.isGen1BluetoothRecovery))
         } else {
-            versionRowLabel(
-                title: L10n.t("蓝牙版本", "Bluetooth version"),
-                version: displayVersion(ble.deviceVersion2800),
-                hasUpdate: false
-            )
+            Button {
+                showsLatestVersionToast = true
+            } label: {
+                versionRowLabel(
+                    title: L10n.t("蓝牙版本", "Bluetooth version"),
+                    version: displayVersion(ble.deviceVersion2800),
+                    hasUpdate: false
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(!canConfirmLatestVersion(
+                ble.deviceVersion2800,
+                serverVersions: authSession.userInfo?.bluetoothBySerialNumber ?? [:]
+            ))
         }
     }
 
@@ -154,12 +187,48 @@ struct GlassesFirmwareUpgradeView: View {
             .buttonStyle(.plain)
             .disabled(!ble.isDeviceAvailable || ble.deviceVersionQueryFailed)
         } else {
-            versionRowLabel(
-                title: L10n.t("固件版本", "Firmware version"),
-                version: displayVersion(ble.deviceVersion6350),
-                hasUpdate: false
-            )
+            Button {
+                showsLatestVersionToast = true
+            } label: {
+                versionRowLabel(
+                    title: L10n.t("固件版本", "Firmware version"),
+                    version: displayVersion(ble.deviceVersion6350),
+                    hasUpdate: false
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(!canConfirmLatestVersion(
+                ble.deviceVersion6350,
+                serverVersions: authSession.userInfo?.firmwareBySerialNumber ?? [:]
+            ))
         }
+    }
+
+    private func canConfirmLatestVersion(_ rawVersion: String?, serverVersions: [String: DeviceOTAInfo]) -> Bool {
+        guard ble.isDeviceAvailable,
+              !ble.isQueryingDeviceVersionsAndStorage,
+              !ble.isQueryingAboutDeviceInfo,
+              !ble.deviceVersionQueryFailed,
+              authSession.isLoggedIn,
+              !authSession.isLoadingUserInfo,
+              authSession.userInfoError == nil,
+              !otaManager.isUpgrading,
+              let version = rawVersion?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !version.isEmpty,
+              !FirmwareVersionComparator.isPlaceholderVersion(version) else { return false }
+
+        let keys = [ble.deviceSN, ble.deviceBluetoothIdentifier]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        for key in keys {
+            if let serverInfo = serverVersions[key]
+                ?? serverVersions.first(where: { $0.key.caseInsensitiveCompare(key) == .orderedSame })?.value {
+                let serverVersion = serverInfo.version.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !serverVersion.isEmpty else { return false }
+                return !FirmwareVersionComparator.isServerVersionNewer(serverVersion, than: version)
+            }
+        }
+        return false
     }
 
     private func canOpenLoaderRecovery(_ offer: DeviceFirmwareUpdateCoordinator.UpdateOffer) -> Bool {
@@ -199,6 +268,7 @@ struct GlassesFirmwareUpgradeView: View {
             }
         }
         .padding(.vertical, 18)
+        .contentShape(Rectangle())
     }
 
     private func displayVersion(_ raw: String?) -> String {
