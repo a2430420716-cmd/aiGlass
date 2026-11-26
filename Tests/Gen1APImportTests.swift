@@ -10,6 +10,22 @@ struct Gen1APImportTests {
     }
 
     static func main() throws {
+        var standbyGate = Gen1APImportStandbyGate()
+        expect(!standbyGate.isReady(at: 0), "No idle report cannot authorize import")
+        standbyGate.observe(.standby, at: 1)
+        expect(!standbyGate.isReady(at: 1.5), "Transient standby before shutdown cannot authorize import")
+        standbyGate.observe(.shuttingDown, at: 1.55)
+        expect(!standbyGate.isReady(at: 5), "Shutdown discards the previous idle window")
+        standbyGate.observe(.standby, at: 5)
+        standbyGate.observe(.standby, at: 5.5)
+        expect(!standbyGate.isReady(at: 5.74), "Idle settling does not finish early")
+        expect(standbyGate.isReady(at: 5.75), "Repeated idle reports preserve continuous standby")
+        standbyGate.observe(.videoRecording, at: 6)
+        expect(!standbyGate.isReady(at: 8), "Actual recording revokes readiness")
+        standbyGate.observe(.unknown, at: 9)
+        expect(!standbyGate.isReady(at: 12), "Unconfirmed device status never authorizes import")
+        standbyGate.observe(.standby, at: 12)
+        expect(standbyGate.isReady(at: 12.75), "A new idle window can authorize a later import")
         try Gen1APImportProtocol.requireStandby(fresh: .standby, current: .networkOperating, lastReported: .networkOperating)
         try Gen1APImportProtocol.requireStandby(fresh: nil, current: .standby, lastReported: .standby)
         for (fresh, current, reported, expected) in [

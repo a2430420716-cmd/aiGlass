@@ -42,6 +42,26 @@ enum Gen1APImportError: LocalizedError, Equatable {
     }
 }
 
+/// The main controller can briefly report standby before its final shutdown.
+/// Require continuous standby before opening an import hotspot.
+struct Gen1APImportStandbyGate {
+    static let settleInterval: TimeInterval = 0.75
+    private var standbySince: TimeInterval?
+
+    mutating func observe(_ status: Gen1DomainDeviceStatus, at now: TimeInterval) {
+        if status == .standby {
+            if standbySince == nil { standbySince = now }
+        } else {
+            standbySince = nil
+        }
+    }
+
+    func isReady(at now: TimeInterval) -> Bool {
+        guard let standbySince else { return false }
+        return now - standbySince >= Self.settleInterval
+    }
+}
+
 enum Gen1APImportProtocol {
     /// Firmware may answer status queries using 0x73, or only notify on changes.
     /// A fresh busy/unknown report always overrides a previously recorded idle.

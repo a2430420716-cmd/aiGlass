@@ -823,6 +823,39 @@ final class MediaImportManager: ObservableObject {
         isVideoFileName(name) || name.lowercased().hasSuffix(".avi")
     }
 
+    private func waitForGen1ImportStandby(
+        ble: AstraA1BleManager, targetID: UUID, diagnostics: ImportDiagnosticContext
+    ) async throws {
+        let accountID = ble.gen1ImportAccount(for: targetID)
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        var standby = Gen1APImportStandbyGate()
+        var loggedShutdown = false
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            try Task.checkCancellation()
+            guard ble.isDeviceAvailable, ble.deviceBluetoothIdentifier == targetID.uuidString,
+                  ble.gen1ImportAccount(for: targetID) == accountID else {
+                throw Gen1APImportError.targetChanged
+            }
+            let status = Gen1DomainDeviceStatus(rawValue: ble.deviceRuntimeStatus.rawValue) ?? .unknown
+            let now = ProcessInfo.processInfo.systemUptime
+            standby.observe(status, at: now)
+            if status == .shuttingDown {
+                if !loggedShutdown {
+                    diagnostics.log("等待录像后主控收尾", detail: "target=\(targetID) timeout=10s openHotspotSent=false")
+                    loggedShutdown = true
+                }
+            } else if status == .standby {
+                if standby.isReady(at: now) { return }
+            } else {
+                // The existing ownership guard still rejects recording/capture;
+                // unknown/network states retain their existing query policy.
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw Gen1APImportError.deviceBusy
+    }
+
     private func startGen1Import(
         ble: AstraA1BleManager, library: MediaLibrary, expectedFileCount: Int, autoSave: Bool
     ) async {
@@ -831,15 +864,22 @@ final class MediaImportManager: ObservableObject {
             return
         }
         guard !ble.isBatteryTooLowForMedia else { state = .failed(ble.lowBatteryMediaMessage); return }
+        let diagnostics = ImportDiagnosticContext(kind: "gen1-album", ble: ble)
+        state = .openingWifi
         let identity: Gen1APImportIdentity
-        do { identity = try ble.beginGen1MediaImport(targetID: targetID) }
-        catch { state = .failed(error.localizedDescription); return }
+        do {
+            try await waitForGen1ImportStandby(ble: ble, targetID: targetID, diagnostics: diagnostics)
+            identity = try ble.beginGen1MediaImport(targetID: targetID)
+        } catch {
+            diagnostics.log("导入准备失败", detail: "target=\(targetID) hotspotOpenSent=false error=\(error.localizedDescription)")
+            state = .failed(error.localizedDescription)
+            return
+        }
 
         let previousIdle = UIApplication.shared.isIdleTimerDisabled
         UIApplication.shared.isIdleTimerDisabled = true
         let startedAt = Date()
         let deviceSN = ble.deviceSN
-        let diagnostics = ImportDiagnosticContext(kind: "gen1-album", ble: ble)
         let hotspot = Gen1HotspotSession(ble: ble, identity: identity)
         let interruptionProtection = Gen1ImportInterruptionProtection()
         defer { interruptionProtection.end() }
