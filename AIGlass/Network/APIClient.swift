@@ -77,10 +77,57 @@ enum APIClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         request.timeoutInterval = 20
 
+        return try await sendPost(request, loggedBody: body, as: type)
+    }
+
+    /// Text-only multipart form for endpoints that require form-data without a file.
+    static func postMultipart<T: Decodable>(
+        path: String,
+        fields: [String: String],
+        authorization: String? = nil,
+        sensitiveFields: Set<String> = [],
+        as type: T.Type = T.self
+    ) async throws -> T? {
+        let trimmedPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        guard let url = URL(string: trimmedPath, relativeTo: baseURL)?.absoluteURL else {
+            throw APIError.invalidURL
+        }
+
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var body = Data()
+        for (name, value) in fields.sorted(by: { $0.key < $1.key }) {
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".utf8))
+            body.append(Data("\(value)\r\n".utf8))
+        }
+        body.append(Data("--\(boundary)--\r\n".utf8))
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        AppRequestHeaders.apply(to: &request)
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        if let authorization, !authorization.isEmpty {
+            request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = body
+        request.timeoutInterval = 20
+
+        let loggedBody = fields.reduce(into: [String: Any]()) { result, item in
+            result[item.key] = sensitiveFields.contains(item.key) ? "<redacted>" : item.value
+        }
+        return try await sendPost(request, loggedBody: loggedBody, as: type)
+    }
+
+    private static func sendPost<T: Decodable>(
+        _ request: URLRequest,
+        loggedBody: [String: Any],
+        as type: T.Type
+    ) async throws -> T? {
+        guard let url = request.url else { throw APIError.invalidURL }
         DebugLogStore.logHTTPSent(
             method: "POST",
             url: url.absoluteString,
-            body: DebugLogStore.jsonBody(body),
+            body: DebugLogStore.jsonBody(loggedBody),
             headers: request.allHTTPHeaderFields
         )
 

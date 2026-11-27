@@ -8,6 +8,7 @@ enum APIClient {
         let path: String
         let body: [String: Any]
         let authorization: String?
+        var isMultipart = false
     }
     static var lastRequest: Request?
 
@@ -15,6 +16,14 @@ enum APIClient {
         path: String, body: [String: Any], authorization: String? = nil, as type: T.Type
     ) async throws -> T? {
         lastRequest = Request(path: path, body: body, authorization: authorization)
+        return nil
+    }
+
+    static func postMultipart<T: Decodable>(
+        path: String, fields: [String: String], authorization: String? = nil,
+        sensitiveFields: Set<String> = [], as type: T.Type
+    ) async throws -> T? {
+        lastRequest = Request(path: path, body: fields, authorization: authorization, isMultipart: true)
         return nil
     }
 
@@ -71,6 +80,25 @@ enum PasswordRecoveryRequestTests {
         precondition(Set(resetRequest.body.keys) == ["phonenum", "code", "password"])
         precondition(resetRequest.authorization == nil, "Resetting a forgotten password must work before login")
 
+        let email = "recovery+ios@example.com"
+        try await AuthService.sendEmailCode(email: email)
+        let emailCodeRequest = APIClient.lastRequest!
+        precondition(emailCodeRequest.path == "login/send_email_code", "Email recovery codes must work before login")
+        precondition(emailCodeRequest.body["email"] as? String == email)
+        precondition(Set(emailCodeRequest.body.keys) == ["email"])
+        precondition(emailCodeRequest.authorization == nil)
+
+        let emailPassword = "New+Pass&123"
+        try await AuthService.forgetEmailPassword(email: email, code: "012345", password: emailPassword)
+        let emailResetRequest = APIClient.lastRequest!
+        precondition(emailResetRequest.path == "login/forget_email_pwd", "Email recovery must not use user/modify_password")
+        precondition(emailResetRequest.isMultipart, "Email recovery follows the documented multipart/form-data contract")
+        precondition(emailResetRequest.body["email"] as? String == email)
+        precondition(emailResetRequest.body["code"] as? String == "012345", "Leading zeroes must survive form encoding")
+        precondition(emailResetRequest.body["password"] as? String == emailPassword)
+        precondition(Set(emailResetRequest.body.keys) == ["email", "code", "password"])
+        precondition(emailResetRequest.authorization == nil)
+
         let token = "test-session-only"
         try await UserService.sendPasswordChangeCode(phoneNumber: phone, token: token)
         let changeCodeRequest = APIClient.lastRequest!
@@ -88,6 +116,18 @@ enum PasswordRecoveryRequestTests {
         precondition(changeRequest.body["type"] as? String == "2")
         precondition(Set(changeRequest.body.keys) == ["phonenum", "code", "password", "type"])
         precondition(changeRequest.authorization == token)
+
+        try await UserService.sendEmailPasswordChangeCode(email: email, token: token)
+        precondition(APIClient.lastRequest?.path == "user/send_modify_email_code")
+        precondition(APIClient.lastRequest?.authorization == token)
+        try await UserService.changeEmailPassword(email: email, code: "654321", password: emailPassword, token: token)
+        precondition(APIClient.lastRequest?.path == "user/modify_password")
+        precondition(APIClient.lastRequest?.authorization == token)
+
+        // Recovering an email after a signed-in change must not inherit its token.
+        try await AuthService.forgetEmailPassword(email: email, code: "012345", password: emailPassword)
+        precondition(APIClient.lastRequest?.path == "login/forget_email_pwd")
+        precondition(APIClient.lastRequest?.authorization == nil)
 
         // Selecting recovery after an authenticated call must not inherit its token.
         try await AuthService.forgetPassword(phoneNumber: phone, code: "123456", password: "RecoveryPassword1")

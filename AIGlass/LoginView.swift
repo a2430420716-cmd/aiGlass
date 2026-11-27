@@ -275,8 +275,9 @@ struct LoginView: View {
                 verificationCodeField
             } else {
                 passwordField
-                passwordModeActions
             }
+
+            loginModeActions
         }
     }
 
@@ -371,14 +372,22 @@ struct LoginView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private var passwordModeActions: some View {
+    private var loginModeActions: some View {
         HStack {
             Button {
-                switchToSMSLogin()
+                if loginMode == .password {
+                    switchToSMSLogin()
+                } else {
+                    switchToPasswordLogin()
+                }
             } label: {
-                Text(L10n.t("验证码登陆", "Code log in"))
+                Text(loginMode == .password
+                     ? L10n.t("验证码登陆", "Code log in")
+                     : L10n.t("密码登陆", "Password log in"))
                     .font(AppTheme.notoSansSC(size: 14, weight: .medium))
                     .foregroundStyle(AppTheme.primaryText)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
@@ -399,17 +408,6 @@ struct LoginView: View {
 
     private var agreementRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if loginMode == .sms {
-                Button {
-                    switchToPasswordLogin()
-                } label: {
-                    Text(L10n.t("密码登陆", "Password log in"))
-                        .font(AppTheme.notoSansSC(size: 14, weight: .medium))
-                        .foregroundStyle(AppTheme.primaryText)
-                }
-                .buttonStyle(.plain)
-            }
-
             HStack(alignment: .top, spacing: 10) {
                 Button {
                     dismissKeyboard()

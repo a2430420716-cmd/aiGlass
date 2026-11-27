@@ -59,8 +59,8 @@ struct ForgotPasswordView: View {
     private var subtitleText: String {
         if isEmailAccount {
             return L10n.t(
-                "未注册的邮箱验证成功后将自动注册并绑定",
-                "Unregistered emails will be registered and linked after verification"
+                "请输入注册邮箱，验证后设置新密码",
+                "Enter your registered email to verify your account and reset your password"
             )
         }
         return L10n.t(
@@ -419,7 +419,7 @@ struct ForgotPasswordView: View {
         Task {
             do {
                 if isEmailAccount {
-                    try await AuthService.sendModifyEmailCode(email: normalizedAccount)
+                    try await AuthService.sendEmailCode(email: normalizedAccount)
                 } else {
                     try await AuthService.sendSMS(
                         phoneNumber: normalizedAccount,
@@ -475,7 +475,7 @@ struct ForgotPasswordView: View {
         submitTask = Task {
             do {
                 if isEmailAccount {
-                    try await AuthService.modifyEmailPassword(
+                    try await AuthService.forgetEmailPassword(
                         email: accountValue,
                         code: code,
                         password: newPassword

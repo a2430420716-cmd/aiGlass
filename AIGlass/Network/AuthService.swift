@@ -214,28 +214,20 @@ enum AuthService {
         )
     }
 
-    /// 邮箱忘记密码：发送验证码
-    static func sendModifyEmailCode(email: String) async throws {
-        _ = try await APIClient.post(
-            path: "user/send_modify_email_code",
-            body: ["email": email],
-            as: EmptyResult.self
-        )
-    }
-
-    /// 邮箱忘记密码：修改密码
-    static func modifyEmailPassword(
+    /// 邮箱忘记密码：POST login/forget_email_pwd，无需登录凭证。
+    static func forgetEmailPassword(
         email: String,
         code: String,
         password: String
     ) async throws {
-        _ = try await APIClient.post(
-            path: "user/modify_password",
-            body: [
+        _ = try await APIClient.postMultipart(
+            path: "login/forget_email_pwd",
+            fields: [
                 "email": email,
                 "code": code,
                 "password": password
             ],
+            sensitiveFields: ["code", "password"],
             as: EmptyResult.self
         )
     }
