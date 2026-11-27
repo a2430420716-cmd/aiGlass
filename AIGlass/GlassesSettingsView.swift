@@ -31,6 +31,7 @@ struct GlassesSettingsView: View {
     @State private var showFactoryResetGuide = false
     @State private var showUnpairConfirmation = false
     @State private var showForceUnpairConfirmation = false
+    @State private var showResumeUnpairConfirmation = false
     @State private var isUnpairing = false
     @State private var unpairErrorMessage: String?
     @State private var showUnpairSuccess = false
@@ -414,6 +415,12 @@ struct GlassesSettingsView: View {
                 "解除配对后，眼镜端的所有数据将被清空且无法恢复，是否继续？",
                 "Unpairing will erase all data on the glasses permanently. Do you want to continue?"
             ))
+        }
+        .alert(L10n.t("继续完成解绑", "Complete unpairing"), isPresented: $showResumeUnpairConfirmation) {
+            Button(L10n.t("取消", "Cancel"), role: .cancel) {}
+            Button(L10n.t("继续解绑", "Continue unpairing"), role: .destructive) { performUnpair(force: false) }
+        } message: {
+            Text(L10n.t("上次账号解绑结果尚未确认。继续操作将先核对服务器状态；已确认重置的眼镜不会重复重置。", "The previous account unbinding is not yet confirmed. Continuing checks the server first; glasses with a confirmed reset will not be reset again."))
         }
         .alert(forceUnpairTitle, isPresented: $showForceUnpairConfirmation) {
             Button(L10n.t("取消", "Cancel"), role: .cancel) {}
@@ -927,7 +934,7 @@ struct GlassesSettingsView: View {
         if voiceWakeUpState.phase == .ready || voiceWakeUpState.phase == .setting {
             SettingsToggleRow(
                 title: L10n.t("语音唤醒", "Voice wake-up"),
-                subtitle: L10n.t("开启后，说“Hi MOCO”可唤醒语音助手", "When enabled, say \"Hi MOCO\" to wake up the voice assistant."),
+                subtitle: L10n.t("开启后，可通过说出“嗨，眸刻”或“嘿，眸刻”唤醒语音助手", "When enabled, say \"Hi MOCO\" or \"Hey MOCO\" to wake up the voice assistant."),
                 isOn: Binding(
                     get: { voiceWakeUpState.enabled ?? false },
                     set: { updateVoiceWakeUp($0) }
@@ -1151,10 +1158,14 @@ struct GlassesSettingsView: View {
             return
         }
         guard !isUnpairing else { return }
+        if pairingCoordinator.pendingUnpairRecovery(serialNumber: serial) != nil {
+            showResumeUnpairConfirmation = true
+            return
+        }
         // An offline device cannot acknowledge a reset. Use the current
         // account's bound card and ask explicitly before server-only removal.
         // A separate userinfo refresh must not block reaching this decision.
-        DebugLogStore.logConnect("unbind: settings preflight", detail: "target=\(serial) localTargetAvailable=\(isGlassesConnected) cloudConnectionIgnored=true userInfoRefreshRequired=false next=\(isGlassesConnected ? "reset_then_unbind" : "confirm_forced_unbind")")
+        DebugLogStore.logConnect("unbind: settings preflight", detail: "target=\(serial) localTargetAvailable=\(isGlassesConnected) cloudConnectionIgnored=true freshBindingCheckAfterConfirmation=true next=\(isGlassesConnected ? "reset_then_unbind" : "confirm_forced_unbind")")
         if isGlassesConnected {
             showUnpairConfirmation = true
         } else {
@@ -1175,12 +1186,13 @@ struct GlassesSettingsView: View {
         let cachedSN = pairingCoordinator.astraA1BleManager
             .cachedHardwareSN(forSerialNumber: serialNumber)
         let liveTargetSN = isGlassesConnected ? liveSN : nil
-        let sn = ([targetHardwareSN, cachedSN, liveTargetSN].compactMap { value -> String? in
+        let recovery = pairingCoordinator.pendingUnpairRecovery(serialNumber: serialNumber)
+        let sn = ([targetHardwareSN, cachedSN, liveTargetSN, recovery?.hardwareSN].compactMap { value -> String? in
                 guard let value, !value.isEmpty else { return nil }
                 return value
             }.first) ?? ""
 
-        guard force || !sn.isEmpty else {
+        guard force || recovery != nil || !sn.isEmpty else {
             unpairErrorMessage = L10n.t("未获取到设备 SN，请连接眼镜后重试", "Device SN unavailable. Connect glasses and try again")
             return
         }

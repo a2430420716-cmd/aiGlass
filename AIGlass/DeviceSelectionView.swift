@@ -37,25 +37,34 @@ struct DeviceSelectionView: View {
                 }
                 Spacer()
             } else {
-                ScrollView(showsIndicators: false) {
-                    // Keep model selection in one column; reduce height to fit four rows.
-                    VStack(spacing: 8) {
-                        ForEach(models) { model in
-                            Button {
-                                pairingCoordinator.selectDevice(model, guideItems: [])
-                                if model.localizedPrepareHTML == nil {
-                                    Task {
-                                        await refreshSelectedModel(modelName: model.modelName)
+                GeometryReader { geometry in
+                    // Android uses 300px cards and 25px gaps on its 720px design grid.
+                    // Fit four rows when space permits; smaller screens can still scroll.
+                    let scale = geometry.size.width / 720
+                    let cardSpacing = 25 * scale
+                    let listPadding = 25 * scale
+                    let availableRowHeight = (geometry.size.height - listPadding * 2 - cardSpacing * 3) / 4
+                    let cardHeight = max(128, min(300 * scale, availableRowHeight))
+
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: cardSpacing) {
+                            ForEach(models) { model in
+                                Button {
+                                    pairingCoordinator.selectDevice(model, guideItems: [])
+                                    if model.localizedPrepareHTML == nil {
+                                        Task {
+                                            await refreshSelectedModel(modelName: model.modelName)
+                                        }
                                     }
+                                } label: {
+                                    deviceCard(model, height: cardHeight)
                                 }
-                            } label: {
-                                deviceCard(model)
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, listPadding)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
                 }
             }
         }
@@ -90,14 +99,14 @@ struct DeviceSelectionView: View {
         .padding(.bottom, 4)
     }
 
-    private func deviceCard(_ model: DeviceModelItem) -> some View {
-        VStack(spacing: 4) {
+    private func deviceCard(_ model: DeviceModelItem, height: CGFloat) -> some View {
+        VStack(spacing: 12) {
             Image(model.fallbackImageName)
                 .resizable()
                 .scaledToFit()
-                .frame(height: 40)
+                .frame(height: min(56, max(36, height - 100)))
 
-            VStack(spacing: 2) {
+            VStack(spacing: 5) {
                 Text(deviceSeriesName(for: model))
                     .font(AppTheme.notoSansSC(size: 16, weight: .bold))
                     .foregroundStyle(AppTheme.primaryText)
@@ -113,9 +122,9 @@ struct DeviceSelectionView: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
+        .padding(.vertical, 14)
         .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, minHeight: height)
         .background(AppTheme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius, style: .continuous))
         .shadow(color: AppTheme.cardShadow, radius: 10, y: 4)

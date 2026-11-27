@@ -150,38 +150,44 @@ struct HomeView: View {
 
     private var selectedDeviceIndex: Int {
         get {
-            let cards = homeDeviceCards
-            if let key = authSession.selectedHomeDeviceKey,
-               let index = cards.firstIndex(where: {
-                   ($0.serialNumber ?? $0.id).caseInsensitiveCompare(key) == .orderedSame
-               }) {
-                return index
-            }
-            if let saved = ble.savedPeripheralUUIDString,
-               let index = cards.firstIndex(where: { $0.serialNumber?.caseInsensitiveCompare(saved) == .orderedSame }) {
-                return index
-            }
-            return cards.firstIndex(where: {
-                !$0.isFindDevice && ble.isReady && ble.matchesCurrentDevice(serialNumber: $0.serialNumber, hardwareSN: $0.hardwareSN)
-            }) ?? 0
+            HomeDeviceSelection.visibleIndex(
+                browsedKey: browsedHomeDeviceKey,
+                connectionIndex: connectionDeviceIndex,
+                cardKeys: homeDeviceCards.map { $0.serialNumber ?? $0.id }
+            )
         }
         nonmutating set {
             guard canManageHomeConnection else { return }
             let cards = homeDeviceCards
             guard cards.indices.contains(newValue) else { return }
             let card = cards[newValue]
-            if !card.isFindDevice, card.serialNumber?.caseInsensitiveCompare(ble.savedPeripheralUUIDString ?? "") != .orderedSame,
-               isHomeDeviceSwitchBusy {
-                mediaActionAlertMessage = L10n.t("眼镜正在执行任务，请结束后再切换设备", "The glasses are busy. Finish the current task before switching devices.")
-                return
-            }
             let key = card.serialNumber ?? card.id
-            if authSession.selectedHomeDeviceKey != key {
-                DebugLogStore.logConnect("home card user selection", detail: "previous=\(authSession.selectedHomeDeviceKey ?? "nil") selected=\(key) source=carouselGesture ready=\(ble.isReady)")
-                authSession.selectedHomeDeviceKey = key
+            if browsedHomeDeviceKey != key {
+                DebugLogStore.logConnect("home card page changed", detail: "page=\(key) connectionTarget=\(authSession.selectedHomeDeviceKey ?? "nil") source=carouselGesture ready=\(ble.isReady)")
+                browsedHomeDeviceKey = key
             }
         }
     }
+
+    /// The automatic reconnect target must not follow pages passed during a swipe.
+    private var connectionDeviceIndex: Int {
+        let cards = homeDeviceCards
+        if let key = authSession.selectedHomeDeviceKey,
+           let index = cards.firstIndex(where: {
+               ($0.serialNumber ?? $0.id).caseInsensitiveCompare(key) == .orderedSame
+           }) {
+            return index
+        }
+        if let saved = ble.savedPeripheralUUIDString,
+           let index = cards.firstIndex(where: { $0.serialNumber?.caseInsensitiveCompare(saved) == .orderedSame }) {
+            return index
+        }
+        return cards.firstIndex(where: {
+            !$0.isFindDevice && ble.isReady && ble.matchesCurrentDevice(serialNumber: $0.serialNumber, hardwareSN: $0.hardwareSN)
+        }) ?? 0
+    }
+
+    @State private var browsedHomeDeviceKey: String?
     @ObservedObject private var systemVolume = SystemVolumeController.shared
     @State private var showSoundEffectSheet = false
     @State private var homeIsVisible = false
@@ -435,6 +441,7 @@ struct HomeView: View {
         }
         .onAppear {
             homeIsVisible = true
+            browsedHomeDeviceKey = nil
             synchronizeConnectedHomeCard(reason: "home-appear")
             systemVolume.refresh()
             systemVolume.beginPollingWhileVisible()
@@ -445,6 +452,7 @@ struct HomeView: View {
             systemVolume.endPollingWhileVisible()
         }
         .onViewWillAppear {
+            browsedHomeDeviceKey = nil
             synchronizeConnectedHomeCard(reason: "home-will-appear")
             systemVolume.refresh()
         }
@@ -456,18 +464,12 @@ struct HomeView: View {
         .onChangeCompat(of: canManageHomeConnection) { active in
             DebugLogStore.logConnect("home connection ownership changed", detail: "active=\(active) pathDepth=\(pairingCoordinator.path.count) pairingConfirmed=\(pairingCoordinator.userConfirmedPairingDevice) binding=\(pairingCoordinator.isBindingDevice) selected=\(authSession.selectedHomeDeviceKey ?? "nil")")
             guard active else { return }
+            browsedHomeDeviceKey = nil
             synchronizeConnectedHomeCard(reason: "home-root-resumed")
             refreshBatteryFromBLEIfNeeded()
         }
         .onChangeCompat(of: ble.deviceSN) { _ in
             if canManageHomeConnection { synchronizeConnectedHomeCard(reason: "device-identity-updated") }
-        }
-        .task(id: homeConnectionTarget) {
-            // Do not connect to every card passed during a swipe.
-            guard homeConnectionTarget != nil else { return }
-            do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
-            guard !Task.isCancelled else { return }
-            connectSelectedHomeDevice(reason: "home-card-selection")
         }
         .onChangeCompat(of: scenePhase) { phase in
             if phase == .active {
@@ -531,11 +533,10 @@ struct HomeView: View {
         .refreshable {
             await reloadHomeDeviceState(userInitiated: true)
         }
-        .overlay(alignment: .bottom) {
-            // Keep feedback in the visible viewport, even when the volume card
-            // has scrolled away or its disconnected hit testing is disabled.
+        .overlay(alignment: .center) {
+            // Match Android's centered toast within the visible viewport,
+            // independent of scroll position or the volume card's hit testing.
             mediaActionToast
-                .padding(.bottom, 16)
         }
     }
 
@@ -689,7 +690,8 @@ struct HomeView: View {
         if userInitiated { retrySelectedHomeDevice(reason: "home-pull-refresh") }
         let selection = authSession.selectedHomeDeviceKey
         await authSession.refreshUserInfo()
-        // A swipe during the HTTP request must keep its newly selected target.
+        // Keep an explicit connection target chosen while the request was in flight.
+        // Card browsing, including Add Glasses, is preserved separately.
         guard homeIsVisible, authSession.selectedHomeDeviceKey == selection else { return }
         synchronizeConnectedHomeCard(reason: "home-refresh-completed")
         refreshBatteryFromBLEIfNeeded()
@@ -726,8 +728,9 @@ struct HomeView: View {
     private var homeConnectionTarget: String? {
         guard canManageHomeConnection else { return nil }
         let cards = homeDeviceCards
-        guard cards.indices.contains(selectedDeviceIndex), !cards[selectedDeviceIndex].isFindDevice else { return nil }
-        return cards[selectedDeviceIndex].serialNumber
+        let index = connectionDeviceIndex
+        guard cards.indices.contains(index), !cards[index].isFindDevice else { return nil }
+        return cards[index].serialNumber
     }
 
     private var canManageHomeConnection: Bool {
@@ -781,10 +784,14 @@ struct HomeView: View {
     }
 
     private func retrySelectedHomeDevice(reason: String) {
-        guard let serial = homeConnectionTarget,
+        let cards = homeDeviceCards
+        guard cards.indices.contains(selectedDeviceIndex),
+              !cards[selectedDeviceIndex].isFindDevice,
+              let serial = cards[selectedDeviceIndex].serialNumber,
               let id = UUID(uuidString: serial.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
         if ble.savedPeripheralUUIDString?.caseInsensitiveCompare(id.uuidString) != .orderedSame,
            isHomeDeviceSwitchBusy { return }
+        authSession.selectedHomeDeviceKey = serial
         _ = ble.retryBoundHomeDevice(peripheralID: id, reason: reason)
     }
 

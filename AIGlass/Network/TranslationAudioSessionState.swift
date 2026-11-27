@@ -473,3 +473,81 @@ nonisolated struct TranslationAudioTiming {
         return "count=\(count) spanMs=\(Int(span * 1000)) maxIntervalMs=\(Int(maxInterval * 1000)) meanDelayMs=\(String(format: "%.2f", mean * 1000)) maxDelayMs=\(String(format: "%.2f", maxDelay * 1000))"
     }
 }
+
+
+/// Startup retries are restricted to URL lookup, before a microphone can start.
+struct TranslationConnectionStartup {
+    enum Stage: String {
+        case inactive
+        case fetchingURL = "fetching-url"
+        case connectingSocket = "connecting-socket"
+        case waitingForReady = "waiting-service-ready"
+        case ready
+    }
+
+    static let totalTimeout: TimeInterval = 30
+    static let lookupTimeout: TimeInterval = 8
+    static let socketReadyTimeout: TimeInterval = 10
+    static let retryDelay: TimeInterval = 0.5
+    static let maximumLookups = 2
+    private(set) var stage: Stage = .inactive
+    private(set) var startedAt: TimeInterval?
+    private(set) var socketStartedAt: TimeInterval?
+    private(set) var lookupCount = 0
+
+    mutating func begin(now: TimeInterval) {
+        self = Self()
+        startedAt = now
+        stage = .fetchingURL
+    }
+
+    mutating func beginLookup() -> Int {
+        lookupCount += 1
+        stage = .fetchingURL
+        return lookupCount
+    }
+
+    mutating func socketRequested(now: TimeInterval) {
+        socketStartedAt = now
+        stage = .connectingSocket
+    }
+
+    mutating func serverConnected() {
+        guard stage == .connectingSocket else { return }
+        stage = .waitingForReady
+    }
+
+    mutating func finish() { stage = .ready }
+    mutating func reset() { self = Self() }
+
+    func timedOut(now: TimeInterval) -> Bool {
+        guard stage != .inactive, stage != .ready, let startedAt else { return false }
+        return now - startedAt >= Self.totalTimeout
+            || socketStartedAt.map { now - $0 >= Self.socketReadyTimeout } == true
+    }
+
+    func shouldRetryLookup(networkErrorCode: Int?, now: TimeInterval) -> Bool {
+        guard stage == .fetchingURL, lookupCount < Self.maximumLookups,
+              let startedAt, let networkErrorCode,
+              Self.totalTimeout - (now - startedAt)
+                >= Self.lookupTimeout + Self.retryDelay + Self.socketReadyTimeout else { return false }
+        // URL transport failures only. Cancellation, HTTP/auth/business errors,
+        // certificate errors and invalid responses must not be retried here.
+        return [-1001, -1003, -1004, -1005, -1006, -1009].contains(networkErrorCode)
+    }
+}
+
+/// Backend closes an application session after 60 seconds without activity.
+/// Control-frame pongs do not establish that its application session is alive.
+struct TranslationServiceIdlePolicy {
+    static let backendIdleTimeout: TimeInterval = 60
+    static let reuseWindow: TimeInterval = 50
+    private(set) var lastActivityAt: TimeInterval?
+
+    mutating func activity(now: TimeInterval) { lastActivityAt = now }
+    mutating func reset() { lastActivityAt = nil }
+    func isFresh(now: TimeInterval) -> Bool {
+        guard let lastActivityAt else { return false }
+        return now - lastActivityAt < Self.reuseWindow
+    }
+}

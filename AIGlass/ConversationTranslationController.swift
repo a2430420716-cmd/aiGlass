@@ -727,11 +727,13 @@ final class ConversationTranslationController: ObservableObject {
     private func scheduleSocketReadyTimeout() {
         cancelSocketReadyTimeout()
         let side = activeSide
+        // Manager owns phase timeouts; this is a slightly later UI safety net.
+        let timeoutSeconds = TranslationConnectionStartup.totalTimeout + 1
         socketReadyTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
             guard !Task.isCancelled, let self, self.isActive, self.activeSide == side else { return }
             if side == .glasses, self.glassesState.shouldSendStart {
-                self.failGlassesStart(reason: "20s waiting for translation service ready")
+                self.failGlassesStart(reason: "\(Int(timeoutSeconds))s waiting for translation service ready")
                 self.statusText = L10n.t("翻译服务连接超时，请重试", "Translation service timed out. Try again.")
                 self.alertMessage = self.statusText
             } else if side == .phone, self.waitingPhoneSocketReady {

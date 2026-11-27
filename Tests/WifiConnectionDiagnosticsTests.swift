@@ -25,6 +25,7 @@ enum WifiConnectionDiagnosticsTests {
         knownOtherNetworkCannotUseSubnetFallback()
         interfaceEvidencePreservesFailureBoundaries()
         ipv4SelectionPreservesExistingBehavior()
+        connectionGuidanceDoesNotGateHotspotJoining()
         interfaceDescriptionsRetainRejectedEvidence()
         snapshotsAreLimitedWithoutLosingTransitions()
         credentialLogsPreserveUntrimmedValues()
@@ -46,6 +47,29 @@ enum WifiConnectionDiagnosticsTests {
     ) -> Address {
         Address(name: name, family: family, address: value, isUp: up, isRunning: running,
                 isLoopback: loopback, flags: flags, addressError: error)
+    }
+
+    private static func connectionGuidanceDoesNotGateHotspotJoining() {
+        func needsGuidance(_ items: [Address], error: Int32? = nil) -> Bool {
+            Diagnostics.needsConnectionGuidance(interfaces: Interfaces(addresses: items, enumerationError: error))
+        }
+        check(needsGuidance([]), "No Wi-Fi address gives connection instructions")
+        check(needsGuidance([address(name: "pdp_ip0")]), "Cellular alone does not satisfy a glasses Wi-Fi transfer")
+        check(needsGuidance([address(name: "utun1")]), "VPN address alone cannot hide Wi-Fi guidance")
+        check(needsGuidance([address(up: false)]), "An inactive Wi-Fi interface gives guidance")
+        check(needsGuidance([address(running: false)]), "An interface without an active link gives guidance")
+        check(needsGuidance([address(nil, family: "link")]), "A link entry without an IP address gives guidance")
+        check(needsGuidance([address(loopback: true)]), "Loopback does not establish Wi-Fi")
+        check(needsGuidance([address(error: 8)]), "Failed address reads are not a usable connection")
+        check(!needsGuidance([address()]), "Existing IPv4 Wi-Fi does not need the missing-connection hint")
+        check(!needsGuidance([address("192.168.4.20")]), "A connected glasses hotspot does not need the hint")
+        check(!needsGuidance([address("2001:db8::2", family: "IPv6")]), "IPv6-only Wi-Fi is not reported as disconnected")
+        check(!needsGuidance([address("fe80::2%en0", family: "IPv6")]), "Link-local IPv6 is not proof that Wi-Fi is disabled")
+        check(!needsGuidance([address(name: "pdp_ip0"), address()]), "Cellular default traffic does not hide an active Wi-Fi link")
+        check(!needsGuidance([], error: 13), "Enumeration failure remains unknown instead of claiming Wi-Fi is off")
+        check(!needsGuidance([address()], error: 13), "Partial enumeration is not used for connection guidance")
+        check(Interfaces(addresses: [address(running: false)], enumerationError: nil).selectedIPv4 != nil,
+              "Guidance leaves the existing IPv4/TCP readiness policy unchanged")
     }
 
     private static func stage(_ addresses: [Address], ssid: String? = nil, error: Int32? = nil) -> String {

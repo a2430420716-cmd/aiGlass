@@ -200,6 +200,12 @@ final class BluetoothOtaUpgradeManager: ObservableObject {
                 ? L10n.t("正在确认眼镜 Wi-Fi 连接...", "Checking glasses Wi-Fi...")
                 : L10n.t("请手动连接眼镜 Wi-Fi 后继续", "Connect to glasses Wi-Fi manually to continue")
         }
+        switch state {
+        case .openingWifi, .connectingWifi:
+            if let guidance = DeviceWifiManager.connectionGuidanceIfNeeded { return guidance }
+        default:
+            break
+        }
         if case .connectingWifi = state, hotspotJoinAttempt > 1 {
             return L10n.t("正在重新连接眼镜 Wi-Fi（2/2）...", "Retrying glasses Wi-Fi (2/2)...")
         }

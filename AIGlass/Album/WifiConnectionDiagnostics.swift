@@ -2,6 +2,18 @@ import Foundation
 
 /// Describes observable connection evidence without inferring association or DHCP failures.
 nonisolated enum WifiConnectionDiagnostics {
+    /// Informational only: never gate automatic hotspot join or TCP readiness.
+    /// Inspect the Wi-Fi interface itself so cellular internet, unavailable SSID
+    /// permissions and IPv6-only Wi-Fi do not masquerade as the Wi-Fi switch.
+    static func needsConnectionGuidance(interfaces: Interfaces) -> Bool {
+        guard interfaces.enumerationError == nil else { return false }
+        return !interfaces.addresses.contains { item in
+            item.name.hasPrefix("en") && item.isUp && item.isRunning && !item.isLoopback
+                && item.addressError == nil && item.address?.isEmpty == false
+                && (item.family == "IPv4" || item.family == "IPv6")
+        }
+    }
+
     static func isGen1ClientIPv4(_ address: String?) -> Bool {
         guard let address else { return false }
         let parts = address.split(separator: ".", omittingEmptySubsequences: false)

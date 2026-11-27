@@ -12,9 +12,9 @@ enum DeviceWifiError: LocalizedError {
         case .userDenied:
             return L10n.t("已取消加入眼镜 Wi-Fi", "Cancelled joining glasses Wi-Fi")
         case .joinFailed(let detail):
-            return L10n.t("连接眼镜 Wi-Fi 失败：\(detail)", "Failed to connect glasses Wi-Fi: \(detail)")
+            return L10n.t("连接眼镜 Wi-Fi 失败：\(detail)。请在手机「设置 → Wi-Fi」开启 Wi-Fi，并连接眼镜热点后重试。", "Failed to connect to glasses Wi-Fi: \(detail). Enable Wi-Fi in Settings > Wi-Fi, connect to the glasses hotspot, then try again.")
         case .unreachable:
-            return L10n.t("未能连接眼镜热点，请确认眼镜热点已开启", "Could not connect to glasses Wi-Fi. Confirm the glasses hotspot is enabled")
+            return L10n.t("此操作需要连接眼镜 Wi-Fi。请确认眼镜热点已开启，并在手机「设置 → Wi-Fi」开启 Wi-Fi、连接眼镜热点后重试。", "This operation requires glasses Wi-Fi. Make sure the glasses hotspot is on, enable Wi-Fi in Settings > Wi-Fi and connect to it, then try again.")
         case .hotspotStopped:
             return L10n.t("眼镜已报告主控关机，请重新开启热点后连接", "The glasses reported controller shutdown. Restart the hotspot before connecting")
         }
@@ -22,6 +22,18 @@ enum DeviceWifiError: LocalizedError {
 }
 
 enum DeviceWifiManager {
+    /// The absence of an active address is a reason to offer guidance, not a
+    /// failure or proof that the system Wi-Fi toggle is off. Joining continues.
+    static var connectionGuidanceIfNeeded: String? {
+        guard WifiConnectionDiagnostics.needsConnectionGuidance(
+            interfaces: WifiDiagnosticSession.captureInterfaces()
+        ) else { return nil }
+        return L10n.t(
+            "此操作需要连接眼镜 Wi-Fi，请在手机「设置 → Wi-Fi」开启 Wi-Fi，并允许加入眼镜热点。",
+            "This operation requires glasses Wi-Fi. Enable Wi-Fi in Settings > Wi-Fi and allow the app to join the glasses hotspot."
+        )
+    }
+
     private static let logTag = "[DeviceWifi]"
     private static let managedHotspotsKey = "DeviceWifiManager.managedTransferHotspots"
     private static var configurationAttempts: [String: UUID] = [:]

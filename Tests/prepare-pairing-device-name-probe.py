@@ -23,7 +23,7 @@ def block(source, marker):
 scan = text[text.index('        didDiscover peripheral: CBPeripheral,'):]
 admission = block(scan, '            if isManualPairingScan {')
 methods = '\n'.join(block(text, marker).replace('private func ', 'func ', 1) for marker in (
-    '    private func resolvedName(', '    private func nameMatchesPairingModelName(',
+    '    private func resolvedName(', '    private func updatePairingScanName(',
     '    private func registerNameMatchedPairingDevice(', '    private func addVerifiedPairingDevice(',
     '    func pairWithDiscoveredDevice(id:',
 ))
@@ -41,14 +41,17 @@ let CBAdvertisementDataLocalNameKey = "local-name"
 let CBAdvertisementDataIsConnectable = "connectable"
 struct CBPeripheral { let identifier: UUID; let name: String? }
 enum L10n { static func t(_ zh: String, _ en: String) -> String { en } }
-""" + block(text, 'struct DiscoveredBLEDevice:') + '\n' + block(text, 'enum PairingProbeStartPolicy {') + """
+""" + block(text, 'struct DiscoveredBLEDevice:') + '\n' + block(text, 'enum PairingScanDiscoveryPolicy {') + '\n' + block(text, 'enum PairingProbeStartPolicy {') + """
 final class PairingNameScanProbe {
     var pairingModelNameFilter: String? = "L2"
     var pairingDeviceTypeFilter: APIDeviceType? = .firstGeneration
     var pairingAdvertisedNames: [UUID: String] = [:]
     var discoveredPeripherals: [UUID: CBPeripheral] = [:]
     var discoveredPairingDevices: [DiscoveredBLEDevice] = []
-    var queued: [UUID] = []
+    struct ProbeCandidate { let peripheral: CBPeripheral; let rssi: Int }
+    var probeCandidates: [ProbeCandidate] = []
+    var queued: [UUID] { probeCandidates.map { $0.peripheral.identifier } }
+    var probedIDs: Set<UUID> = []
     var isManualPairingScan = true
     var isPairingSessionActive = true
     var isUserInitiatedPairingConnect = false
@@ -61,7 +64,10 @@ final class PairingNameScanProbe {
     func advertisedProtocolGeneration(_ data: [String: Any]) -> DeviceGeneration {
         data["generation"] as? DeviceGeneration ?? .unknown
     }
-    func enqueueProbeCandidate(_ peripheral: CBPeripheral, rssi: NSNumber) { queued.append(peripheral.identifier) }
+    func enqueueProbeCandidate(_ peripheral: CBPeripheral, rssi: NSNumber) {
+        guard !probeCandidates.contains(where: { $0.peripheral.identifier == peripheral.identifier }) else { return }
+        probeCandidates.append(ProbeCandidate(peripheral: peripheral, rssi: rssi.intValue))
+    }
     func scheduleProbeStart() {}
     func stopPairingListProbe() { stoppedProbes += 1 }
     func connectForUserPairing(to peripheral: CBPeripheral) { connectedIDs.append(peripheral.identifier) }

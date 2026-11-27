@@ -168,6 +168,9 @@ final class SimultaneousTranslationController: ObservableObject {
             sourceSegments.removeAll()
             targetSegments.removeAll()
             pendingStartRecord = true
+            // A UI-ready flag cannot validate an application session that the
+            // backend may have closed after one minute without audio activity.
+            socketReady = socketReady && translationManager?.isReadyForRecording == true
             waitingSocketReady = !socketReady
             translationManager?.setSpeechPlaybackEnabled(glassesSoundEnabled)
 

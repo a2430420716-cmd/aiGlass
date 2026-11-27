@@ -10,6 +10,21 @@ struct DiscoveredBLEDevice: Identifiable, Equatable {
     let rssi: Int
 }
 
+enum PairingScanDiscoveryPolicy {
+    static func keepsScanning(pairingActive: Bool, manualPairing: Bool,
+                              probing: Bool, userConnecting: Bool) -> Bool {
+        pairingActive && manualPairing && probing && !userConnecting
+    }
+
+    static func acceptsAdvertisement(scanning: Bool, hasStartedConnect: Bool,
+                                     pairingActive: Bool, manualPairing: Bool,
+                                     probing: Bool, userConnecting: Bool) -> Bool {
+        (scanning && !hasStartedConnect)
+            || keepsScanning(pairingActive: pairingActive, manualPairing: manualPairing,
+                             probing: probing, userConnecting: userConnecting)
+    }
+}
+
 enum PairingProbeStartPolicy {
     /// Pairing should verify the first candidate promptly, without restarting
     /// its timer for every subsequent advertisement. Background scans keep
@@ -724,6 +739,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     /// Business commands require the current BLE device to have a real home device card.
     /// The app injects the card lookup; an unconfigured manager must deny operations.
     var deviceCardPresenceProvider: (() -> Bool)?
+    var pendingUnpairProvider: ((UUID) -> Bool)?
     /// Import identity lookup must survive BLE dropping, but not logout or unbinding.
     var gen1ImportAccountProvider: ((UUID, String?) -> String?)?
     private(set) var gen1ImportAuthorizationID = UUID()
@@ -850,6 +866,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         guard prepareCentralManager() else { return }
         guard !isPairingSessionActive else {
             connectLog("background connection deferred: pairing owns BLE", detail: "reason=\(reason)")
+            return
+        }
+        if let id = savedPeripheralID(), pendingUnpairProvider?(id) == true {
+            suspendConnectionForPendingUnpair(peripheralID: id)
             return
         }
         if stopBoundReconnectIfExhausted() { return }
@@ -999,6 +1019,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         force: Bool = false,
         systemTransportObserved: Bool = false
     ) {
+        if !isPairingSessionActive, pendingUnpairProvider?(peripheral.identifier) == true {
+            suspendConnectionForPendingUnpair(peripheralID: peripheral.identifier)
+            return
+        }
         if stopBoundReconnectIfExhausted() { return }
         guard !isManualHardReconnectCentralTransitionInProgress else {
             connectLog(
@@ -1815,6 +1839,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
               !isManualHardReconnectCentralTransitionInProgress,
               manualHardReconnectPeripheralID == nil,
               let id = savedPeripheralID() else { return false }
+        guard pendingUnpairProvider?(id) != true else {
+            suspendConnectionForPendingUnpair(peripheralID: id)
+            return false
+        }
         guard boundBLEReconnectPolicy.canRetry(now: ProcessInfo.processInfo.systemUptime) else { return false }
         if boundReconnectScanTargetID == id { return true }
         let cached = centralManager.retrievePeripherals(withIdentifiers: [id]).first
@@ -4543,9 +4571,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             print("\(logTag) pairWithDiscoveredDevice missing peripheral \(id.uuidString)")
             return false
         }
-        let name = PairingDeviceNamePolicy.discoveredName(
-            advertised: pairingAdvertisedNames[id], cached: peripheral.name
-        )
+        let name = pairingAdvertisedNames[id] ?? ""
         guard discoveredPairingDevices.contains(where: { $0.id == id }),
               PairingDeviceNamePolicy.matchesModel(pairingModelNameFilter, deviceName: name) else { return false }
 
@@ -4721,6 +4747,16 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     /// 退出登录时断开 BLE，并清除已保存的设备标识。
+    func suspendConnectionForPendingUnpair(peripheralID: UUID) {
+        guard !isPairingSessionActive,
+              savedPeripheralID() == peripheralID || connectedPeripheral?.identifier == peripheralID else { return }
+        connectLog("unbind: pause old binding reconnect", detail: "target=\(peripheralID.uuidString) bindingAndCachesPreserved=true")
+        stopSystemReconnectMonitor()
+        cancelConnectWatchdog()
+        cancelAutomaticGATTRecovery(reason: "pending-cloud-unbind", resetAttempts: true)
+        cancelPairing()
+    }
+
     func disconnectAndClearSession(reason: String = #function, file: StaticString = #fileID, line: UInt = #line) {
         connectLog("disconnect and clear session requested",
                    detail: "source=\(reason) file=\(file) line=\(line) \(connectionAvailabilityDiagnosticDetail)")
@@ -4759,6 +4795,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     @discardableResult
     func selectBoundHomeDevice(peripheralID: UUID, reason: String) -> Bool {
         guard !isPairingSessionActive, !isUserInitiatedPairingConnect else { return false }
+        if pendingUnpairProvider?(peripheralID) == true {
+            suspendConnectionForPendingUnpair(peripheralID: peripheralID)
+            return true
+        }
         // A passive home refresh can select a card without activating Bluetooth.
         guard prepareCentralManager() else { return true }
         if savedPeripheralID() == peripheralID {
@@ -4802,6 +4842,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     func retryBoundHomeDevice(
         peripheralID: UUID, reason: String, allowAuthorizationRequest: Bool = false
     ) -> Bool {
+        guard pendingUnpairProvider?(peripheralID) != true else {
+            suspendConnectionForPendingUnpair(peripheralID: peripheralID)
+            return false
+        }
         guard !isPairingSessionActive, !isUserInitiatedPairingConnect,
               gen1OTAPeripheralID == nil, !isFirmwareUpgradeFlowBusy,
               !isManualHardReconnectCentralTransitionInProgress else { return false }
@@ -5838,7 +5882,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         }
         centralManager.scanForPeripherals(
             withServices: nil,
-            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: isManualPairingScan]
         )
 
         if !isManualPairingScan {
@@ -5853,7 +5897,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                     if !self.centralManager.isScanning {
                         self.centralManager.scanForPeripherals(
                             withServices: nil,
-                            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+                            options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
                         )
                     }
                     self.schedulePairingScanTimeout()
@@ -5876,7 +5920,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
                 if !self.centralManager.isScanning {
                     self.centralManager.scanForPeripherals(
                         withServices: nil,
-                        options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+                        options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
                     )
                 }
                 self.schedulePairingScanTimeout()
@@ -6402,7 +6446,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     ) {
         // Every admission path must match the selected product independently of
         // device_type; a compatible GATT service never authorizes another series.
-        guard PairingDeviceNamePolicy.matchesModel(pairingModelNameFilter, deviceName: displayName) else { return }
+        // A delayed GATT result must use the latest actual advertisement, not
+        // the name captured when its probe started or CoreBluetooth's cache.
+        guard let displayName = pairingAdvertisedNames[peripheral.identifier],
+              PairingDeviceNamePolicy.matchesModel(pairingModelNameFilter, deviceName: displayName) else { return }
         discoveredPeripherals[peripheral.identifier] = peripheral
 
         if let index = discoveredPairingDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
@@ -6441,7 +6488,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if !centralManager.isScanning {
             centralManager.scanForPeripherals(
                 withServices: nil,
-                options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+                options: [CBCentralManagerScanOptionAllowDuplicatesKey: isManualPairingScan]
             )
         }
         schedulePairingScanTimeout()
@@ -6464,7 +6511,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if !centralManager.isScanning {
             centralManager.scanForPeripherals(
                 withServices: nil,
-                options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+                options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
             )
         }
         schedulePairingScanTimeout()
@@ -6498,6 +6545,10 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     }
 
     private func connect(to peripheral: CBPeripheral, probing: Bool) {
+        if !isPairingSessionActive, !probing, pendingUnpairProvider?(peripheral.identifier) == true {
+            suspendConnectionForPendingUnpair(peripheralID: peripheral.identifier)
+            return
+        }
         // 系统层已连接时不要再 connect，否则可能永远等不到 didConnect
         if peripheral.state == .connected {
             isProbingService = probing
@@ -6517,7 +6568,15 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         isProbingService = probing
         cancelScanTimeout()
         cancelProbeStart()
-        stopScan()
+        // Service checks stay serial, but other glasses can keep advertising.
+        if !PairingScanDiscoveryPolicy.keepsScanning(
+            pairingActive: isPairingSessionActive, manualPairing: isManualPairingScan,
+            probing: probing, userConnecting: isUserInitiatedPairingConnect
+        ) {
+            stopScan()
+        } else {
+            connectLog("pairing scan retained during probe", detail: "target=\(peripheral.identifier.uuidString) queued=\(probeCandidates.count)")
+        }
 
         connectedPeripheral = peripheral
         reconnectPeripheral = peripheral
@@ -7032,21 +7091,44 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         guard !probeCandidates.contains(where: { $0.peripheral.identifier == peripheral.identifier }) else { return }
 
         let candidate = ProbeCandidate(peripheral: peripheral, rssi: value)
-        if isManualPairingScan, shouldPrioritizeProbe(peripheral) {
-            probeCandidates.insert(candidate, at: 0)
-        } else {
-            probeCandidates.append(candidate)
-            probeCandidates.sort { $0.rssi > $1.rssi }
-        }
+        // All manual candidates already match the selected current broadcast
+        // name. Verify stronger candidates first instead of the cached L1 prefix.
+        probeCandidates.append(candidate)
+        probeCandidates.sort { $0.rssi > $1.rssi }
         print("\(logTag) probe candidate \(peripheral.identifier.uuidString) rssi=\(value), queue=\(probeCandidates.count)")
     }
 
-    private func nameMatchesPairingModelName(
+    private func updatePairingScanName(
         _ peripheral: CBPeripheral,
         advertisementData: [String: Any]
     ) -> Bool {
-        let name = resolvedName(for: peripheral, advertisementData: advertisementData)
-        return PairingDeviceNamePolicy.matchesModel(pairingModelNameFilter, deviceName: name)
+        let id = peripheral.identifier
+        if let advertised = PairingDeviceNamePolicy.firstNonEmpty([
+            advertisementData[CBAdvertisementDataLocalNameKey] as? String
+        ]) {
+            let previous = pairingAdvertisedNames[id]
+            pairingAdvertisedNames[id] = advertised
+            if previous != advertised {
+                connectLog("pairing advertised name updated", detail: "id=\(id.uuidString) previous=\(previous ?? "none") current=\(advertised) cached=\(peripheral.name ?? "none") selectedModel=\(pairingModelNameFilter ?? "none")")
+            }
+        }
+        // A nameless packet cannot establish a model using the system's stale
+        // name. Once observed, this search's latest Local Name survives it.
+        let name = pairingAdvertisedNames[id] ?? ""
+        guard PairingDeviceNamePolicy.matchesModel(pairingModelNameFilter, deviceName: name) else {
+            let wasListed = discoveredPeripherals[id] != nil
+            discoveredPeripherals.removeValue(forKey: id)
+            if discoveredPairingDevices.contains(where: { $0.id == id }) {
+                discoveredPairingDevices.removeAll { $0.id == id }
+            }
+            probeCandidates.removeAll { $0.peripheral.identifier == id }
+            probedIDs.remove(id)
+            if wasListed {
+                connectLog("pairing candidate removed: model changed", detail: "id=\(id.uuidString) current=\(name) selectedModel=\(pairingModelNameFilter ?? "none")")
+            }
+            return false
+        }
+        return true
     }
 
     private func registerNameMatchedPairingDevice(
@@ -7061,17 +7143,6 @@ final class AstraA1BleManager: NSObject, ObservableObject {
             displayName: displayName.isEmpty ? L10n.t("未知设备", "Unknown device") : displayName,
             rssi: rssi.intValue
         )
-    }
-
-    private func shouldPrioritizeProbe(_ peripheral: CBPeripheral) -> Bool {
-        guard let name = peripheral.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
-            return false
-        }
-        if let modelName = pairingModelNameFilter, !modelName.isEmpty {
-            if name.localizedCaseInsensitiveContains(modelName) { return true }
-        }
-        let upper = name.uppercased()
-        return upper.contains("G5T71") || upper.hasPrefix("L1")
     }
 
     private func startProbingIfNeeded() {
@@ -7096,6 +7167,9 @@ final class AstraA1BleManager: NSObject, ObservableObject {
 
         while let candidate = probeCandidates.first {
             probeCandidates.removeFirst()
+            if isManualPairingScan,
+               !PairingDeviceNamePolicy.matchesModel(pairingModelNameFilter,
+                   deviceName: pairingAdvertisedNames[candidate.peripheral.identifier] ?? "") { continue }
             if probedIDs.contains(candidate.peripheral.identifier) { continue }
             probedIDs.insert(candidate.peripheral.identifier)
             activeProbeRSSI = candidate.rssi
@@ -7119,7 +7193,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
         if !centralManager.isScanning {
             centralManager.scanForPeripherals(
                 withServices: nil,
-                options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+                options: [CBCentralManagerScanOptionAllowDuplicatesKey: isManualPairingScan]
             )
         }
         guard !shouldPauseBackgroundProbe() else { return }
@@ -7863,7 +7937,7 @@ final class AstraA1BleManager: NSObject, ObservableObject {
     private func resolvedName(for peripheral: CBPeripheral, advertisementData: [String: Any]) -> String {
         PairingDeviceNamePolicy.discoveredName(
             advertised: advertisementData[CBAdvertisementDataLocalNameKey] as? String,
-            cached: peripheral.name
+            cached: isManualPairingScan ? pairingAdvertisedNames[peripheral.identifier] : peripheral.name
         )
     }
 
@@ -8267,7 +8341,13 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
         let callbackUptime = ProcessInfo.processInfo.systemUptime
         Task { @MainActor in
             guard central === centralManager else { return }
-            guard case .scanning = connectionState, !hasStartedConnect else { return }
+            let scanning: Bool
+            if case .scanning = connectionState { scanning = true } else { scanning = false }
+            guard PairingScanDiscoveryPolicy.acceptsAdvertisement(
+                scanning: scanning, hasStartedConnect: hasStartedConnect,
+                pairingActive: isPairingSessionActive, manualPairing: isManualPairingScan,
+                probing: isProbingService, userConnecting: isUserInitiatedPairingConnect
+            ) else { return }
 
             logDiscoveredPeripheral(peripheral, advertisementData: advertisementData, rssi: RSSI)
 
@@ -8297,9 +8377,8 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
             if isManualPairingScan {
                 // device_type selects the protocol; raw model_name still limits the
                 // products shown, just as Android's selected-model scan does.
-                guard nameMatchesPairingModelName(peripheral, advertisementData: advertisementData) else { return }
                 let isFirstMatchingAdvertisement = pairingAdvertisedNames[peripheral.identifier] == nil
-                pairingAdvertisedNames[peripheral.identifier] = resolvedName(for: peripheral, advertisementData: advertisementData)
+                guard updatePairingScanName(peripheral, advertisementData: advertisementData) else { return }
                 if isFirstMatchingAdvertisement {
                     connectLog("pairing advertisement matched", detail: "id=\(peripheral.identifier.uuidString) name=\(pairingAdvertisedNames[peripheral.identifier] ?? "") model=\(pairingModelNameFilter ?? "nil") rssi=\(RSSI.intValue) advertisedGeneration=\(advertisedProtocolGeneration(advertisementData).rawValue) callbackDelaySeconds=\(max(0, ProcessInfo.processInfo.systemUptime - callbackUptime))")
                 }
@@ -8337,6 +8416,11 @@ extension AstraA1BleManager: CBCentralManagerDelegate {
     }
 
     private func acceptsConnectionCallback(from peripheral: CBPeripheral, event: String) -> Bool {
+        if !isPairingSessionActive, pendingUnpairProvider?(peripheral.identifier) == true {
+            centralManager.cancelPeripheralConnection(peripheral)
+            connectLog("unbind: ignore old binding callback", detail: "event=\(event) target=\(peripheral.identifier.uuidString)")
+            return false
+        }
         let pairingTarget = userPairingTargetID
             ?? (isProbingService ? connectedPeripheral?.identifier : nil)
         let accepted = BLEConnectionTargetPolicy.acceptsCallback(
@@ -8766,9 +8850,7 @@ extension AstraA1BleManager: CBPeripheralDelegate {
             }
 
             if isPairingSessionActive && isProbingService {
-                let name = PairingDeviceNamePolicy.discoveredName(
-                    advertised: pairingAdvertisedNames[peripheral.identifier], cached: peripheral.name
-                )
+                let name = pairingAdvertisedNames[peripheral.identifier] ?? ""
                 guard PairingDeviceNamePolicy.matchesModel(pairingModelNameFilter, deviceName: name) else {
                     handleProbeFailed(reason: "selected model name mismatch")
                     return

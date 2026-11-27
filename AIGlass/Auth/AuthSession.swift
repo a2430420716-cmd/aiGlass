@@ -230,7 +230,11 @@ final class AuthSession: ObservableObject {
             throw APIError.server(message: L10n.t("登录凭证缺失，请重新登录", "Session expired. Please sign in again"), code: -1)
         }
 
+        let backendOrigin = BackendRouting.rootURL.absoluteString
         try await DeviceService.bindDevice(request, token: token)
+        if self.token == token, isLoggedIn, BackendRouting.rootURL.absoluteString == backendOrigin, let accountID = userInfo?.id {
+            DeviceUnpairRecoveryStore.remove(accountID: accountID, serialNumber: request.serialNumber, backendOrigin: backendOrigin)
+        }
         print("[Auth] bind device success sn=\(request.sn) name=\(request.deviceName)")
         await refreshUserInfo()
         guard self.token == token, isLoggedIn else { return }
@@ -273,18 +277,63 @@ final class AuthSession: ObservableObject {
             || message.localizedCaseInsensitiveContains("already bound")
     }
 
-    /// 解绑设备成功后刷新用户信息。
+    /// 服务器确认解绑后立即更新本地绑定卡片，不依赖后续资料刷新成功。
     /// - Parameters:
     ///   - serialNumber: 蓝牙标识（`serial_number`）
     ///   - sn: 设备硬件 SN（新增 `sn` 字段）
     func unbindDevice(serialNumber: String, sn: String) async throws {
-        guard let token, !token.isEmpty else {
-            throw APIError.server(message: L10n.t("登录凭证缺失，请重新登录", "Session expired. Please sign in again"), code: -1)
-        }
+        guard let requestToken = token, !requestToken.isEmpty,
+              let accountID = userInfo?.id, isLoggedIn else { throw CancellationError() }
+        let backendOrigin = BackendRouting.rootURL.absoluteString
+        try await DeviceService.unbindDevice(serialNumber: serialNumber, sn: sn, token: requestToken)
+        guard isLoggedIn, token == requestToken, userInfo?.id == accountID,
+              BackendRouting.rootURL.absoluteString == backendOrigin else { throw CancellationError() }
+        applyConfirmedDeviceUnbind(serialNumber: serialNumber, sn: sn)
+    }
 
-        try await DeviceService.unbindDevice(serialNumber: serialNumber, sn: sn, token: token)
-        print("[Auth] unbind device success serial_number=\(serialNumber) sn=\(sn)")
-        await refreshUserInfo()
+    /// Bypass coalesced/cached userinfo; a failed/incomplete refresh cannot
+    /// authorize repeating an uncertain POST or pretend unbinding succeeded.
+    func verifyDeviceBindingForUnpair(serialNumber: String, sn: String) async throws -> Bool {
+        guard isLoggedIn, let requestToken = token, let accountID = userInfo?.id else { throw CancellationError() }
+        let generation = userInfoRefreshGeneration
+        let backendOrigin = BackendRouting.rootURL.absoluteString
+        let data = try await APIClient.postRaw(
+            path: "user/userinfo", body: ["client_info": ClientInfo.current, "type": 2], authorization: requestToken
+        )
+        try Task.checkCancellation()
+        guard isLoggedIn, token == requestToken, userInfo?.id == accountID,
+              userInfoRefreshGeneration == generation,
+              BackendRouting.rootURL.absoluteString == backendOrigin else { throw CancellationError() }
+        let status = try JSONDecoder().decode(APIStatus.self, from: data)
+        guard status.code == 0 else {
+            throw APIError.server(message: status.msg ?? L10n.t("无法核对账号绑定状态", "Could not check account binding"), code: status.code)
+        }
+        guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = envelope["result"] as? [String: Any],
+              let bound = DeviceUnpairRecovery.bindingPresence(in: result, accountID: accountID,
+                                                               serialNumber: serialNumber, hardwareSN: sn),
+              let info = try JSONDecoder().decode(APIResponse<UserInfo>.self, from: data).result,
+              info.id == accountID else { throw APIError.invalidResponse }
+        if bound, !info.device.contains(where: {
+            $0.serialNumber.caseInsensitiveCompare(serialNumber) == .orderedSame
+                || (!sn.isEmpty && $0.hardwareSN?.caseInsensitiveCompare(sn) == .orderedSame)
+        }) { throw APIError.invalidResponse }
+        invalidateInFlightUserInfoRefresh(reason: "unbind-binding-reconciled")
+        userInfoError = nil
+        userInfo = info
+        return bound
+    }
+
+    /// Only POST success or a fresh complete snapshot can authorize this change.
+    func applyConfirmedDeviceUnbind(serialNumber: String, sn: String) {
+        guard let info = userInfo else { return }
+        invalidateInFlightUserInfoRefresh(reason: "unbind-confirmed")
+        let devices = info.device.filter {
+            $0.serialNumber.caseInsensitiveCompare(serialNumber) != .orderedSame
+                && (sn.isEmpty || $0.hardwareSN?.caseInsensitiveCompare(sn) != .orderedSame)
+        }
+        userInfo = info.updating(devices: devices)
+        if selectedHomeDeviceKey?.caseInsensitiveCompare(serialNumber) == .orderedSame { selectedHomeDeviceKey = nil }
     }
 
     func setLocalAvatarImage(_ image: UIImage?) {

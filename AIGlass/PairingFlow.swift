@@ -48,6 +48,10 @@ final class PairingCoordinator: ObservableObject {
     private var pendingSuccessfulPairingReturn: Int?
 
     init() {
+        astraA1BleManager.pendingUnpairProvider = { [weak self] id in
+            DeviceUnpairRecoveryStore.blocksReconnect(accountID: self?.authSession?.userInfo?.id,
+                                                       serialNumber: id.uuidString, backendOrigin: BackendRouting.rootURL.absoluteString)
+        }
         astraA1BleManager.deviceCardPresenceProvider = { [weak self] in
             self?.hasCorrespondingDeviceCard == true
         }
@@ -491,77 +495,109 @@ final class PairingCoordinator: ObservableObject {
     /// - Parameters:
     ///   - serialNumber: 蓝牙标识（`serial_number`）
     ///   - sn: 设备硬件 SN（`sn`）
+    func pendingUnpairRecovery(serialNumber: String) -> DeviceUnpairRecovery? {
+        guard let accountID = authSession?.userInfo?.id else { return nil }
+        return DeviceUnpairRecoveryStore.pending(accountID: accountID, serialNumber: serialNumber, backendOrigin: BackendRouting.rootURL.absoluteString)
+    }
+
     func unpairDevice(serialNumber: String, sn: String, force: Bool = false) async throws {
-        guard let authSession, authSession.isLoggedIn, let token = authSession.token, !token.isEmpty else {
-            throw APIError.server(message: L10n.t("未登录", "Not signed in"), code: -1)
+        guard let authSession, authSession.isLoggedIn, let accountToken = authSession.token,
+              !accountToken.isEmpty, let accountID = authSession.userInfo?.id else {
+            throw APIError.server(message: L10n.t("用户信息尚未就绪，请稍后重试解绑", "Account information is not ready. Try unpairing again shortly."), code: -1)
         }
         guard !isUnpairRequestInProgress else {
             throw APIError.server(message: L10n.t("正在解绑，请稍候", "Unpairing in progress. Please wait"), code: -1)
         }
         guard !astraA1BleManager.isFirmwareUpgradeFlowBusy,
-              !MediaImportManager.shared.isImporting,
-              !AIRecordingImportManager.shared.isImporting else {
+              !MediaImportManager.shared.isImporting, !AIRecordingImportManager.shared.isImporting else {
             throw APIError.server(message: L10n.t("请等待升级或导入完成后再解绑", "Wait for the update or import to finish before unpairing"), code: -1)
+        }
+        let backendOrigin = BackendRouting.rootURL.absoluteString
+        let targetSerial = serialNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previous = DeviceUnpairRecoveryStore.pending(accountID: accountID, serialNumber: targetSerial, backendOrigin: backendOrigin)
+        let suppliedSN = sn.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetSN = suppliedSN.isEmpty ? previous?.hardwareSN ?? "" : suppliedSN
+        guard !targetSerial.isEmpty else { throw APIError.invalidResponse }
+        if let previous, !suppliedSN.isEmpty, !previous.hardwareSN.isEmpty,
+           previous.hardwareSN.caseInsensitiveCompare(suppliedSN) != .orderedSame {
+            throw APIError.server(message: L10n.t("设备 SN 与待完成解绑记录不一致，请刷新设备信息", "The device SN differs from the pending unpair operation. Refresh device information."), code: -1)
         }
         isUnpairRequestInProgress = true
         defer { isUnpairRequestInProgress = false }
-        let accountToken = token
         let userID = authSession.phoneNumber
-        try Task.checkCancellation()
-
-        let targetSerial = serialNumber.trimmingCharacters(in: .whitespacesAndNewlines)
-        let targetSN = sn.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetSerial.isEmpty else {
-            throw APIError.server(message: L10n.t("未找到需要解绑的设备标识", "The device identifier is missing"), code: -1)
-        }
-        let liveIdentifiers = [
-            astraA1BleManager.deviceBluetoothIdentifier,
-            astraA1BleManager.savedPeripheralUUIDString
-        ]
-        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-        let liveSN = astraA1BleManager.deviceSN?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let isCurrentDevice = liveIdentifiers.contains {
-            $0.caseInsensitiveCompare(targetSerial) == .orderedSame
-        } || (liveSN?.caseInsensitiveCompare(targetSN) == .orderedSame)
-        let targetPeripheralID = isCurrentDevice ? astraA1BleManager.savedPeripheralUUIDString : nil
-
-        let targetConnected = isCurrentDevice && astraA1BleManager.isDeviceAvailable
-        guard force || targetConnected else {
-            throw APIError.server(message: L10n.t("请先连接需要解绑的眼镜", "Connect the glasses you want to unpair first"), code: -1)
-        }
-        let requiresReset = targetConnected
-        if targetConnected {
-            guard astraA1BleManager.deviceGeneration != .unknown else {
-                throw APIError.server(message: L10n.t("正在识别设备，请稍后重试解绑", "Identifying the glasses. Try unpairing again shortly"), code: -1)
+        let targetPeripheralID = UUID(uuidString: targetSerial)?.uuidString
+        var isCurrentDevice = astraA1BleManager.matchesCurrentDevice(serialNumber: targetSerial, hardwareSN: targetSN)
+        var liveSN: String?
+        var bindingChecked = false
+        do {
+            DebugLogStore.logConnect("unbind: verify fresh binding", detail: "target=\(targetSerial) recovery=\(previous != nil)")
+            let stillBound = try await authSession.verifyDeviceBindingForUnpair(serialNumber: targetSerial, sn: targetSN)
+            try Task.checkCancellation()
+            guard authSession.isLoggedIn, authSession.token == accountToken,
+                  authSession.userInfo?.id == accountID, BackendRouting.rootURL.absoluteString == backendOrigin else { throw CancellationError() }
+            bindingChecked = true
+            if stillBound {
+                var recovery = previous ?? DeviceUnpairRecovery(accountID: accountID, serialNumber: targetSerial,
+                                         hardwareSN: targetSN, resetConfirmed: false, forceAllowed: force, backendOrigin: backendOrigin)
+                isCurrentDevice = astraA1BleManager.matchesCurrentDevice(serialNumber: targetSerial, hardwareSN: targetSN)
+                let targetConnected = isCurrentDevice && astraA1BleManager.isDeviceAvailable
+                liveSN = isCurrentDevice ? astraA1BleManager.deviceSN?.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+                guard recovery.resetConfirmed || recovery.forceAllowed || force || targetConnected else {
+                    throw APIError.server(message: L10n.t("请先连接需要解绑的眼镜", "Connect the glasses you want to unpair first"), code: -1)
+                }
+                if targetConnected, !recovery.resetConfirmed, !recovery.forceAllowed {
+                    guard astraA1BleManager.deviceGeneration != .unknown else {
+                        throw APIError.server(message: L10n.t("正在识别设备，请稍后重试解绑", "Identifying the glasses. Try unpairing again shortly"), code: -1)
+                    }
+                    isWaitingForUnpairFactoryReset = true
+                    do { try await astraA1BleManager.resetDeviceBeforeUnpair() }
+                    catch { isWaitingForUnpairFactoryReset = false; throw error }
+                    isWaitingForUnpairFactoryReset = false
+                    recovery.resetConfirmed = true
+                    // Preserve the original account's reset acknowledgement even
+                    // if sign-in changes before cloud unbinding can finish.
+                    DeviceUnpairRecoveryStore.save(recovery)
+                }
+                try Task.checkCancellation()
+                guard authSession.isLoggedIn, authSession.token == accountToken,
+                      authSession.userInfo?.id == accountID, BackendRouting.rootURL.absoluteString == backendOrigin else { throw CancellationError() }
+                DeviceUnpairRecoveryStore.save(recovery)
+                if let id = UUID(uuidString: targetSerial) {
+                    astraA1BleManager.suspendConnectionForPendingUnpair(peripheralID: id)
+                }
+                DebugLogStore.logConnect("unbind: submitting server request", detail: "target=\(targetSerial) forced=\(force) resetPreviouslyConfirmed=\(recovery.resetConfirmed) automaticPOSTRetry=false")
+                try await authSession.unbindDevice(serialNumber: targetSerial, sn: targetSN)
+            } else {
+                DebugLogStore.logConnect("unbind: absence confirmed by fresh binding snapshot", detail: "target=\(targetSerial) repeatReset=false repeatPOST=false")
+                authSession.applyConfirmedDeviceUnbind(serialNumber: targetSerial, sn: targetSN)
             }
-            if requiresReset {
-                isWaitingForUnpairFactoryReset = true
-                defer { isWaitingForUnpairFactoryReset = false }
-                try await astraA1BleManager.resetDeviceBeforeUnpair()
+        } catch {
+            isWaitingForUnpairFactoryReset = false
+            if error is CancellationError { throw error }
+            if let pending = DeviceUnpairRecoveryStore.pending(accountID: accountID, serialNumber: targetSerial, backendOrigin: backendOrigin) {
+                let message = pending.resetConfirmed
+                    ? L10n.t("眼镜已确认重置，但账号解绑尚未确认。请重试核对服务器状态，不会重复重置眼镜。", "The glasses confirmed the reset, but account unbinding is not yet confirmed. Retry to check the server; the glasses will not be reset again.")
+                    : L10n.t("账号解绑结果尚未确认。请重试核对服务器状态。", "Account unbinding is not yet confirmed. Retry to check the server status.")
+                throw APIError.server(message: message + "\n" + error.localizedDescription, code: -1)
             }
+            if !bindingChecked {
+                throw APIError.server(message: L10n.t("无法核对服务器绑定状态，本次未执行设备重置。", "Could not check server binding. No device reset was performed by this attempt.") + "\n" + error.localizedDescription, code: -1)
+            }
+            throw error
         }
-        try Task.checkCancellation()
-        guard authSession.isLoggedIn, authSession.token == accountToken else {
-            throw APIError.server(message: L10n.t("登录状态已变化，请重新操作解绑", "Sign-in state changed. Start unpairing again"), code: -1)
-        }
-        DebugLogStore.logConnect("unbind: submitting server request", detail: "target=\(targetSerial) forced=\(force) deviceResetRequired=\(requiresReset)")
-        try await authSession.unbindDevice(serialNumber: serialNumber, sn: sn)
-        guard authSession.token == accountToken else {
-            DebugLogStore.logConnect("unbind: skip local cleanup after account change", detail: "target=\(targetSerial)")
-            return
-        }
-        astraA1BleManager.forgetCachedHardwareSN(forSerialNumber: serialNumber)
+        guard authSession.isLoggedIn, authSession.token == accountToken,
+              authSession.userInfo?.id == accountID, BackendRouting.rootURL.absoluteString == backendOrigin else { throw CancellationError() }
+        astraA1BleManager.forgetCachedHardwareSN(forSerialNumber: targetSerial)
         for key in [targetSerial, targetSN, isCurrentDevice ? (liveSN ?? "") : ""].filter({ !$0.isEmpty }) {
             GlassesWifiCredentialStore.remove(deviceKey: key)
         }
-        DeviceDisplayNameStore.remove(serialNumber: serialNumber)
-        DeviceMediaSettings.clear(userId: userID, deviceKey: serialNumber)
+        DeviceDisplayNameStore.remove(serialNumber: targetSerial)
+        DeviceMediaSettings.clear(userId: userID, deviceKey: targetSerial)
         if !targetSN.isEmpty { DeviceMediaSettings.clear(userId: userID, deviceKey: targetSN) }
 
         // The user may have switched devices while the server request was in flight.
-        if isCurrentDevice, (targetPeripheralID != nil && astraA1BleManager.savedPeripheralUUIDString == targetPeripheralID)
-            || astraA1BleManager.matchesCurrentDevice(serialNumber: serialNumber, hardwareSN: sn) {
+        if (targetPeripheralID != nil && astraA1BleManager.savedPeripheralUUIDString == targetPeripheralID)
+            || astraA1BleManager.matchesCurrentDevice(serialNumber: targetSerial, hardwareSN: targetSN) {
             astraA1BleManager.disconnectAndClearSession()
             let remainingSerials = (authSession.userInfo?.device ?? []).map(\.serialNumber)
             astraA1BleManager.restoreBoundConnectionAfterPairing(
@@ -570,6 +606,7 @@ final class PairingCoordinator: ObservableObject {
         }
 
         print("[Pairing] unpair completed serial_number=\(serialNumber) sn=\(sn) current=\(isCurrentDevice)")
+        DeviceUnpairRecoveryStore.remove(accountID: accountID, serialNumber: targetSerial, backendOrigin: backendOrigin)
     }
 
     /// 当前账号绑定的主设备序列号（用于解绑 `serial_number`）。

@@ -1,0 +1,302 @@
+[
+  {
+    "chinese": "中文",
+    "english": "Chinese",
+    "code": "zh"
+  },
+  {
+    "chinese": "英语",
+    "english": "English",
+    "code": "en"
+  },
+  {
+    "chinese": "阿拉伯语",
+    "english": "Arabic",
+    "code": "ar"
+  },
+  {
+    "chinese": "德语",
+    "english": "German",
+    "code": "de"
+  },
+  {
+    "chinese": "法语",
+    "english": "French",
+    "code": "fr"
+  },
+  {
+    "chinese": "西班牙语",
+    "english": "Spanish",
+    "code": "es"
+  },
+  {
+    "chinese": "葡萄牙语",
+    "english": "Portuguese",
+    "code": "pt"
+  },
+  {
+    "chinese": "印度尼西亚语",
+    "english": "Indonesian",
+    "code": "id"
+  },
+  {
+    "chinese": "意大利语",
+    "english": "Italian",
+    "code": "it"
+  },
+  {
+    "chinese": "韩语",
+    "english": "Korean",
+    "code": "ko"
+  },
+  {
+    "chinese": "俄语",
+    "english": "Russian",
+    "code": "ru"
+  },
+  {
+    "chinese": "泰语",
+    "english": "Thai",
+    "code": "th"
+  },
+  {
+    "chinese": "越南语",
+    "english": "Vietnamese",
+    "code": "vi"
+  },
+  {
+    "chinese": "日语",
+    "english": "Japanese",
+    "code": "ja"
+  },
+  {
+    "chinese": "土耳其语",
+    "english": "Turkish",
+    "code": "tr"
+  },
+  {
+    "chinese": "印地语",
+    "english": "Hindi",
+    "code": "hi"
+  },
+  {
+    "chinese": "马来语",
+    "english": "Malay",
+    "code": "ms"
+  },
+  {
+    "chinese": "荷兰语",
+    "english": "Dutch",
+    "code": "nl"
+  },
+  {
+    "chinese": "乌尔都语",
+    "english": "Urdu",
+    "code": "ur"
+  },
+  {
+    "chinese": "挪威语",
+    "english": "Norwegian",
+    "code": "nb"
+  },
+  {
+    "chinese": "瑞典语",
+    "english": "Swedish",
+    "code": "sv"
+  },
+  {
+    "chinese": "丹麦语",
+    "english": "Danish",
+    "code": "da"
+  },
+  {
+    "chinese": "希伯来语",
+    "english": "Hebrew",
+    "code": "he"
+  },
+  {
+    "chinese": "芬兰语",
+    "english": "Finnish",
+    "code": "fi"
+  },
+  {
+    "chinese": "波兰语",
+    "english": "Polish",
+    "code": "pl"
+  },
+  {
+    "chinese": "冰岛语",
+    "english": "Icelandic",
+    "code": "is"
+  },
+  {
+    "chinese": "捷克语",
+    "english": "Czech",
+    "code": "cs"
+  },
+  {
+    "chinese": "菲律宾语",
+    "english": "Filipino",
+    "code": "fil"
+  },
+  {
+    "chinese": "波斯语",
+    "english": "Persian",
+    "code": "fa"
+  },
+  {
+    "chinese": "粤语",
+    "english": "Cantonese",
+    "code": "yue"
+  },
+  {
+    "chinese": "希腊语",
+    "english": "Greek",
+    "code": "el"
+  },
+  {
+    "chinese": "南非荷兰语",
+    "english": "Afrikaans",
+    "code": "af"
+  },
+  {
+    "chinese": "阿斯图里亚斯语",
+    "english": "Asturian",
+    "code": "ast"
+  },
+  {
+    "chinese": "白俄罗斯语",
+    "english": "Belarusian",
+    "code": "be"
+  },
+  {
+    "chinese": "保加利亚语",
+    "english": "Bulgarian",
+    "code": "bg"
+  },
+  {
+    "chinese": "孟加拉语",
+    "english": "Bengali",
+    "code": "bn"
+  },
+  {
+    "chinese": "波斯尼亚语",
+    "english": "Bosnian",
+    "code": "bs"
+  },
+  {
+    "chinese": "加泰罗尼亚语",
+    "english": "Catalan",
+    "code": "ca"
+  },
+  {
+    "chinese": "宿务语",
+    "english": "Cebuano",
+    "code": "ceb"
+  },
+  {
+    "chinese": "爱沙尼亚语",
+    "english": "Estonian",
+    "code": "et"
+  },
+  {
+    "chinese": "加利西亚语",
+    "english": "Galician",
+    "code": "gl"
+  },
+  {
+    "chinese": "古吉拉特语",
+    "english": "Gujarati",
+    "code": "gu"
+  },
+  {
+    "chinese": "克罗地亚语",
+    "english": "Croatian",
+    "code": "hr"
+  },
+  {
+    "chinese": "匈牙利语",
+    "english": "Hungarian",
+    "code": "hu"
+  },
+  {
+    "chinese": "爪哇语",
+    "english": "Javanese",
+    "code": "jv"
+  },
+  {
+    "chinese": "哈萨克语",
+    "english": "Kazakh",
+    "code": "kk"
+  },
+  {
+    "chinese": "卡纳达语",
+    "english": "Kannada",
+    "code": "kn"
+  },
+  {
+    "chinese": "柯尔克孜语",
+    "english": "Kyrgyz",
+    "code": "ky"
+  },
+  {
+    "chinese": "拉脱维亚语",
+    "english": "Latvian",
+    "code": "lv"
+  },
+  {
+    "chinese": "马其顿语",
+    "english": "Macedonian",
+    "code": "mk"
+  },
+  {
+    "chinese": "马拉雅拉姆语",
+    "english": "Malayalam",
+    "code": "ml"
+  },
+  {
+    "chinese": "马拉地语",
+    "english": "Marathi",
+    "code": "mr"
+  },
+  {
+    "chinese": "旁遮普语",
+    "english": "Punjabi",
+    "code": "pa"
+  },
+  {
+    "chinese": "罗马尼亚语",
+    "english": "Romanian",
+    "code": "ro"
+  },
+  {
+    "chinese": "斯洛伐克语",
+    "english": "Slovak",
+    "code": "sk"
+  },
+  {
+    "chinese": "斯洛文尼亚语",
+    "english": "Slovenian",
+    "code": "sl"
+  },
+  {
+    "chinese": "斯瓦希里语",
+    "english": "Swahili",
+    "code": "sw"
+  },
+  {
+    "chinese": "塔吉克语",
+    "english": "Tajik",
+    "code": "tg"
+  },
+  {
+    "chinese": "阿塞拜疆语",
+    "english": "Azerbaijani",
+    "code": "az"
+  },
+  {
+    "chinese": "乌克兰语",
+    "english": "Ukrainian",
+    "code": "uk"
+  }
+]

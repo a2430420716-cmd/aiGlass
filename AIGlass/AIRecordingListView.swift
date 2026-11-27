@@ -417,6 +417,7 @@ struct AIRecordingListView: View {
                 Text(importCardText)
                     .font(AppTheme.notoSansSC(size: 16, weight: .bold))
                     .foregroundStyle(AppTheme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 8)
 
@@ -426,6 +427,7 @@ struct AIRecordingListView: View {
                     Text(importButtonTitle)
                         .font(AppTheme.notoSansSC(size: 16, weight: .regular))
                         .foregroundStyle(.white)
+                        .fixedSize(horizontal: true, vertical: false)
                         .padding(.horizontal, 10)
                         .frame(height: 30)
                         .background(Color(red: 0.25, green: 0.25, blue: 0.25))

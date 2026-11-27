@@ -331,7 +331,8 @@ enum APIClient {
         path: String,
         queryItems: [URLQueryItem] = [],
         authorization: String? = nil,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        timeout: TimeInterval = 20
     ) async throws -> Data {
         let trimmedPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
         guard let relativeURL = URL(string: trimmedPath, relativeTo: baseURL),
@@ -355,7 +356,7 @@ enum APIClient {
         if let authorization, !authorization.isEmpty {
             request.setValue(authorization, forHTTPHeaderField: "Authorization")
         }
-        request.timeoutInterval = 20
+        request.timeoutInterval = timeout
         DebugLogStore.logHTTPSent(
             method: "GET",
             url: url.absoluteString,

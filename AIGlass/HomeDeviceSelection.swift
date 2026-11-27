@@ -1,8 +1,20 @@
 import Foundation
 
-/// Returning home follows a live bound connection. Swiping while already on the
-/// home page still selects a new target through the normal connection flow.
+/// Returning home follows a live bound connection. Swiping only browses cards;
+/// connecting to another device requires an explicit card tap, as on Android.
 enum HomeDeviceSelection {
+    /// Keep the page being browsed separate from the BLE connection target.
+    /// The trailing add-device page is a real destination, including after refreshes.
+    static func visibleIndex(browsedKey: String?, connectionIndex: Int, cardKeys: [String]) -> Int {
+        if let browsedKey,
+           let index = cardKeys.firstIndex(where: {
+               $0.caseInsensitiveCompare(browsedKey) == .orderedSame
+           }) {
+            return index
+        }
+        return cardKeys.indices.contains(connectionIndex) ? connectionIndex : 0
+    }
+
     /// Promote the live device without changing the relative order of other cards.
     static func connectedFirst<Card>(_ cards: [Card], isConnected: (Card) -> Bool) -> [Card] {
         guard let index = cards.firstIndex(where: isConnected), index > 0 else { return cards }

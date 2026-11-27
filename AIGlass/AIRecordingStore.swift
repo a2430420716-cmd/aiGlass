@@ -12,7 +12,7 @@ struct AIRecordingItem: Identifiable, Codable, Equatable {
     var playable: Bool
 
     var durationText: String {
-        let totalSeconds = max(0, Int(durationMs / 1000))
+        // Match the player's rounded total instead of flooring the same recording.
         let minutes = totalSeconds / 60
         let seconds = totalSeconds % 60
         return String(format: "%02d:%02d", minutes, seconds)

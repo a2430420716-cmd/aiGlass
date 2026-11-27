@@ -110,6 +110,7 @@ jobs:
         run: |
           xcrun swiftc -module-cache-path "$RUNNER_TEMP/translation-audio-cache" AIGlass/Network/TranslationAudioSessionState.swift Tests/TranslationAudioSessionTests.swift -o "$RUNNER_TEMP/translation-audio-tests"
           "$RUNNER_TEMP/translation-audio-tests"
+          bash Tests/run-translation-language-tests.sh
           bash Tests/run-translation-pcm-playback-tests.sh
           bash Tests/run-simultaneous-translation-share-tests.sh
           bash Tests/run-simultaneous-playback-switch-tests.sh
@@ -133,7 +134,7 @@ jobs:
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
-          name: AIGlass-1.1.7-187-${{ inputs.export_method }}
+          name: AIGlass-1.1.7-188-${{ inputs.export_method }}
           path: build/ipa/*.ipa
           if-no-files-found: error
           retention-days: 7

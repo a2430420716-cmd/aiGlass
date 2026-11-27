@@ -41,9 +41,6 @@ struct AlbumView: View {
     @State private var importPartialFailureMessage = ""
     @State private var showDeleteConfirmation = false
     @State private var sharePayload: SharePayload?
-    @State private var showsMixedShareOptions = false
-    @State private var pendingSharePhotos: [URL] = []
-    @State private var pendingShareVideos: [URL] = []
     @State private var isRefreshingDeviceFiles = false
 
     private var pendingImportCount: Int {
@@ -184,17 +181,6 @@ struct AlbumView: View {
             }
         } message: {
             Text(L10n.t("此操作将删除 \(selectedItemIDs.count) 项，且无法恢复。", "This will permanently delete \(selectedItemIDs.count) item(s)."))
-        }
-        .confirmationDialog(L10n.t("照片和视频请分开分享", "Share Photos and Videos Separately"), isPresented: $showsMixedShareOptions, titleVisibility: .visible) {
-            Button(L10n.t("分享照片（\(pendingSharePhotos.count)张）", "Share Photos (\(pendingSharePhotos.count))")) {
-                sharePayload = SharePayload(urls: pendingSharePhotos)
-            }
-            Button(L10n.t("分享视频（\(pendingShareVideos.count)个）", "Share Videos (\(pendingShareVideos.count))")) {
-                sharePayload = SharePayload(urls: pendingShareVideos)
-            }
-            Button(L10n.t("取消", "Cancel"), role: .cancel) {}
-        } message: {
-            Text(L10n.t("微信等应用可能无法同时接收照片和视频，请分两次分享。当前选择会保留。", "Some apps, including WeChat, may not accept photos and videos together. Share them in two batches. Your selection will be kept."))
         }
         .sheet(item: $sharePayload) { payload in
             SystemShareSheet(urls: payload.urls) {
@@ -466,6 +452,7 @@ struct AlbumView: View {
                 Text(importManager.statusText)
                     .font(AppTheme.notoSansSC(size: 15, weight: .regular))
                     .foregroundStyle(AppTheme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
 
@@ -575,6 +562,19 @@ struct AlbumView: View {
                 .foregroundStyle(AppTheme.primaryText)
             }
             .buttonStyle(.plain)
+            .contextMenu {
+                if hasMixedShareSelection {
+                    Button(L10n.t("只分享照片", "Share Photos Only")) {
+                        shareSelectedItems(.photos)
+                    }
+                    Button(L10n.t("只分享视频", "Share Videos Only")) {
+                        shareSelectedItems(.videos)
+                    }
+                }
+            }
+            .accessibilityHint(hasMixedShareSelection
+                               ? L10n.t("轻点一起分享，长按可只分享照片或视频", "Tap to share together. Touch and hold to share only photos or videos.")
+                               : L10n.t("分享所选内容", "Share selected items"))
         }
         .padding(.horizontal, 40)
         .padding(.top, 12)
@@ -805,26 +805,39 @@ struct AlbumView: View {
         }
     }
 
-    private func shareSelectedItems() {
+    private enum ShareSelectionKind {
+        case all, photos, videos
+    }
+
+    private var selectedShareItems: [StoredMediaItem] {
+        mediaLibrary.items.filter { selectedItemIDs.contains($0.id) }
+    }
+
+    private var hasMixedShareSelection: Bool {
+        let items = selectedShareItems
+        return items.contains(where: { $0.isVideo }) && items.contains(where: { !$0.isVideo })
+    }
+
+    private func shareSelectedItems(_ kind: ShareSelectionKind = .all) {
         guard !selectedItemIDs.isEmpty else {
             importNoticeMessage = L10n.t("至少选择一项", "Select at least one item")
             return
         }
-        let items = mediaLibrary.items.filter { selectedItemIDs.contains($0.id) }
-        let urls = items.map { mediaLibrary.originalURL(for: $0) }
+        let items = selectedShareItems
+        let sharedItems: [StoredMediaItem]
+        switch kind {
+        case .all: sharedItems = items
+        case .photos: sharedItems = items.filter { !$0.isVideo }
+        case .videos: sharedItems = items.filter { $0.isVideo }
+        }
+        let urls = sharedItems.map { mediaLibrary.originalURL(for: $0) }
         guard !urls.isEmpty, items.count == selectedItemIDs.count,
               urls.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.path) }) else {
             DebugLogStore.logShare("准备失败", detail: "selectedCount=\(selectedItemIDs.count) foundCount=\(items.count) reason=missing_or_unreadable_file")
             importNoticeMessage = L10n.t("部分文件无法读取，请重新选择后再分享。", "Some files could not be read. Select the items again before sharing.")
             return
         }
-        pendingSharePhotos = zip(items, urls).filter { !$0.0.isVideo }.map { $0.1 }
-        pendingShareVideos = zip(items, urls).filter { $0.0.isVideo }.map { $0.1 }
-        if !pendingSharePhotos.isEmpty && !pendingShareVideos.isEmpty {
-            DebugLogStore.logShare("选择分享类型", detail: "photos=\(pendingSharePhotos.count) videos=\(pendingShareVideos.count) reason=mixed_media_compatibility selection_preserved=true")
-            showsMixedShareOptions = true
-            return
-        }
+        DebugLogStore.logShare("准备系统分享", detail: "photos=\(sharedItems.filter { !$0.isVideo }.count) videos=\(sharedItems.filter { $0.isVideo }.count) selection_preserved=true mixed_media_allowed=true")
         sharePayload = SharePayload(urls: urls)
     }
 }

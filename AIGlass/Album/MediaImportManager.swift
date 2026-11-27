@@ -345,9 +345,11 @@ final class MediaImportManager: ObservableObject {
         case .idle:
             return ""
         case .openingWifi:
-            return L10n.t("正在开启眼镜热点...", "Turning on glasses hotspot...")
+            return DeviceWifiManager.connectionGuidanceIfNeeded
+                ?? L10n.t("正在开启眼镜热点...", "Turning on glasses hotspot...")
         case .connectingWifi:
-            return L10n.t("正在连接眼镜 Wi-Fi...", "Connecting to glasses Wi-Fi...")
+            return DeviceWifiManager.connectionGuidanceIfNeeded
+                ?? L10n.t("正在连接眼镜 Wi-Fi...", "Connecting to glasses Wi-Fi...")
         case .fetchingList:
             return L10n.t("正在获取文件列表...", "Getting file list")
         case .downloading(let current, let total, _):
